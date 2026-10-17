@@ -1,0 +1,11 @@
+{
+  "language": "melt/v0.1",
+  "workspaceId": "empty-workspace",
+  "title": "Empty workspace",
+  "sources": {},
+  "parameters": {},
+  "actions": {},
+  "projections": {},
+  "bindings": {},
+  "layout": {"root": null, "hidden": []}
+}

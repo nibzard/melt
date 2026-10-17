@@ -1,0 +1,13 @@
+{
+	"name": "melt-pi-adapter-probe",
+	"private": true,
+	"version": "0.1.0",
+	"type": "module",
+	"description": "Pinned Pi Durable storage adapter probe for Melt (SPEC.md section 14, backlog task T002)",
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"dependencies": {
+		"@earendil-works/pi-durable": "1.3.0"
+	}
+}

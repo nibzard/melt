@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "description": "Canonical RFC 8785 document hashes computed by the Python schema package. Language implementations that verify canonical hashes (SPEC.md section 18.1) compare their result against these values.",
+  "documents": {
+    "empty-workspace.json": "sha256:6cf2c98755866c2aa86db714b75f533d0b66af69669f17e066e46893c35f8b7a",
+    "hidden-panes.json": "sha256:e29f72fdb7b787784b2e2c7bd53798ac9eda617a00ee6bee27aaee66d812cbbf",
+    "nullable-parameters.json": "sha256:07c3fa73c97ea3f86afef629859c2c839e7aa11e24e3e1e1c9ebe37e457fb496",
+    "projection-document.json": "sha256:da51bcaf033233c4017793c7ee769709f672523b9be953381876bf58214ff88a",
+    "projection-plot.json": "sha256:738f2f21e8b8eadc55860cff90a48459ab3e3dabe00587f5e75a5e453bcfe0a7",
+    "projection-table.json": "sha256:c8f3e20fee639b9257fd8b38d2030f2f6a477495203840a6598c28c2b31a1ce7",
+    "sales-full.json": "sha256:73f99cc4786515cca72a53e5972da997f1c42e5fd901ad8756f5fb230e178b82"
+  }
+}

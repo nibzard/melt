@@ -1,0 +1,51 @@
+{
+  "language": "melt/v0.1",
+  "workspaceId": "document-demo",
+  "title": "Document projection",
+  "sources": {
+    "sales-notes": {
+      "kind": "text",
+      "currentVersion": 1,
+      "versions": {
+        "1": {
+          "artifact": "sha256:c0418ced26872a83a21ae599f576ab90eeb319c07bf4e75cba4d807ad5888554",
+          "mediaType": "text/markdown",
+          "byteLength": 241,
+          "schema": {"encoding": "utf-8"},
+          "origin": {"kind": "import", "label": "notes.md"}
+        }
+      }
+    }
+  },
+  "parameters": {
+    "detail": {
+      "type": "string",
+      "default": "short",
+      "nullable": false,
+      "constraints": {"enum": ["short", "full"]}
+    }
+  },
+  "actions": {},
+  "projections": {
+    "notes": {
+      "kind": "document",
+      "title": "Sales notes",
+      "source": {"sourceId": "sales-notes", "version": 1},
+      "config": {"format": "markdown"},
+      "controls": [
+        {
+          "id": "detail",
+          "kind": "select",
+          "label": "Detail level",
+          "parameter": "detail",
+          "options": [
+            {"value": "short", "label": "Short"},
+            {"value": "full", "label": "Full"}
+          ]
+        }
+      ]
+    }
+  },
+  "bindings": {},
+  "layout": {"root": {"kind": "pane", "projection": "notes"}, "hidden": []}
+}

@@ -1,0 +1,55 @@
+{
+  "language": "melt/v0.1",
+  "workspaceId": "invalid-demo",
+  "title": "Invalid fixture",
+  "sources": {
+    "sales-input": {
+      "kind": "table",
+      "currentVersion": 1,
+      "versions": {
+        "1": {
+          "artifact": "sha256:42cb3135d0370d5d9b0712adc0835b30c3d48843aa36d0df333851a42afa4598",
+          "mediaType": "application/vnd.apache.parquet",
+          "byteLength": 748,
+          "schema": {
+            "columns": [
+              {"id": "month", "type": "string", "nullable": false},
+              {"id": "revenue", "type": "float64", "nullable": false}
+            ],
+            "rowKey": null
+          },
+          "origin": {"kind": "import", "label": "sales.parquet"}
+        }
+      }
+    }
+  },
+  "parameters": {
+    "minimum": {
+      "type": "number",
+      "default": 0,
+      "nullable": false,
+      "constraints": {"minimum": 0}
+    }
+  },
+  "actions": {
+    "analyze-sales": {
+      "implementation": {"registrationId": "sales-script-v1"},
+      "parameters": {"minimum": {"parameter": "minimum"}},
+      "inputs": {"sales": {"sourceId": "sales-input", "version": 1}},
+      "outputs": {"filtered": "table", "monthly": "image"},
+      "outputGroup": "sales-results",
+      "targets": {"filtered": "sales"}
+    }
+  },
+  "projections": {
+    "sales": {
+      "kind": "table",
+      "title": "Sales",
+      "source": null,
+      "config": {"columns": ["month", "revenue"], "selection": "none"},
+      "controls": []
+    }
+  },
+  "bindings": {},
+  "layout": {"root": {"kind": "pane", "projection": "sales"}, "hidden": []}
+}

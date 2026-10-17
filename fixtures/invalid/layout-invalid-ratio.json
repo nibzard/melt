@@ -1,0 +1,55 @@
+{
+  "language": "melt/v0.1",
+  "workspaceId": "invalid-demo",
+  "title": "Invalid fixture",
+  "sources": {
+    "sales-input": {
+      "kind": "table",
+      "currentVersion": 1,
+      "versions": {
+        "1": {
+          "artifact": "sha256:42cb3135d0370d5d9b0712adc0835b30c3d48843aa36d0df333851a42afa4598",
+          "mediaType": "application/vnd.apache.parquet",
+          "byteLength": 748,
+          "schema": {
+            "columns": [
+              {"id": "month", "type": "string", "nullable": false},
+              {"id": "revenue", "type": "float64", "nullable": false}
+            ],
+            "rowKey": null
+          },
+          "origin": {"kind": "import", "label": "sales.parquet"}
+        }
+      }
+    }
+  },
+  "parameters": {},
+  "actions": {},
+  "projections": {
+    "sales": {
+      "kind": "table",
+      "title": "Sales",
+      "source": {"sourceId": "sales-input", "version": 1},
+      "config": {"columns": null, "selection": "none"},
+      "controls": []
+    },
+    "summary": {
+      "kind": "table",
+      "title": "Summary",
+      "source": {"sourceId": "sales-input", "version": 1},
+      "config": {"columns": null, "selection": "none"},
+      "controls": []
+    }
+  },
+  "bindings": {},
+  "layout": {
+    "root": {
+      "kind": "split",
+      "axis": "horizontal",
+      "ratio": 0.95,
+      "first": {"kind": "pane", "projection": "sales"},
+      "second": {"kind": "pane", "projection": "summary"}
+    },
+    "hidden": []
+  }
+}

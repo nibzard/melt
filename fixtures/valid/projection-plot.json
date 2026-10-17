@@ -1,0 +1,33 @@
+{
+  "language": "melt/v0.1",
+  "workspaceId": "plot-demo",
+  "title": "Plot projection",
+  "sources": {
+    "revenue-image": {
+      "kind": "image",
+      "currentVersion": 1,
+      "versions": {
+        "1": {
+          "artifact": "sha256:a00604c75ee5bb2b29d883b8017bc117f914aab937130fc0d9270d4fddae41fd",
+          "mediaType": "image/png",
+          "byteLength": 124,
+          "schema": {"width": 64, "height": 48},
+          "origin": {"kind": "import", "label": "revenue.png"}
+        }
+      }
+    }
+  },
+  "parameters": {},
+  "actions": {},
+  "projections": {
+    "revenue": {
+      "kind": "plot",
+      "title": "Revenue by month",
+      "source": {"sourceId": "revenue-image", "version": 1},
+      "config": {"fit": "contain"},
+      "controls": []
+    }
+  },
+  "bindings": {},
+  "layout": {"root": {"kind": "pane", "projection": "revenue"}, "hidden": []}
+}

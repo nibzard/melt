@@ -1,0 +1,46 @@
+[project]
+name = "melt"
+version = "0.1.0"
+description = "Melt v0.1 language and runtime, Linux round 1"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "pydantic==2.14.1",
+    "pyarrow==26.0.0",
+    "pandas==3.0.6",
+    "matplotlib==3.11.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+]
+
+[tool.uv]
+# Pin the resolver too, so lockfile resolution stays repeatable.
+required-version = ">=0.10.0,<0.11"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# The repository keeps two Python roots (SPEC.md section 17): the melt
+# package under python/ and the service runtime under runtime/.
+package-dir = { melt = "python/melt", runtime = "runtime" }
+packages = [
+    "melt",
+    "melt.schema",
+    "melt.sdk",
+    "melt.runner",
+    "runtime",
+    "runtime.compiler",
+    "runtime.workspace",
+    "runtime.execution",
+    "runtime.storage",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["python", "."]
+addopts = "-ra --strict-markers"
