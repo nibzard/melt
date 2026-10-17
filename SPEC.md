@@ -2,7 +2,8 @@
 
 Version: 0.1.0  
 Status: Proposed implementation contract; no implementation or performance result is implied.  
-Initial platform: macOS on Apple Silicon  
+First development round: Linux  
+Later native application target: macOS on Apple Silicon  
 Canonical format: JSON  
 Language identifier: `melt/v0.1`
 
@@ -22,7 +23,7 @@ The earlier name, Malleable, becomes Melt. Use `melt` for package names, imports
 - **SHOULD** identifies a default. Record a reason for any exception.
 - **MAY** identifies an optional feature.
 
-All requirements apply to v0.1 unless a section explicitly defers them. Examples illustrate the contracts defined here. An example does not grant authority to execute code.
+All requirements apply to v0.1 unless a section explicitly defers them. Linux development gates exclude requirements explicitly assigned to the later native application round. Examples illustrate the contracts defined here. An example does not grant authority to execute code.
 
 ### 1.2 Core outcome
 
@@ -54,13 +55,23 @@ A developer must be able to implement this sequence:
 
 The native agent prompt and Ghostty terminal are host features. They are not new Melt renderer kinds in this milestone. The host reserves a route to its prompt outside the document's authority.
 
-### 2.2 Deferred
+### 2.2 Development rounds
+
+Round 1 runs on Linux. Implement and test the schema, compiler, workspace service, Python SDK, runner, artifact reader, and persistence adapters there. A command-line harness drives the full action and publication loop. It inspects plans, state, table pages, and generated PNG files without a native renderer or model provider.
+
+Keep the compiler and service independent of AppKit, SwiftUI, macOS paths, and Ghostty view objects. Use platform adapters for application data paths, file synchronization, process ownership, and credential access. The Linux round must not require Apple tools or a macOS machine.
+
+The command-line harness represents a local user for parameter edits and action invocation. Agent and programmatic changes retain their separate event origin. Test this distinction through the same service handlers used by the later native host.
+
+Round 2 integrates the native macOS application and Ghostty panes. Native input, accessibility, controller continuity, display latency, signing, and packaging are acceptance gates for that round. Linux development does not add a Linux desktop application to v0.1 scope.
+
+### 2.3 Deferred
 
 Graphs, diagrams, supplier simulations, editable tables, custom renderer modules, arbitrary expressions, reactive dependency graphs, animation, network synchronization, multiple users, a custom text syntax, persistent Python interpreters, and automatic schema migration are deferred.
 
 An editor and a diff view belong to the broader product. The first language implementation needs only a host action that opens the saved script in an editor.
 
-### 2.3 Implementation boundary
+### 2.4 Implementation boundary
 
 | Layer | Responsibility |
 |---|---|
@@ -661,7 +672,7 @@ The service is the sole writer to each workspace database. Enforce ownership thr
 Store documents, entity revisions, parameter state, host records, runs, generations, receipts, and publication references in the durable store. Keep artifact bytes outside the database.
 
 ```text
-Application Support/Melt/workspaces/<workspace-id>/
+<application-data-root>/melt/workspaces/<workspace-id>/
   state.sqlite
   owner.lock
   artifacts/<sha256-hex>
@@ -670,9 +681,11 @@ Application Support/Melt/workspaces/<workspace-id>/
   backups/
 ```
 
+On Linux, the application data root is `$XDG_DATA_HOME`, or `$HOME/.local/share` when unset. On macOS, use `~/Library/Application Support`. Tests use an isolated temporary root. Resolve paths through a platform adapter.
+
 Use the Pi Durable storage adapter behind an application-owned interface. Prove atomic updates and committed observation with integration tests. If the pinned adapter cannot provide them, resolve that integration before implementing competing persistence paths.
 
-Configure and verify SQLite durability settings on the owning connection. Required targets are `synchronous=FULL` and the supported macOS full-sync behavior. Test file and directory synchronization for artifact publication. Record the tested filesystem and crash model.
+Configure and verify SQLite durability settings on the owning connection. Require `synchronous=FULL` on Linux and macOS. On macOS, also configure and verify supported full-sync behavior. Linux validation must not depend on macOS-specific settings. Test file and directory synchronization for artifact publication. Record the tested filesystem and crash model.
 
 On startup:
 
@@ -872,6 +885,8 @@ Valid fixtures include the empty workspace, every projection kind, hidden panes,
 
 ### 18.2 Hero workflow
 
+In round 1, drive these steps through the Linux command-line harness. Inspect compiled plans, table pages, PNG artifacts, and saved state. Moving a pane means submitting a layout command and verifying the saved tree. Round 2 repeats the workflow through native controls.
+
 Use an input with rows `(2026-01, 100)`, `(2026-01, 300)`, and `(2026-02, 200)`. At minimum zero, the output table has three rows. At minimum 200, it has two rows. Monthly totals become 300 and 200.
 
 Verify these steps:
@@ -907,7 +922,7 @@ Also test disk-full errors, missing artifacts, missing environments, lost notifi
 
 Never automatically rerun uncertain Python effects after restart. Preserve the previous readable interface when recovery fails.
 
-### 18.5 Native integration
+### 18.5 Native integration — round 2
 
 Verify terminal controller identity while moving and updating Melt panes. Test focus, keyboard navigation, clipboard, input methods, accessibility labels, pane hiding, and small-window overflow.
 
@@ -915,7 +930,9 @@ Test that table paging and Python computation do not block native input. Verify 
 
 ## 19. Performance targets
 
-Measure on a declared Apple Silicon machine with 16 GiB memory. Record hardware, dependency versions, build mode, fixture sizes, and warm/cold conditions.
+For round 1, measure compilation, service commits, artifact publication, and table paging on a declared Linux machine with 16 GiB memory. Record hardware, dependency versions, build mode, fixture sizes, and warm/cold conditions.
+
+Round 2 measures native feedback, visible updates, and pane restoration on a declared Apple Silicon machine with 16 GiB memory. Native targets do not block completion of the Linux round.
 
 | Measurement | Target |
 |---|---|
@@ -929,17 +946,17 @@ These are targets, not measured results. Exclude model and Python execution time
 
 ## 20. Delivery sequence
 
-1. **Schema and fixtures:** Implement structural models, canonicalization, diagnostics, and the complete sales fixture.
+1. **Linux setup and schema:** Pin the Linux toolchain. Implement structural models, canonicalization, diagnostics, and the complete sales fixture.
 2. **Compiler:** Resolve references and produce plans with deterministic valid/invalid tests.
-3. **Service:** Implement revisions, atomic mutations, preview, receipts, and snapshots.
-4. **Execution:** Register the sales script, capture invocations, and publish validated output groups.
-5. **Native integration:** Render table, plot, document, controls, and stable layout beside a Ghostty terminal.
-6. **Recovery:** Pass restart, race, permission, and publication fault tests.
-7. **Release validation:** Measure performance and test a packaged application on a clean machine.
+3. **Service:** Implement revisions, atomic mutations, preview, receipts, and snapshots through the Pi adapter.
+4. **Execution:** Register the sales script, capture invocations, and publish validated output groups through the Linux harness.
+5. **Linux recovery gate:** Pass the hero workflow, contract suite, race suite, and publication fault tests. Record compiler and reader measurements.
+6. **Native integration:** Render table, plot, document, controls, and stable layout beside a Ghostty terminal on macOS.
+7. **Application release gate:** Repeat the workflow through native controls. Pass native regressions, recovery tests, performance targets, and clean-machine packaging checks.
 
-Run a small Ghostty/Pi integration probe alongside the early language work. Confirm mixed panes, atomic storage, and committed observation before expanding the implementation.
+Probe Pi atomic storage and committed observation early on Linux. Defer the Ghostty mixed-pane probe to round 2. The Linux gate requires no native application build.
 
-The milestone is complete only when the hero workflow, contract suite, race suite, and recovery suite pass. A valid JSON document or a static interface alone does not complete it.
+Round 1 is complete when the Linux harness proves the full language and execution loop, including patches and restart recovery. A valid JSON document alone does not pass. The native application milestone remains incomplete until steps 6 and 7 pass.
 
 ## 21. Decisions reserved for later versions
 
