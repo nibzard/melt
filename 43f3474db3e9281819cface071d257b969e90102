@@ -1,0 +1,1 @@
+Record the proposed next architecture milestone without changing melt/v0.1. Define semantic references, pure selection updates, shared observers, and outputs independent of panes. Keep validation Linux-first. JSON fragments and local links were checked; runtime and Pele integration remain unimplemented.
