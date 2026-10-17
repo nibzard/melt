@@ -1,0 +1,1 @@
+Add concise repository guidance for Linux-first implementation. CLAUDE.md imports AGENTS.md so both agents use the same instructions. Verified the import line and staged whitespace.
