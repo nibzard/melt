@@ -1,0 +1,1 @@
+The user specified Linux for the first development round. Validate the language, service, execution, and recovery through a command-line harness. Keep native macOS integration as a later gate. Reviewed the documentation diff and checked whitespace; no executable behavior changed.
