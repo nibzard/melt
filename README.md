@@ -332,6 +332,43 @@ parameters of the retained result, through
 - `runtime.workspace.publication.verify_staged_outputs` for the
   independent staged-file verification
 
+`runtime/workspace/recovery.py` implements the startup recovery pass of
+backlog task T022 (SPEC.md sections 14 and 18.4). Opening a workspace
+loads the last committed state, validates it without importing or
+executing project code, and then: skips committed records that no
+longer parse and reports each one as a corrupt descriptor while the
+last valid snapshot keeps the previous readable interface; reports
+every artifact a saved reference names but storage lacks, one
+diagnostic per source version and per captured registration script,
+live in `workspace.inspect` as well as at startup; marks previous
+active jobs and pending timers interrupted; and reconciles every
+`staging/<run-id>` tree against the committed publication receipts —
+a concluded or unpublishable run leaves abandoned staging behind that
+recovery removes, while a run that succeeded before its publication
+committed keeps its staged outputs for an explicit retry. The pass
+ends with the rerun and recovery actions a host may offer, never
+performed by the service itself: rerunning an interrupted intent
+through a fresh invocation and retrying the publication of a kept
+run. An unsupported stored version — a newer workspace format, record
+kind, record schema version, or snapshot language — refuses to open
+with every file preserved instead. The report rides `service.recovery_report`
+and the `recovery` view of `workspace.inspect`. The fault-injection
+suite that proves all of this lives in `tests/recovery`: it kills a
+real service process on both sides of artifact finalization, database
+commit, and acknowledgement, drives disk-full, missing-artifact,
+missing-environment, lost-notification, changed-epoch, reused-request,
+corrupt-descriptor, cancelled-run, and incompatible-version faults,
+and proves that acknowledged references always point to complete
+files, that retries reconcile unacknowledged work, and that no
+uncertain Python effect ever reruns after a restart. Entry points:
+
+- `service.recovery_report` for what startup found and did
+- `workspace.inspect`'s `recovery` view and missing-artifact
+  diagnostics for the host surface
+- `runtime.workspace.recovery.reconcile_staging` for the staging
+  reconciliation and `missing_artifact_diagnostics` for the
+  individual reports
+
 ## Command-line compiler
 
 `melt validate` and `melt compile` are the fixture and diagnostics
