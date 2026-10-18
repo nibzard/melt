@@ -21,6 +21,15 @@ Artifact and script tokens are
 minted by the host capture operation and stay workspace-scoped for
 15 minutes.
 
+Execution authority is separate from every document (SPEC.md section
+15.1). Specific-run and project execution grants live in the service
+record stream, minted and revoked only through the authenticated host
+permission endpoint that no command envelope reaches; admission,
+launch, and publication recheck them, and revocation blocks
+publication immediately. Model credentials never reach a project
+process: launch sites build child environments through
+``runtime.execution.project_process_environment``.
+
 Typical use:
 
 ```python
@@ -68,6 +77,21 @@ from runtime.workspace.mutations import (
     initial_state_from_document,
     plan_mutation,
 )
+from melt.schema.records import PermissionGrantRecord
+from runtime.workspace.permissions import (
+    GRANT_ID_PREFIX,
+    GRANT_KINDS,
+    INTENT_ID_PREFIX,
+    AuthorityDecision,
+    MeltPermissionError,
+    authority_at_admission,
+    authority_at_launch,
+    authority_at_publication,
+    is_live,
+    mint_grant_id,
+    mint_intent_id,
+    revocation_blocks,
+)
 from runtime.workspace.registry import (
     DEFAULT_ENVIRONMENT_ID,
     EnvironmentCatalog,
@@ -98,6 +122,8 @@ from runtime.workspace.state import (
     ENTITY_COLLECTIONS,
     LAYOUT_PATH,
     NOTIFICATION_KIND,
+    PERMISSION_COLLECTION,
+    PERMISSION_KIND,
     RECEIPT_KIND,
     REGISTRATION_COLLECTION,
     REGISTRATION_KIND,
@@ -107,6 +133,7 @@ from runtime.workspace.state import (
     ParameterStateValue,
     WorkspaceState,
     entity_path,
+    permission_path,
     pointer_key,
     registration_path,
     run_path,
@@ -130,7 +157,10 @@ __all__ = [
     "DEFAULT_ENVIRONMENT_ID",
     "ENTITY_COLLECTIONS",
     "EntityTouch",
+    "GRANT_ID_PREFIX",
+    "GRANT_KINDS",
     "IMPORT_KINDS",
+    "INTENT_ID_PREFIX",
     "LANGUAGE_VERSION",
     "LAYOUT_PATH",
     "MutationPlan",
@@ -138,6 +168,9 @@ __all__ = [
     "NotificationWindow",
     "ParameterStateValue",
     "PendingSet",
+    "PERMISSION_COLLECTION",
+    "PERMISSION_KIND",
+    "PermissionGrantRecord",
     "RECEIPT_KIND",
     "REVISION_PRECONDITION_METHODS",
     "REGISTRATION_COLLECTION",
@@ -151,12 +184,14 @@ __all__ = [
     "SUPPORTED_PROTOCOL_VERSIONS",
     "TOKEN_LIFETIME",
     "TOKEN_PREFIX",
+    "AuthorityDecision",
     "CapturedArtifact",
     "EnvironmentCatalog",
     "KnownEnvironment",
     "MeasuredArtifact",
     "MeasuredScript",
     "MeltImportError",
+    "MeltPermissionError",
     "MeltRegistrationError",
     "MeltTokenError",
     "TokenStore",
@@ -165,6 +200,9 @@ __all__ = [
     "WorkspaceState",
     "active_run_records",
     "append_source_version",
+    "authority_at_admission",
+    "authority_at_launch",
+    "authority_at_publication",
     "build_registration",
     "contract_of",
     "current_diagnostics",
@@ -172,9 +210,13 @@ __all__ = [
     "expectation_diagnostics",
     "import_version",
     "initial_state_from_document",
+    "is_live",
     "local_environment",
     "measure_artifact",
+    "mint_grant_id",
+    "mint_intent_id",
     "next_version_number",
+    "permission_path",
     "plan_mutation",
     "pointer_key",
     "preview_effects",
@@ -183,6 +225,7 @@ __all__ = [
     "registration_entry_of",
     "registration_identity",
     "registration_path",
+    "revocation_blocks",
     "run_path",
     "run_version",
     "snapshot_result",

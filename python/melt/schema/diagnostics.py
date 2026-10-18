@@ -181,6 +181,7 @@ _UNION_MARKER_ROOT = frozenset(
     {
         "run",
         "registration",
+        "permissionGrant",
         "artifact",
         "parameterState",
         "commandReceipt",
@@ -216,6 +217,7 @@ _UNION_MARKER_TAGS = frozenset(
         "parameter.set",
         "layout.replace",
         "registration",
+        "permissionGrant",
         "artifact",
         "parameterState",
         "commandReceipt",
