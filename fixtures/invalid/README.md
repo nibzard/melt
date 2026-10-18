@@ -18,7 +18,11 @@ Manifest entry fields:
   - `compiler`: the document is structurally valid. Full compilation
     against `fixtures/catalog.json` rejects it. The compiler of backlog
     task T005 enforces these entries; `tests/contract/test_fixtures.py`
-    runs them through `runtime.compiler.compile_document`.
+    runs them through `runtime.compiler.compile_document`, and
+    `melt compile <fixture> --catalog fixtures/catalog.json` (and
+    `melt validate --catalog`) rejects them from the command line
+    (SPEC.md section 11.3). Plain `melt validate` accepts them, because
+    structural validation alone cannot see the drift.
   - `service`: the command envelope is well formed. The workspace
     service rejects its semantics against the state the envelope's
     `expected` map addresses. The service of backlog task T009 enforces
