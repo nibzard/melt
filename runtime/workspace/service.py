@@ -107,6 +107,19 @@ the append.
 State restoration on open loads the last committed snapshot, receipts,
 notifications, run records, and grants from the record stream without
 importing or executing project code (SPEC.md section 14, steps 2 and 3).
+Opening then runs the startup recovery pass of backlog task T022
+(SPEC.md sections 14 and 18.4): it skips committed records that no
+longer validate and reports them as corrupt descriptors while the last
+valid snapshot keeps the previous readable interface, it reports every
+artifact a saved reference names but storage lacks, each one
+individually, it marks previous active jobs and pending timers
+interrupted, it reconciles every ``staging/<run-id>`` tree against the
+committed publication receipts, and it records the explicit rerun and
+recovery actions a host may offer. The pass executes nothing: an
+unknown stored version refuses to open with files preserved, and
+uncertain Python effects are never rerun. Its report is exposed as
+``service.recovery_report`` and in the ``recovery`` view of
+``workspace.inspect``.
 """
 
 from __future__ import annotations
@@ -163,6 +176,8 @@ from runtime.compiler.compiler import CompileRequest, compile_document
 from runtime.execution import launch_run, materialize_script, write_run_manifest
 from runtime.execution.launcher import MeltLaunchError
 from runtime.storage import PlatformAdapter, WorkspaceStore
+from runtime.storage.errors import WorkspaceFormatError
+from runtime.storage.workspace import HEADER_KIND
 from runtime.workspace.importer import (
     MeasuredArtifact,
     MeltImportError,
@@ -212,6 +227,14 @@ from runtime.workspace.publication import (
     verify_staged_outputs,
 )
 from runtime.workspace.reader import MeltReaderError, PageQuery, read_table_page
+from runtime.workspace.recovery import (
+    CorruptRecordNote,
+    RecoveryReport,
+    empty_report,
+    missing_artifact_diagnostics,
+    reconcile_staging,
+    recovery_offers,
+)
 from runtime.workspace.registry import (
     EnvironmentCatalog,
     KnownEnvironment,
@@ -399,6 +422,9 @@ class WorkspaceService:
         self._clock = clock or default_clock
         self._tokens = TokenStore(state.workspace_id, store.artifacts)
         self._client: "dict | None" = None
+        # The startup pass fills this in; direct construction starts
+        # from an empty report.
+        self._recovery = empty_report()
 
     # ------------------------------------------------------------------
     # Opening and teardown
@@ -422,44 +448,34 @@ class WorkspaceService:
 
         store = WorkspaceStore.open(platform, workspace_id, node=node)
         try:
-            (
-                state,
-                receipts,
-                notifications,
-                runs,
-                imports,
-                registrations,
-                grants,
-                output_groups,
-                pending_intents,
-                publications,
-            ) = _load_state(store)
+            restored = _load_state(store)
         except BaseException:
             store.close()
             raise
         service = cls(
             store,
-            state,
-            receipts,
-            notifications,
-            runs=runs,
+            restored.state,
+            restored.receipts,
+            restored.notifications,
+            runs=restored.runs,
             source_catalog=source_catalog,
             action_registry=action_registry,
-            imports=imports,
-            registrations=registrations,
+            imports=restored.imports,
+            registrations=restored.registrations,
             environments=environments,
-            grants=grants,
-            output_groups=output_groups,
-            pending_intents=pending_intents,
-            publications=publications,
+            grants=restored.grants,
+            output_groups=restored.output_groups,
+            pending_intents=restored.pending_intents,
+            publications=restored.publications,
             frame_limit=frame_limit,
             limits=limits,
             clock=clock,
         )
-        # Startup steps 5 and 9.3: active jobs and pending timers do not
-        # survive a restart as runnable work. Marking is durable, so a
-        # later restart finds nothing to mark again.
-        service._mark_restart_interrupted()
+        try:
+            service._recovery = service._startup_recovery(restored.corrupt_records)
+        except BaseException:
+            service.close()
+            raise
         return service
 
     def close(self) -> None:
@@ -599,6 +615,21 @@ class WorkspaceService:
         """
 
         return dict(self._publications)
+
+    @property
+    def recovery_report(self) -> dict:
+        """What the startup recovery pass found and did (SPEC.md 14).
+
+        The wire shape of :class:`~runtime.workspace.recovery
+        .RecoveryReport`: corrupt descriptors skipped while loading,
+        missing artifacts reported individually, the runs and intents
+        the restart marked interrupted, the staging trees
+        reconciliation removed or kept, and the explicit rerun and
+        recovery actions a host may offer. The same view rides the
+        unfiltered ``workspace.inspect`` result.
+        """
+
+        return self._recovery.wire()
 
     def output_group_status(self) -> dict[str, dict]:
         """The result status of every output group (SPEC.md 13.5).
@@ -1418,7 +1449,12 @@ class WorkspaceService:
         receipt. The diagnostics recompile the committed document
         against the current trusted inputs, so a registration or
         artifact that drifted is named while the saved definitions stay
-        readable (SPEC.md sections 7.2 and 12.4).
+        readable (SPEC.md sections 7.2 and 12.4). Artifacts a saved
+        reference names but storage lacks are reported individually,
+        live on every inspection, exactly as startup reported them
+        (SPEC.md section 14, step 4). The unfiltered view also carries
+        the startup recovery report, so a host can offer its explicit
+        rerun and recovery actions.
         """
 
         parsed = _parsed_payload(envelope)
@@ -1438,6 +1474,15 @@ class WorkspaceService:
         diagnostics = current_diagnostics(
             self._state, self._source_catalog, self._action_registry
         )
+        diagnostics.extend(
+            model_to_wire(item)
+            for item in missing_artifact_diagnostics(
+                self._state.document,
+                self._store.artifacts,
+                self._registrations,
+            )
+        )
+        diagnostics.sort(key=lambda item: (item.get("path", ""), item.get("code", "")))
         result = snapshot_result(
             self._state,
             self._runs,
@@ -1446,6 +1491,8 @@ class WorkspaceService:
             ids=parsed.ids,
             output_groups=self.output_group_status(),
         )
+        if parsed.collection is None:
+            result["recovery"] = self._recovery.wire()
         return OkResponse(
             requestId=envelope.requestId,
             ok=True,
@@ -2525,7 +2572,9 @@ class WorkspaceService:
         self._notifications.append(notification)
         self._adopt_scheduling(records)
 
-    def _mark_restart_interrupted(self) -> None:
+    def _mark_restart_interrupted(
+        self,
+    ) -> "tuple[list[RunRecord], list[PendingIntentRecord]]":
         """Mark active jobs and pending timers interrupted (SPEC.md 14).
 
         Startup step 5 and section 9.3: a restart never executes or
@@ -2533,23 +2582,66 @@ class WorkspaceService:
         timer-running intents become ``interrupted`` in one durable
         transaction; an approval-required request keeps waiting for its
         host approval, because no work of its own was in flight.
+        Returns the marked records, so the recovery report can name
+        what the restart interrupted.
         """
 
         now = _utc_now()
         records = AdmissionRecords()
+        marked_runs: list[RunRecord] = []
+        marked_intents: list[PendingIntentRecord] = []
         for run_id in sorted(self._runs):
             run = self._runs[run_id]
             if run.state in ACTIVE_RUN_STATES:
-                records.runs.append(
-                    run.model_copy(
-                        update={"state": "interrupted", "updatedAt": now}
-                    )
+                interrupted = run.model_copy(
+                    update={"state": "interrupted", "updatedAt": now}
                 )
+                records.runs.append(interrupted)
+                marked_runs.append(interrupted)
         for group in sorted(self._pending_intents):
             intent = self._pending_intents[group]
             if intent.status == "pending":
-                records.intents.append(interrupt_intent(intent, now=now))
+                interrupted = interrupt_intent(intent, now=now)
+                records.intents.append(interrupted)
+                marked_intents.append(interrupted)
         self._commit_scheduling(records)
+        return marked_runs, marked_intents
+
+    def _startup_recovery(
+        self, corrupt_records: "Sequence[CorruptRecordNote]"
+    ) -> RecoveryReport:
+        """Run the startup recovery pass of SPEC.md section 14.
+
+        Steps 4 through 7 on top of the restored records: mark previous
+        active jobs and pending timers interrupted (step 5), report
+        every artifact a saved reference names but storage lacks, each
+        one individually (step 4), reconcile the ``staging/<run-id>``
+        trees against the committed publication receipts (step 6), and
+        record the explicit rerun and recovery actions a host may offer
+        (step 7). The pass executes no project code and repairs
+        nothing: damage is reported, files are preserved, and
+        unacknowledged work stays available for an explicit retry
+        (SPEC.md section 18.4).
+        """
+
+        marked_runs, marked_intents = self._mark_restart_interrupted()
+        missing = missing_artifact_diagnostics(
+            self._state.document, self._store.artifacts, self._registrations
+        )
+        verdicts = reconcile_staging(
+            self._store.layout, self._runs, self._publications
+        )
+        offers = recovery_offers(marked_intents, verdicts, self._runs)
+        return RecoveryReport(
+            corrupt_records=tuple(corrupt_records),
+            missing_artifacts=tuple(missing),
+            interrupted_runs=tuple(run.runId for run in marked_runs),
+            interrupted_intents=tuple(
+                intent.intentRef for intent in marked_intents
+            ),
+            staging=tuple(verdicts),
+            offered_actions=tuple(offers),
+        )
 
     # ------------------------------------------------------------------
     # Launch (SPEC.md sections 13.1 and 13.2)
@@ -2863,7 +2955,11 @@ class WorkspaceService:
         the previous table and plot remain together. A verified but
         obsolete run archives as historical output with a superseded
         disposition; it never overwrites the current sources (section
-        13.3).
+        13.3). An operational failure while finalizing the artifacts —
+        a full disk above all — aborts the attempt before any
+        transaction: nothing commits, the run keeps its staged outputs
+        and its eligibility, and a retry after the fault clears
+        reconciles them (SPEC.md section 18.4).
         """
 
         run = self._runs.get(run_id)
@@ -2936,9 +3032,32 @@ class WorkspaceService:
         # Step 2: synchronize the staged files into their immutable
         # content-addressed paths. A crash from here on can leave
         # unreferenced files, never referenced missing ones (SPEC.md
-        # sections 13.4 and 14).
-        for name in sorted(verified):
-            self._store.artifacts.write(verified[name].payload)
+        # sections 13.4 and 14). An operational write failure — a full
+        # disk above all — aborts the attempt before any transaction:
+        # nothing commits, the run stays eligible, and a retry after
+        # the fault clears reconciles the same staged outputs (SPEC.md
+        # section 18.4).
+        try:
+            for name in sorted(verified):
+                self._store.artifacts.write(verified[name].payload)
+        except OSError as error:
+            return PublicationOutcome(
+                run_id=run_id,
+                outcome=NOT_PUBLISHABLE,
+                refusal=(
+                    _diagnostic(
+                        DiagnosticCode.ARTIFACT,
+                        "/outputs",
+                        f"finalizing the staged outputs of run"
+                        f" {run_id!r} failed operationally: {error}",
+                        hint="Free disk space and retry the publication;"
+                        " nothing was committed and the previous"
+                        " results remain together (SPEC.md section"
+                        " 18.4).",
+                    ),
+                ),
+                commit_sequence=self._state.commit_sequence,
+            )
 
         # Step 3: recheck every eligibility condition inside the owning
         # transaction (SPEC.md sections 13.3 and 13.5).
@@ -3840,20 +3959,48 @@ class WorkspaceService:
 # ---------------------------------------------------------------------------
 
 
-def _load_state(
-    store: WorkspaceStore,
-) -> tuple[
-    WorkspaceState,
-    dict[str, dict],
-    list[dict],
-    dict[str, RunRecord],
-    SourceCatalog,
-    dict[str, RegistrationRecord],
-    dict[str, PermissionGrantRecord],
-    dict[str, OutputGroupRecord],
-    dict[str, PendingIntentRecord],
-    dict[str, PublicationRecord],
-]:
+LOADED_RECORD_KINDS = frozenset(
+    {
+        SNAPSHOT_KIND,
+        RECEIPT_KIND,
+        NOTIFICATION_KIND,
+        RUN_KIND,
+        ARTIFACT_KIND,
+        REGISTRATION_KIND,
+        PERMISSION_KIND,
+        OUTPUT_GROUP_KIND,
+        PENDING_INTENT_KIND,
+        PUBLICATION_KIND,
+    }
+)
+"""The record kinds the loader reads; anything else refuses the open."""
+
+
+@dataclass(frozen=True)
+class RestoredState:
+    """Everything the record stream rebuilt on open (SPEC.md section 14).
+
+    ``corrupt_records`` names the committed records that failed
+    validation and were skipped: the last snapshot that still validates
+    keeps the previous readable interface, and the recovery pass
+    reports the damage instead of failing the workspace (SPEC.md
+    sections 14 step 3 and 18.4).
+    """
+
+    state: WorkspaceState
+    receipts: dict[str, dict]
+    notifications: list[dict]
+    runs: dict[str, RunRecord]
+    imports: SourceCatalog
+    registrations: dict[str, RegistrationRecord]
+    grants: dict[str, PermissionGrantRecord]
+    output_groups: dict[str, OutputGroupRecord]
+    pending_intents: dict[str, PendingIntentRecord]
+    publications: dict[str, PublicationRecord]
+    corrupt_records: tuple[CorruptRecordNote, ...] = ()
+
+
+def _load_state(store: WorkspaceStore) -> RestoredState:
     """Rebuild the current state from the committed record stream.
 
     The verified artifact records rebuild the imported source catalog,
@@ -3871,6 +4018,15 @@ def _load_state(
     rebuild the publication history a recovery reconciles staging trees
     against (section 14, startup step 6), all without executing
     anything.
+
+    A committed record that fails validation is a corrupt descriptor:
+    the loader skips it and reports it, so the last valid snapshot
+    preserves the readable interface (SPEC.md section 18.4). A record
+    that reports an unsupported stored version — an unknown record
+    kind or record type, an unsupported record schema version, or a
+    snapshot in an unknown language — refuses the whole open with
+    files preserved instead (section 14: never silently migrate,
+    reset, or overwrite).
     """
 
     latest_snapshot = None
@@ -3883,44 +4039,75 @@ def _load_state(
     output_groups: dict[str, OutputGroupRecord] = {}
     pending_intents: dict[str, PendingIntentRecord] = {}
     publications: dict[str, PublicationRecord] = {}
+    corrupt: list[CorruptRecordNote] = []
     for record in store.records():
-        if record.kind == SNAPSHOT_KIND:
-            latest_snapshot = record
-        elif record.kind == RECEIPT_KIND:
-            receipt = parse_record(record.data)
-            receipts[receipt.requestId] = dict(record.data)
-        elif record.kind == NOTIFICATION_KIND:
-            parse_record(record.data)
-            notifications.append(dict(record.data))
-        elif record.kind == RUN_KIND:
-            run = parse_record(record.data)
-            runs[run.runId] = run
-        elif record.kind == ARTIFACT_KIND:
-            artifact = parse_record(record.data)
-            artifacts[artifact.artifact] = CatalogArtifact.model_validate(
-                {
-                    "path": f"artifacts/{artifact.artifact[len('sha256:') :]}",
-                    "kind": artifact.kind,
-                    "mediaType": artifact.mediaType,
-                    "byteLength": artifact.byteLength,
-                    "schema": model_to_wire(artifact.schema),
-                }
+        if record.kind == HEADER_KIND:
+            # The workspace header belongs to the storage layer and is
+            # negotiated there, not loaded here.
+            continue
+        if record.kind not in LOADED_RECORD_KINDS:
+            # A record kind this service cannot read was written by a
+            # newer service: refuse with files preserved instead of
+            # silently dropping stored data (SPEC.md section 14).
+            raise WorkspaceFormatError(
+                store.workspace_id,
+                f"committed record {record.kind!r} at entry"
+                f" {record.id} has a type this service does not read",
             )
-        elif record.kind == REGISTRATION_KIND:
-            registration = parse_record(record.data)
-            registrations[registration.registrationId] = registration
-        elif record.kind == PERMISSION_KIND:
-            grant = parse_record(record.data)
-            grants[grant.grantId] = grant
-        elif record.kind == OUTPUT_GROUP_KIND:
-            group = parse_record(record.data)
-            output_groups[group.outputGroup] = group
-        elif record.kind == PENDING_INTENT_KIND:
-            intent = parse_record(record.data)
-            pending_intents[intent.outputGroup] = intent
-        elif record.kind == PUBLICATION_KIND:
-            publication = parse_record(record.data)
-            publications[publication.publicationId] = publication
+        if record.kind == SNAPSHOT_KIND:
+            # Refuses an unknown stored language before anything else,
+            # and its refusal is not a descriptor the loop could skip.
+            _check_snapshot_language(store.workspace_id, record)
+        try:
+            if record.kind == SNAPSHOT_KIND:
+                parse_record(record.data)
+                latest_snapshot = record
+            elif record.kind == RECEIPT_KIND:
+                receipt = parse_record(record.data)
+                receipts[receipt.requestId] = dict(record.data)
+            elif record.kind == NOTIFICATION_KIND:
+                parse_record(record.data)
+                notifications.append(dict(record.data))
+            elif record.kind == RUN_KIND:
+                run = parse_record(record.data)
+                runs[run.runId] = run
+            elif record.kind == ARTIFACT_KIND:
+                artifact = parse_record(record.data)
+                artifacts[artifact.artifact] = CatalogArtifact.model_validate(
+                    {
+                        "path": f"artifacts/{artifact.artifact[len('sha256:') :]}",
+                        "kind": artifact.kind,
+                        "mediaType": artifact.mediaType,
+                        "byteLength": artifact.byteLength,
+                        "schema": model_to_wire(artifact.schema),
+                    }
+                )
+            elif record.kind == REGISTRATION_KIND:
+                registration = parse_record(record.data)
+                registrations[registration.registrationId] = registration
+            elif record.kind == PERMISSION_KIND:
+                grant = parse_record(record.data)
+                grants[grant.grantId] = grant
+            elif record.kind == OUTPUT_GROUP_KIND:
+                group = parse_record(record.data)
+                output_groups[group.outputGroup] = group
+            elif record.kind == PENDING_INTENT_KIND:
+                intent = parse_record(record.data)
+                pending_intents[intent.outputGroup] = intent
+            elif record.kind == PUBLICATION_KIND:
+                publication = parse_record(record.data)
+                publications[publication.publicationId] = publication
+        except MeltSchemaError as error:
+            _refuse_or_note_version_error(store.workspace_id, record, error)
+            first = error.diagnostics[0]
+            corrupt.append(
+                CorruptRecordNote(
+                    entry_id=record.id,
+                    kind=record.kind,
+                    code=str(first.code),
+                    message=first.message,
+                )
+            )
     imports = SourceCatalog(artifacts)
     if latest_snapshot is None:
         state = WorkspaceState(
@@ -3928,45 +4115,76 @@ def _load_state(
             epoch=store.epoch,
             commit_sequence=store.commit_sequence,
         )
-        return (
-            state,
-            receipts,
-            notifications,
-            runs,
-            imports,
-            registrations,
-            grants,
-            output_groups,
-            pending_intents,
-            publications,
+    else:
+        snapshot = parse_record(latest_snapshot.data)
+        state = WorkspaceState(
+            workspace_id=store.workspace_id,
+            epoch=store.epoch,
+            commit_sequence=store.commit_sequence,
+            document=model_to_wire(snapshot.document),
+            entity_revisions=dict(snapshot.entityRevisions),
+            parameter_states={
+                parameter_id: ParameterStateValue(
+                    value=stored.value, revision=stored.revision
+                )
+                for parameter_id, stored in snapshot.parameterStates.items()
+            },
+            incarnations=dict(snapshot.incarnations),
         )
-    snapshot = parse_record(latest_snapshot.data)
-    state = WorkspaceState(
-        workspace_id=store.workspace_id,
-        epoch=store.epoch,
-        commit_sequence=store.commit_sequence,
-        document=model_to_wire(snapshot.document),
-        entity_revisions=dict(snapshot.entityRevisions),
-        parameter_states={
-            parameter_id: ParameterStateValue(
-                value=stored.value, revision=stored.revision
-            )
-            for parameter_id, stored in snapshot.parameterStates.items()
-        },
-        incarnations=dict(snapshot.incarnations),
+    return RestoredState(
+        state=state,
+        receipts=receipts,
+        notifications=notifications,
+        runs=runs,
+        imports=imports,
+        registrations=registrations,
+        grants=grants,
+        output_groups=output_groups,
+        pending_intents=pending_intents,
+        publications=publications,
+        corrupt_records=tuple(corrupt),
     )
-    return (
-        state,
-        receipts,
-        notifications,
-        runs,
-        imports,
-        registrations,
-        grants,
-        output_groups,
-        pending_intents,
-        publications,
-    )
+
+
+def _check_snapshot_language(workspace_id: str, record) -> None:
+    """Refuse a snapshot stored in an unknown language version.
+
+    The language of a snapshot is readable before its full payload is
+    validated, so the check runs first: an unknown language opens the
+    recovery screen with files preserved instead of masquerading as a
+    corrupt descriptor the loader could skip (SPEC.md section 14).
+    """
+
+    language = record.data.get("language") if isinstance(record.data, dict) else None
+    if language is not None and language != LANGUAGE_VERSION:
+        raise WorkspaceFormatError(
+            workspace_id,
+            "the committed snapshot stores language"
+            f" {language!r}, but this service compiles"
+            f" {LANGUAGE_VERSION!r}",
+        )
+
+
+def _refuse_or_note_version_error(
+    workspace_id: str, record, error: MeltSchemaError
+) -> None:
+    """Turn version-class failures into a refusal that preserves files.
+
+    A skipped record is fine when its bytes went bad, but a record a
+    newer service wrote — an unknown record type or an unsupported
+    record schema version — must not be silently dropped: the stored
+    data is unreadable, so the open refuses with ``E_VERSION`` and the
+    database stays untouched for recovery mode (SPEC.md section 14).
+    """
+
+    for item in error.diagnostics:
+        if item.code == DiagnosticCode.VERSION:
+            raise WorkspaceFormatError(
+                workspace_id,
+                f"committed record {record.kind!r} at entry"
+                f" {record.id} reports an unsupported stored version:"
+                f" {item.message}",
+            ) from error
 
 
 def _snapshot_wire(

@@ -134,10 +134,12 @@ class PublicationOutcome:
 
     ``outcome`` is ``current``, ``superseded``, ``rejected``, or
     ``not-publishable``. A ``not-publishable`` attempt changed nothing:
-    the run never reached a successful terminal state, or it holds no
-    captured registration. ``refusal`` carries the diagnostics of a
-    rejection; ``outputs`` carries the source references an archived or
-    current publication allocated.
+    the run never reached a successful terminal state, it holds no
+    captured registration, or its finalization failed operationally —
+    a full disk above all — which leaves the run eligible for a retry
+    once the fault clears (SPEC.md section 18.4). ``refusal`` carries
+    the diagnostics of a rejection; ``outputs`` carries the source
+    references an archived or current publication allocated.
     """
 
     run_id: str
