@@ -5,6 +5,11 @@ __pycache__/
 build/
 dist/
 
+# Raw output of the round 1 benchmark runs (backlog task T023). The
+# recorded measurement of each run lives under docs/performance; every
+# scratch rerun writes under build/, which stays ignored.
+build/benchmarks/
+
 # Virtual environments
 .venv/
 venv/

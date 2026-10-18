@@ -369,6 +369,21 @@ uncertain Python effect ever reruns after a restart. Entry points:
   reconciliation and `missing_artifact_diagnostics` for the
   individual reports
 
+The round 1 performance measurements of SPEC.md section 19 are
+recorded (backlog task T023). `scripts/benchmark_round1.py` measures
+compilation of a generated 32-projection document against the cached
+fixture catalogs, the framed service commits of a bound parameter edit
+and a small definition patch with its notification, `publish_run` of a
+succeeded run, and `table.page` over a generated 1,000,000-row,
+20-column table, warm and with a dropped kernel page cache, plus the
+full-table sort section 19 reports separately. It also times reopening
+a saved five-pane workspace through the framed channel. The recorded
+run, its environment declaration, and the comparison against every
+section 19 target live in `docs/performance/round-1-linux.md` with the
+raw JSON beside it; rerun with `make benchmark-round1`. Entry point:
+
+- `scripts/benchmark_round1.py` (or `make benchmark-round1`)
+
 ## Command-line compiler
 
 `melt validate` and `melt compile` are the fixture and diagnostics
