@@ -79,7 +79,14 @@ MANUAL_BINDING = {
 
 
 def notes_registry() -> ActionRegistry:
-    """The registry the seeded action maps onto, with a parameter slot."""
+    """The registry the seeded action maps onto, with a parameter slot.
+
+    The fixture entries cite the admission facts of SPEC.md section 7.3
+    — a script hash and an environment fingerprint — so an admission
+    against them captures a full invocation snapshot. The stored bytes
+    do not exist, so such an admission can never launch; launching
+    belongs to the scheduling suite, which registers real scripts.
+    """
 
     contract = RegistrationContract.model_validate(
         {
@@ -99,8 +106,20 @@ def notes_registry() -> ActionRegistry:
     )
     return ActionRegistry(
         {
-            "notes-script-v1": RegistrationEntry("notes-script-v1", 1, contract),
-            "lean-script-v1": RegistrationEntry("lean-script-v1", 1, lean),
+            "notes-script-v1": RegistrationEntry(
+                "notes-script-v1",
+                1,
+                contract,
+                script_artifact="sha256:" + "2b" * 32,
+                environment_fingerprint="cpython-3.12",
+            ),
+            "lean-script-v1": RegistrationEntry(
+                "lean-script-v1",
+                1,
+                lean,
+                script_artifact="sha256:" + "3c" * 32,
+                environment_fingerprint="cpython-3.12",
+            ),
         }
     )
 
@@ -368,15 +387,33 @@ def test_a_project_grant_answers_the_authority_decision(service_adapter: Platfor
         assert result["status"] == "granted"
         assert result["permissionDecision"] == grant.grantId
         assert result["requiredPermission"] == "execute_project_code"
-        # Authority is not execution: no run exists, none was claimed.
-        assert result["admission"] == "pending-scheduler"
-        assert service.runs == {}
+        # The granted activation admits a real queued run in the same
+        # transaction: a full invocation snapshot, a reserved
+        # generation, and the permission decision on the record
+        # (SPEC.md sections 7.3 and 13.1).
+        run_summary = result["run"]
+        assert run_summary["state"] == "queued"
+        assert run_summary["generation"] == 1
+        assert run_summary["permissionDecision"] == grant.grantId
+        run = service.runs[run_summary["runId"]]
+        assert run.actionId == "summarize"
+        assert run.actionRevision == 1
+        assert run.registrationId == "notes-script-v1"
+        assert run.registrationRevision == 1
+        assert run.scriptArtifact == "sha256:" + "2b" * 32
+        assert run.environmentFingerprint == "cpython-3.12"
+        assert run.outputGroup == "notes-group"
+        assert run.outputGroupRevision == 1
+        assert run.permissionDecision == grant.grantId
+        assert service.output_groups["notes-group"].generation == 1
         assert service.commit_sequence == sequence + 1
-        # The receipt replays the same authority answer.
+        # The receipt replays the same admission answer: one admitted
+        # run, never two (SPEC.md section 12.6).
         replay = activate(service, "02-activate")
         assert replay.ok, replay.errors
         assert replay.result["permissionDecision"] == grant.grantId
         assert service.commit_sequence == sequence + 1
+        assert list(service.runs) == [run.runId]
 
 
 def test_a_project_grant_covers_only_its_registration(service_adapter: PlatformAdapter):

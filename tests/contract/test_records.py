@@ -59,6 +59,8 @@ def test_record_types_are_versioned():
         "registration",
         "permissionGrant",
         "artifact",
+        "outputGroup",
+        "pendingIntent",
         "parameterState",
         "commandReceipt",
         "snapshot",
@@ -98,6 +100,99 @@ def test_run_record_rejects_unknown_fields():
 
 def test_run_record_rejects_non_finite_parameters():
     assert codes(run_record())[0:0] == []
+
+
+# ---------------------------------------------------------------------------
+# OutputGroupRecord and PendingIntentRecord (SPEC.md sections 9.3, 13.1)
+# ---------------------------------------------------------------------------
+
+
+def output_group_record(**overrides) -> dict:
+    record = {
+        "recordType": "outputGroup",
+        "schemaVersion": 1,
+        "outputGroup": "sales-results",
+        "workspaceId": "sales-demo",
+        "generation": 4,
+        "revision": 2,
+        "createdAt": NOW,
+        "updatedAt": NOW,
+    }
+    record.update(overrides)
+    return record
+
+
+def test_output_group_record_round_trips():
+    record = parse_record(output_group_record())
+    assert record.generation == 4
+    assert record.revision == 2
+    assert parse_record(record_to_wire(record)) == record
+
+
+def test_output_group_generation_starts_at_zero_and_grows():
+    assert codes(output_group_record(generation=0)) == []
+    assert codes(output_group_record(generation=-1)) == [
+        ("E_SCHEMA", "/outputGroup/generation")
+    ]
+    assert codes(output_group_record(revision=0)) == [
+        ("E_SCHEMA", "/outputGroup/revision")
+    ]
+
+
+def pending_intent_record(**overrides) -> dict:
+    record = {
+        "recordType": "pendingIntent",
+        "schemaVersion": 1,
+        "intentRef": "meltintent_example",
+        "workspaceId": "sales-demo",
+        "actionId": "analyze-sales",
+        "actionRevision": 1,
+        "registrationId": "sales-script-v1",
+        "registrationRevision": 3,
+        "scriptArtifact": HASH,
+        "environmentFingerprint": "cpython-3.12",
+        "outputGroup": "sales-results",
+        "outputGroupRevision": 1,
+        "generation": 2,
+        "parameters": {"minimum": {"value": 200, "revision": 4}},
+        "parameterIds": {"minimum": "minimum"},
+        "inputs": {"sales": {"sourceId": "sales-input", "version": 2}},
+        "debounceMs": 250,
+        "dueAt": "2026-10-18T00:00:00.250Z",
+        "status": "pending",
+        "origin": "user",
+        "createdAt": NOW,
+        "updatedAt": NOW,
+    }
+    record.update(overrides)
+    return record
+
+
+def test_pending_intent_record_round_trips():
+    record = parse_record(pending_intent_record())
+    assert record.status == "pending"
+    assert record.dueAt == "2026-10-18T00:00:00.250Z"
+    assert parse_record(record_to_wire(record)) == record
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["pending", "approvalRequired", "dispatched", "interrupted", "expired"],
+)
+def test_pending_intent_statuses_are_accepted(status):
+    assert parse_record(pending_intent_record(status=status)).status == status
+
+
+def test_pending_intent_rejects_unknown_status_and_origin():
+    assert codes(pending_intent_record(status="running")) == [
+        ("E_TYPE", "/pendingIntent/status")
+    ]
+    assert codes(pending_intent_record(origin="agent")) == [
+        ("E_TYPE", "/pendingIntent/origin")
+    ]
+    assert codes(pending_intent_record(dueAt="2026-10-18 00:00:00Z")) == [
+        ("E_SCHEMA", "/pendingIntent/dueAt")
+    ]
 
 
 # ---------------------------------------------------------------------------

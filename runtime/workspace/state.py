@@ -48,6 +48,12 @@ REGISTRATION_KIND = "melt.registration"
 PERMISSION_KIND = "melt.permissionGrant"
 """The committed record that holds one execution grant (section 15.1)."""
 
+OUTPUT_GROUP_KIND = "melt.outputGroup"
+"""The committed record that holds one output group's counters (13.1)."""
+
+PENDING_INTENT_KIND = "melt.pendingIntent"
+"""The committed record that holds one pending request (section 9.3)."""
+
 SOURCE_COLLECTION = "sources"
 """The source collection: service-owned, not a mutation target (12.2)."""
 
@@ -122,6 +128,37 @@ def permission_path(grant_id: str) -> str:
     """
 
     return f"{PERMISSION_COLLECTION}/{grant_id}"
+
+
+OUTPUT_GROUP_COLLECTION = "outputGroups"
+"""The output group collection: service-owned, never a mutation target.
+
+    Generations and output group revisions belong to the scheduler alone
+    (SPEC.md sections 9.3 and 13.3), so their record paths appear in
+    change notifications but never in a mutation operation or an
+    ``expected`` map.
+    """
+
+
+INTENT_COLLECTION = "intents"
+"""The pending intent collection: service-owned, never a mutation target.
+
+    The service owns the debounce timers and the pending requests
+    (SPEC.md section 9.3), so intent record paths appear in change
+    notifications but never in a document collection.
+    """
+
+
+def output_group_path(output_group: str) -> str:
+    """Return the record path of one output group's counters."""
+
+    return f"{OUTPUT_GROUP_COLLECTION}/{output_group}"
+
+
+def intent_path(intent_ref: str) -> str:
+    """Return the record path of one pending intent."""
+
+    return f"{INTENT_COLLECTION}/{intent_ref}"
 
 
 def pointer_key(path: str) -> str:
@@ -214,10 +251,14 @@ class WorkspaceState:
 __all__ = [
     "ARTIFACT_KIND",
     "ENTITY_COLLECTIONS",
+    "INTENT_COLLECTION",
     "LAYOUT_PATH",
     "NOTIFICATION_KIND",
+    "OUTPUT_GROUP_COLLECTION",
+    "OUTPUT_GROUP_KIND",
     "PERMISSION_COLLECTION",
     "PERMISSION_KIND",
+    "PENDING_INTENT_KIND",
     "ParameterStateValue",
     "RECEIPT_KIND",
     "REGISTRATION_COLLECTION",
@@ -227,6 +268,8 @@ __all__ = [
     "SOURCE_COLLECTION",
     "WorkspaceState",
     "entity_path",
+    "intent_path",
+    "output_group_path",
     "permission_path",
     "pointer_key",
     "registration_path",

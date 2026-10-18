@@ -15,8 +15,8 @@ Two boundaries of this package exist today:
   environment, the private staging directory as working directory, and
   bounded run logs. :func:`launch_run` writes the versioned manifest,
   materializes the captured script, and spawns ``python -m
-  melt.runner``. Scheduling and admission belong to the workspace
-  service (backlog task T016).
+  melt.runner``. Scheduling, admission, and the pre-launch rechecks
+  belong to the workspace service (backlog task T016).
 """
 
 from __future__ import annotations

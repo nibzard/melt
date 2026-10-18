@@ -1207,6 +1207,26 @@ def test_invalid_envelopes_answer_with_salvaged_request_ids(
         {
             "protocolVersion": 1,
             "workspaceId": WORKSPACE,
+            "requestId": "01-page",
+            "method": "table.page",
+            "payload": {
+                "source": {"sourceId": "sales", "version": 1},
+                "offset": 0,
+                "limit": 10,
+            },
+        }
+    ).encode("utf-8")
+    answer = service.handle_request(payload)
+    assert answer.ok is False
+    assert [(error.code, error.path) for error in answer.errors] == [
+        ("E_SCHEMA", "/method")
+    ]
+    # Manual invocation is answered now (backlog task T016): the
+    # request passes method dispatch and reports the missing workspace.
+    payload = json.dumps(
+        {
+            "protocolVersion": 1,
+            "workspaceId": WORKSPACE,
             "requestId": "01-invoke",
             "method": "action.invoke",
             "payload": {"actionId": "analyze-sales"},
@@ -1215,7 +1235,7 @@ def test_invalid_envelopes_answer_with_salvaged_request_ids(
     answer = service.handle_request(payload)
     assert answer.ok is False
     assert [(error.code, error.path) for error in answer.errors] == [
-        ("E_SCHEMA", "/method")
+        ("E_REFERENCE", "/workspaceId")
     ]
     # Action registration is answered now (backlog task T013): the
     # request passes method dispatch and reports the missing workspace.

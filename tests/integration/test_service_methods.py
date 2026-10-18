@@ -97,11 +97,26 @@ MANUAL_BINDING = {
 
 
 def notes_registry() -> ActionRegistry:
+    """The fixture registry the seeded action maps onto.
+
+    The entry cites the admission facts of SPEC.md section 7.3 so an
+    admission against it captures a full invocation snapshot; no stored
+    script bytes exist behind the hash, so such a run can never launch.
+    """
+
     contract = RegistrationContract.model_validate(
         {"parameters": {}, "inputs": {}, "outputs": {"notes": "text"}}
     )
     return ActionRegistry(
-        {"notes-script-v1": RegistrationEntry("notes-script-v1", 1, contract)}
+        {
+            "notes-script-v1": RegistrationEntry(
+                "notes-script-v1",
+                1,
+                contract,
+                script_artifact="sha256:" + "2b" * 32,
+                environment_fingerprint="cpython-3.12",
+            )
+        }
     )
 
 
@@ -697,8 +712,20 @@ def test_preview_reports_controller_replacements(service_adapter: PlatformAdapte
     )
     registry = ActionRegistry(
         {
-            "notes-script-v1": RegistrationEntry("notes-script-v1", 1, contract),
-            "lean-script-v1": RegistrationEntry("lean-script-v1", 1, lean),
+            "notes-script-v1": RegistrationEntry(
+                "notes-script-v1",
+                1,
+                contract,
+                script_artifact="sha256:" + "2b" * 32,
+                environment_fingerprint="cpython-3.12",
+            ),
+            "lean-script-v1": RegistrationEntry(
+                "lean-script-v1",
+                1,
+                lean,
+                script_artifact="sha256:" + "3c" * 32,
+                environment_fingerprint="cpython-3.12",
+            ),
         }
     )
     wide_action = notes_action(
@@ -1138,6 +1165,35 @@ def seeded_run_service(
     return WorkspaceService.open(adapter, WORKSPACE, action_registry=registry)
 
 
+def admit_queued_run(
+    service: WorkspaceService, request_id: str = "01-admit-run"
+) -> str:
+    """Admit one queued run through the button under a project grant.
+
+    The real admission path of T016 replaces the seeded run records
+    these tests used before: the run arrives with its invocation
+    snapshot and a reserved generation (SPEC.md sections 7.3 and 13.1).
+    """
+
+    service.grant_execution_permission(
+        kind="projectExecution",
+        registration_id="notes-script-v1",
+        granted_by="host-permission-control/run-approval",
+    )
+    response = service.dispatch(
+        envelope(
+            request_id,
+            method="control.activate",
+            expected={"projections/notes": 1, "bindings/manual-run": 1},
+            payload={"projectionId": "notes", "controlId": "run"},
+        )
+    )
+    assert response.ok, response.errors
+    run = response.result["run"]
+    assert run["state"] == "queued"
+    return run["runId"]
+
+
 def test_run_inspect_returns_the_run_and_its_outputs(service_adapter: PlatformAdapter):
     outputs = {"notes": {"sourceId": "notes-out", "version": 3}}
     with seed_definitions(service_adapter, registry=notes_registry()):
@@ -1183,39 +1239,65 @@ def test_run_inspect_returns_the_run_and_its_outputs(service_adapter: PlatformAd
 def test_run_cancel_is_idempotent_and_needs_no_expectation(
     service_adapter: PlatformAdapter,
 ):
-    with seed_definitions(service_adapter, registry=notes_registry()):
-        pass
-    service = seeded_run_service(
-        service_adapter, run_record_wire("01-run-a", state="queued"), registry=notes_registry()
+    with seed_definitions(service_adapter, registry=notes_registry()) as service:
+        interrupted_run = admit_queued_run(service)
+    reopened = WorkspaceService.open(
+        service_adapter, WORKSPACE, action_registry=notes_registry()
     )
     try:
-        inspect = service.dispatch(
+        # A restart marks an active job interrupted rather than
+        # resuming it (SPEC.md sections 9.3 and 14); cancellation then
+        # reports the terminal state it finds.
+        assert reopened.runs[interrupted_run].state == "interrupted"
+        inspected = reopened.dispatch(
             envelope("02-inspect", method="workspace.inspect", payload={})
         )
-        assert inspect.ok, inspect.errors
-        assert [run["runId"] for run in inspect.result["activeRuns"]] == ["01-run-a"]
+        assert inspected.ok, inspected.errors
+        assert inspected.result["activeRuns"] == []
 
-        cancelled = service.dispatch(
+        cancelled = reopened.dispatch(
             envelope(
                 "03-cancel",
                 method="run.cancel",
-                payload={"runId": "01-run-a"},
+                payload={"runId": interrupted_run},
             )
         )
         assert cancelled.ok, cancelled.errors
         assert cancelled.result == {
-            "runId": "01-run-a",
+            "runId": interrupted_run,
+            "state": "interrupted",
+            "cancellation": {"status": "notActive"},
+        }
+    finally:
+        reopened.close()
+
+    with WorkspaceService.open(
+        service_adapter, WORKSPACE, action_registry=notes_registry()
+    ) as service:
+        # A queued run inside one service lifetime cancels durably.
+        run_id = admit_queued_run(service, "06-admit-run")
+        assert service.runs[run_id].state == "queued"
+        cancelled = service.dispatch(
+            envelope(
+                "07-cancel",
+                method="run.cancel",
+                payload={"runId": run_id},
+            )
+        )
+        assert cancelled.ok, cancelled.errors
+        assert cancelled.result == {
+            "runId": run_id,
             "state": "cancelled",
             "cancellation": {"status": "cancelled"},
         }
         window = service.changes_after(cancelled.commitSequence - 1, service.epoch)
-        assert window.changes[-1]["changedRecords"] == ["runs/01-run-a"]
+        assert window.changes[-1]["changedRecords"] == [f"runs/{run_id}"]
 
         again = service.dispatch(
             envelope(
-                "04-cancel-again",
+                "08-cancel-again",
                 method="run.cancel",
-                payload={"runId": "01-run-a"},
+                payload={"runId": run_id},
             )
         )
         assert again.ok, again.errors
@@ -1225,20 +1307,18 @@ def test_run_cancel_is_idempotent_and_needs_no_expectation(
         # The replayed first request answers its stored response.
         replay = service.dispatch(
             envelope(
-                "03-cancel",
+                "07-cancel",
                 method="run.cancel",
-                payload={"runId": "01-run-a"},
+                payload={"runId": run_id},
             )
         )
         assert replay.ok, replay.errors
         assert replay.commitSequence == cancelled.commitSequence
-    finally:
-        service.close()
 
-    reopened = WorkspaceService.open(service_adapter, WORKSPACE)
+    final = WorkspaceService.open(service_adapter, WORKSPACE)
     try:
-        assert reopened.runs["01-run-a"].state == "cancelled"
-        inspected = reopened.dispatch(
+        assert final.runs[run_id].state == "cancelled"
+        inspected = final.dispatch(
             envelope(
                 "05-inspect",
                 method="workspace.inspect",
@@ -1248,7 +1328,7 @@ def test_run_cancel_is_idempotent_and_needs_no_expectation(
         assert inspected.ok, inspected.errors
         assert inspected.result["activeRuns"] == [], "a cancelled run is not active"
     finally:
-        reopened.close()
+        final.close()
 
 
 def test_run_cancel_on_a_finished_run_reports_it_is_not_active(
@@ -1288,12 +1368,8 @@ def test_run_cancel_on_a_finished_run_reports_it_is_not_active(
 
 
 def test_preview_reports_invalidated_runs(service_adapter: PlatformAdapter):
-    with seed_definitions(service_adapter, registry=notes_registry()):
-        pass
-    service = seeded_run_service(
-        service_adapter, run_record_wire("01-run-a", state="queued"), registry=notes_registry()
-    )
-    try:
+    with seed_definitions(service_adapter, registry=notes_registry()) as service:
+        run_id = admit_queued_run(service)
         # Even an equivalent action replacement invalidates its
         # admitted runs (SPEC.md section 13.3).
         replaced = service.preview(
@@ -1312,7 +1388,7 @@ def test_preview_reports_invalidated_runs(service_adapter: PlatformAdapter):
             )
         )
         assert replaced.ok, replaced.errors
-        assert replaced.result["invalidatedRuns"] == ["01-run-a"]
+        assert replaced.result["invalidatedRuns"] == [run_id]
         untouched = service.preview(
             apply_envelope(
                 "03-preview-set",
@@ -1328,12 +1404,10 @@ def test_preview_reports_invalidated_runs(service_adapter: PlatformAdapter):
             envelope(
                 "04-cancel",
                 method="run.cancel",
-                payload={"runId": "01-run-a"},
+                payload={"runId": run_id},
             )
         )
         assert cancelled.ok, cancelled.errors
-    finally:
-        service.close()
 
     seed_run_record(service_adapter, run_record_wire("01-run-b", state="succeeded"))
     historical_service = WorkspaceService.open(

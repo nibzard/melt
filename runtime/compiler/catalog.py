@@ -178,9 +178,23 @@ class ActionRegistry:
 
 
 class RegistrationEntry:
-    """One registration as the compiler consumes it."""
+    """One registration as the compiler consumes it.
 
-    __slots__ = ("registration_id", "revision", "contract", "required_permission")
+    ``script_artifact`` and ``environment_fingerprint`` are optional
+    admission facts: a committed service registration always carries
+    them, while a fixture catalog entry may cite them so an admission
+    against it can capture its invocation snapshot (SPEC.md section
+    7.3). The compiler itself never reads them.
+    """
+
+    __slots__ = (
+        "registration_id",
+        "revision",
+        "contract",
+        "required_permission",
+        "script_artifact",
+        "environment_fingerprint",
+    )
 
     def __init__(
         self,
@@ -188,11 +202,16 @@ class RegistrationEntry:
         revision: int,
         contract: RegistrationContract,
         required_permission: str = DEFAULT_REQUIRED_PERMISSION,
+        *,
+        script_artifact: "str | None" = None,
+        environment_fingerprint: "str | None" = None,
     ):
         self.registration_id = registration_id
         self.revision = revision
         self.contract = contract
         self.required_permission = required_permission
+        self.script_artifact = script_artifact
+        self.environment_fingerprint = environment_fingerprint
 
 
 EMPTY_SOURCE_CATALOG = SourceCatalog()
