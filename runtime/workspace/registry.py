@@ -329,13 +329,21 @@ def contract_of(record: RegistrationRecord) -> RegistrationContract:
 
 
 def registration_entry_of(record: RegistrationRecord) -> RegistrationEntry:
-    """Return the registry entry one committed registration rebuilds."""
+    """Return the registry entry one committed registration rebuilds.
+
+    The entry carries the admission facts of the record — the script
+    artifact hash and the resolved environment fingerprint — so a
+    merged registry answers the invocation-snapshot facts of SPEC.md
+    section 7.3 for its committed registrations as well.
+    """
 
     return RegistrationEntry(
         record.registrationId,
         record.revision,
         contract_of(record),
         record.requiredPermission,
+        script_artifact=record.script.artifact,
+        environment_fingerprint=record.environmentFingerprint,
     )
 
 

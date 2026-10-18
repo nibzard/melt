@@ -149,15 +149,15 @@ reports diagnostics, affected records, controller replacements, state
 resets, invalidated runs, and the candidate document hash without
 writing. `workspace.subscribe` answers ordered changes or the
 successful snapshot-required status. `control.activate` routes a button
-press through its binding under projection and binding revisions; with
-the permission grant missing it answers the successful
-approval-required admission result, which grants nothing and reports no
-execution. `run.cancel` and `run.inspect` answer and update run records
+press through its binding under projection and binding revisions, and
+`action.invoke` invokes an action manually under its expected action
+revision; both admit through the scheduling core of backlog task T016.
+`run.cancel` and `run.inspect` answer and update run records
 idempotently. Artifact and script tokens are minted by the host capture
 operation: opaque, workspace-scoped handles that expire after
 15 minutes (`service.capture_artifact_token` and
-`service.redeem_artifact_token`). Manual invocation and table paging
-arrive with their owning backlog tasks (T016 and T012).
+`service.redeem_artifact_token`). Table paging arrives with its owning
+backlog task (T012).
 
 `runtime/workspace` also implements the artifact store registration and
 source import of backlog task T011 (SPEC.md sections 5 and 12.6).
@@ -207,16 +207,16 @@ command envelope method, document field, or registration contract can
 grant anything. Admission rechecks the grant set before anything runs:
 a missing grant answers the successful approval-required result with
 the captured intent a host approval binds to, and a covering grant
-answers the authority decision without admitting a run. The launch and
-publication paths recheck again through `authority_at_launch` and
-`authority_at_publication` (`service.execution_authority_for_run`),
-where revocation blocks publication immediately and requests
-cancellation. Model credentials never reach a project process: launch
-sites build child environments through
-`runtime.execution.project_process_environment` and guard them with
-`assert_no_model_credentials`. The default limit table of section 15.2
-is enforced with `E_LIMIT` diagnostics that name the resource and the
-allowed bound across the schema, command, frame, and import layers;
+admits a real run through the scheduling core of backlog task T016.
+The launch and publication paths recheck again through
+`authority_at_launch` and `authority_at_publication`
+(`service.execution_authority_for_run`), where revocation blocks
+publication immediately and requests cancellation. Model credentials
+never reach a project process: launch sites build child environments
+through `runtime.execution.project_process_environment` and guard them
+with `assert_no_model_credentials`. The default limit table of section
+15.2 is enforced with `E_LIMIT` diagnostics that name the resource and
+the allowed bound across the schema, command, frame, and import layers;
 the table page bound lands with its owning subsystem (T012).
 
 `python/melt/sdk` and `python/melt/runner` implement the Python SDK and
@@ -245,6 +245,37 @@ Entry points:
 - `python -m melt.runner <manifest-file>` inside the spawned process
 - `runtime.execution.launch_run(manifest, log_directory=...)`
 - `runtime.execution.write_run_manifest` and `materialize_script`
+
+`runtime/workspace` also implements scheduling, snapshots, and
+generations (backlog task T016, SPEC.md sections 7.3, 9.3, and 13.1).
+Every admission captures the full invocation snapshot — registration
+revision, script hash, environment fingerprint, input source
+references, parameter values with their state revisions, action
+revision, output group revision, generation, and permission decision —
+and reserves its generation in the admitting transaction, so older
+runs stop being eligible for current publication the moment the
+transaction commits, not when a timer fires. Bindings that a committed
+user change fires coalesce into one pending intent per action with the
+final parameter values; repeated events replace the intent and restart
+its timer, and the debounce timers live in the service
+(`service.dispatch_due_intents`). A dispatch rechecks definitions and
+authority: a stale action, registration, or output group expires the
+intent, and an approval dispatches only the exact captured intent it
+covers, pinned by generation and output group revision. Launch wraps
+`runtime.execution.launch_run` with the pre-launch rechecks —
+permission, registration availability, and the resolved environment
+fingerprint against the admission snapshot — and drives one project
+execution at a time per workspace
+(`service.launch_admitted_run`, `service.launch_next_run`). A restart
+marks pending timers and active jobs interrupted, keeps the reserved
+generations, and never executes anything on its own. Entry points:
+
+- `service.dispatch_due_intents(now_epoch=...)` to fire due timers
+- `service.launch_admitted_run(run_id)` and `service.launch_next_run()`
+- `service.output_groups`, `service.pending_intents`, and
+  `service.run_is_newest_generation(run_id)`
+- `service.dispatch_as(envelope, origin="programmatic")` for the agent
+  event origin, which commits changes without firing bindings
 
 ## Contract fixtures
 

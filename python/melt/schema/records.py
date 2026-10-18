@@ -123,6 +123,70 @@ class RunRecord(RecordBase):
     updatedAt: Timestamp
 
 
+class OutputGroupRecord(RecordBase):
+    """The scheduling counters of one output group (sections 7.3, 13.3).
+
+    The service reserves a monotonically increasing `generation` for
+    every qualifying event of the group, in the same transaction that
+    admits an intent or commits the triggering user change. A generation
+    is never reused, and an older run stops being eligible for current
+    publication the moment a newer generation exists. `revision` is the
+    output group revision: it starts at 1 and increments when targets,
+    target kinds, output contracts, or ownership change.
+    """
+
+    recordType: Literal["outputGroup"]
+    outputGroup: EntityId
+    workspaceId: EntityId
+    generation: NonNegativeSafeInt
+    revision: PositiveSafeInt
+    createdAt: Timestamp
+    updatedAt: Timestamp
+
+
+IntentStatus = Literal[
+    "pending", "approvalRequired", "dispatched", "interrupted", "expired"
+]
+"""The life of one pending request: awaiting its timer or its approval,
+dispatched into a run, interrupted by a restart, or expired because a
+newer request replaced it or its definitions went stale."""
+
+
+class PendingIntentRecord(RecordBase):
+    """One pending request of an output group (sections 9.3 and 13.1).
+
+    The service owns the debounce timers, so the newest pending intent
+    of each output group is persisted with its captured invocation
+    snapshot and its due time. A repeated event replaces this record and
+    restarts its timer; a restart marks it interrupted instead of
+    executing it. The captured values are immutable from the moment they
+    are captured: the dispatched run receives exactly them.
+    """
+
+    recordType: Literal["pendingIntent"]
+    intentRef: OpaqueId
+    workspaceId: EntityId
+    actionId: EntityId
+    actionRevision: PositiveSafeInt
+    registrationId: OpaqueId
+    registrationRevision: PositiveSafeInt
+    scriptArtifact: ArtifactHash
+    environmentFingerprint: NonEmptyStr
+    outputGroup: EntityId
+    outputGroupRevision: PositiveSafeInt
+    generation: PositiveSafeInt
+    parameters: dict[EntityId, CapturedParameter] = Field(default_factory=dict)
+    parameterIds: dict[EntityId, EntityId] = Field(default_factory=dict)
+    inputs: dict[EntityId, SourceReference] = Field(default_factory=dict)
+    debounceMs: NonNegativeSafeInt
+    dueAt: Timestamp
+    status: IntentStatus
+    origin: Literal["user", "programmatic"]
+    reason: str = ""
+    createdAt: Timestamp
+    updatedAt: Timestamp
+
+
 class ScriptArtifact(MeltModel):
     """A captured script artifact reference."""
 
@@ -422,6 +486,8 @@ MeltRecord = Union[
     RegistrationRecord,
     PermissionGrantRecord,
     ArtifactRecord,
+    OutputGroupRecord,
+    PendingIntentRecord,
     ParameterState,
     CommandReceipt,
     Snapshot,
@@ -435,6 +501,8 @@ RECORD_TYPES: dict[str, int] = {
     "registration": RECORD_SCHEMA_VERSION,
     "permissionGrant": RECORD_SCHEMA_VERSION,
     "artifact": RECORD_SCHEMA_VERSION,
+    "outputGroup": RECORD_SCHEMA_VERSION,
+    "pendingIntent": RECORD_SCHEMA_VERSION,
     "parameterState": RECORD_SCHEMA_VERSION,
     "commandReceipt": RECORD_SCHEMA_VERSION,
     "snapshot": RECORD_SCHEMA_VERSION,
@@ -521,11 +589,14 @@ __all__ = [
     "ChangeNotification",
     "CommandReceipt",
     "GrantKind",
+    "IntentStatus",
     "MeltRecord",
     "MeltRecordError",
+    "OutputGroupRecord",
     "PageRequest",
     "PageResponse",
     "ParameterState",
+    "PendingIntentRecord",
     "PermissionGrantRecord",
     "RECORD_SCHEMA_VERSION",
     "RECORD_TYPES",

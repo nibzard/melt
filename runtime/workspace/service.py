@@ -58,6 +58,18 @@ publication paths recheck it again, where revocation blocks
 publication and requests cancellation. A grant never enters a
 document, a snapshot, or a compiler input.
 
+The service also owns scheduling (SPEC.md sections 7.3, 9.3, and 13.1).
+Every admission captures the full invocation snapshot, reserves its
+generation in the admitting transaction, and stores one pending intent
+per output group; the reservation alone makes older runs ineligible for
+current publication. Bindings that a committed user change fires
+coalesce into one intent with the final parameter values, debounce
+timers live in the service, and repeated events replace the pending
+intent and restart its timer. Launch rechecks permission, registration
+availability, and the resolved environment fingerprint immediately
+before the fresh process starts, and a restart marks pending work
+interrupted rather than executing it.
+
 The service is the sole writer: it holds the workspace ``owner.lock``
 through a :class:`~runtime.storage.WorkspaceStore` and commits each
 transaction as one atomic append on the owning connection. Because the
@@ -103,6 +115,9 @@ from melt.schema.document import Document, document_semantic_diagnostics
 from melt.schema.limits import DEFAULT_LIMITS, ServiceLimits, limits_wire
 from melt.schema.records import (
     RECORD_SCHEMA_VERSION,
+    CapturedParameter,
+    OutputGroupRecord,
+    PendingIntentRecord,
     PermissionGrantRecord,
     RegistrationRecord,
     RunRecord,
@@ -117,6 +132,8 @@ from runtime.compiler.catalog import (
     SourceCatalog,
 )
 from runtime.compiler.compiler import CompileRequest, compile_document
+from runtime.execution import launch_run, materialize_script, write_run_manifest
+from runtime.execution.launcher import MeltLaunchError
 from runtime.storage import PlatformAdapter, WorkspaceStore
 from runtime.workspace.importer import (
     MeasuredArtifact,
@@ -148,6 +165,7 @@ from runtime.workspace.permissions import (
     mint_grant_id,
     mint_intent_id,
     permission_error,
+    revocation_blocks,
 )
 from runtime.workspace.registry import (
     EnvironmentCatalog,
@@ -155,16 +173,39 @@ from runtime.workspace.registry import (
     MeltRegistrationError,
     build_registration,
     contract_of,
+    local_environment,
     registration_entry_of,
     registration_identity,
     registration_to_wire,
     register_script,
     validate_contract,
 )
+from runtime.workspace.scheduling import (
+    AdmissionRecords,
+    InvocationSnapshot,
+    RunLaunchOutcome,
+    build_pending_intent,
+    build_run_record,
+    bump_group_revision,
+    changed_output_groups,
+    default_clock,
+    due_intents,
+    expire_intent,
+    intent_definition_error,
+    interrupt_intent,
+    is_newest_generation,
+    mint_run_id,
+    reserve_generation,
+    timestamp_of,
+    triggered_actions,
+    value_changed_parameters,
+)
 from runtime.workspace.state import (
     ARTIFACT_KIND,
     LAYOUT_PATH,
     NOTIFICATION_KIND,
+    OUTPUT_GROUP_KIND,
+    PENDING_INTENT_KIND,
     PERMISSION_KIND,
     RECEIPT_KIND,
     REGISTRATION_KIND,
@@ -181,6 +222,7 @@ from runtime.workspace.state import (
     state_path,
 )
 from runtime.workspace.tokens import CapturedArtifact, TokenStore
+from melt.runner.manifest import build_manifest
 
 SNAPSHOT_REQUIRED = "snapshot-required"
 """The status a subscription returns when ordered changes cannot be sent."""
@@ -207,13 +249,12 @@ REVISION_PRECONDITION_METHODS = frozenset(
 """The methods whose envelope may carry an expected map (section 12.6)."""
 
 UNANSWERED_METHODS = frozenset(
-    ("action.invoke", "table.page")
+    ("table.page",)
 )
 """Methods this service does not answer yet.
 
-Each arrives with the subsystem that owns it: invocation scheduling
-and the trusted table reader. Until then the methods are refused,
-never silently accepted.
+The trusted table reader is the remaining subsystem (backlog task
+T012). Until it lands the method is refused, never silently accepted.
 """
 
 ACTIVE_RUN_STATES = ("queued", "running")
@@ -279,8 +320,11 @@ class WorkspaceService:
         registrations: "Mapping[str, RegistrationRecord] | None" = None,
         environments: "Mapping[str, str] | None" = None,
         grants: "Mapping[str, PermissionGrantRecord] | None" = None,
+        output_groups: "Mapping[str, OutputGroupRecord] | None" = None,
+        pending_intents: "Mapping[str, PendingIntentRecord] | None" = None,
         frame_limit: int | None = None,
         limits: ServiceLimits = DEFAULT_LIMITS,
+        clock: "Callable[[], float] | None" = None,
     ):
         self._store = store
         self._state = state
@@ -297,10 +341,20 @@ class WorkspaceService:
         self._action_registry = self._merge_registry()
         self._environments = EnvironmentCatalog(environments)
         self._grants: dict[str, PermissionGrantRecord] = dict(grants or {})
+        self._output_groups: dict[str, OutputGroupRecord] = dict(
+            output_groups or {}
+        )
+        # One pending request per output group: the slot holds the
+        # newest intent of the group, whatever its status (SPEC.md
+        # section 13.1).
+        self._pending_intents: dict[str, PendingIntentRecord] = dict(
+            pending_intents or {}
+        )
         self._limits = limits
         self._frame_limit = (
             DEFAULT_LIMITS.control_frame_bytes if frame_limit is None else frame_limit
         )
+        self._clock = clock or default_clock
         self._tokens = TokenStore(state.workspace_id, store.artifacts)
         self._client: "dict | None" = None
 
@@ -320,6 +374,7 @@ class WorkspaceService:
         frame_limit: int | None = None,
         limits: ServiceLimits = DEFAULT_LIMITS,
         node: str | None = None,
+        clock: "Callable[[], float] | None" = None,
     ) -> "WorkspaceService":
         """Take ownership of one workspace and restore its state."""
 
@@ -333,11 +388,13 @@ class WorkspaceService:
                 imports,
                 registrations,
                 grants,
+                output_groups,
+                pending_intents,
             ) = _load_state(store)
         except BaseException:
             store.close()
             raise
-        return cls(
+        service = cls(
             store,
             state,
             receipts,
@@ -349,9 +406,17 @@ class WorkspaceService:
             registrations=registrations,
             environments=environments,
             grants=grants,
+            output_groups=output_groups,
+            pending_intents=pending_intents,
             frame_limit=frame_limit,
             limits=limits,
+            clock=clock,
         )
+        # Startup steps 5 and 9.3: active jobs and pending timers do not
+        # survive a restart as runnable work. Marking is durable, so a
+        # later restart finds nothing to mark again.
+        service._mark_restart_interrupted()
+        return service
 
     def close(self) -> None:
         """Stop the owning connection and release the lock. Idempotent."""
@@ -456,6 +521,41 @@ class WorkspaceService:
 
         return dict(self._grants)
 
+    @property
+    def output_groups(self) -> dict[str, OutputGroupRecord]:
+        """Every output group's counters, keyed by output group ID.
+
+        The generation is the newest reserved request number of the
+        group; a run holds current eligibility only while its captured
+        generation equals it (SPEC.md sections 7.3 and 9.3).
+        """
+
+        return dict(self._output_groups)
+
+    @property
+    def pending_intents(self) -> dict[str, PendingIntentRecord]:
+        """The newest pending intent of every output group.
+
+        One pending request exists per output group. Repeated events
+        replace the slot; a restart marks a timer-running intent
+        interrupted instead of executing it (SPEC.md sections 9.3 and
+        13.1).
+        """
+
+        return dict(self._pending_intents)
+
+    def run_is_newest_generation(self, run_id: str) -> bool:
+        """Report whether one run holds its group's newest generation."""
+
+        run = self._runs.get(run_id)
+        if run is None:
+            raise permission_error(
+                f"run {run_id!r} does not exist",
+                "/runId",
+                code=DiagnosticCode.REFERENCE,
+            )
+        return is_newest_generation(self._output_groups, run)
+
     def known_environments(self) -> dict[str, KnownEnvironment]:
         """The environments this service may register scripts against."""
 
@@ -498,13 +598,17 @@ class WorkspaceService:
     # Method dispatch (SPEC.md section 12.6)
     # ------------------------------------------------------------------
 
-    def dispatch(self, envelope: CommandEnvelope) -> CommandResponse:
+    def dispatch(
+        self, envelope: CommandEnvelope, *, origin: str = "user"
+    ) -> CommandResponse:
         """Route one parsed envelope to the handler of its method.
 
         Every method except the session handshake addresses the
         workspace this service owns. Only methods with revision
         preconditions may carry ``expected``; the envelope model keeps
-        operation methods and payload methods apart.
+        operation methods and payload methods apart. ``origin`` is the
+        event origin of the caller: the host channel speaks for the
+        local user (SPEC.md sections 2.2 and 9.1).
         """
 
         if envelope.method == "session.hello":
@@ -544,17 +648,19 @@ class WorkspaceService:
                 ),
             )
         handlers: dict[str, Callable[[CommandEnvelope], CommandResponse]] = {
-            "workspace.apply": self.apply,
             "workspace.preview": self.preview,
             "workspace.create": self._workspace_create,
             "workspace.inspect": self._workspace_inspect,
             "workspace.subscribe": self._workspace_subscribe,
             "source.import": self._source_import,
             "action.register": self._action_register,
+            "action.invoke": self._action_invoke,
             "control.activate": self._control_activate,
             "run.cancel": self._run_cancel,
             "run.inspect": self._run_inspect,
         }
+        if envelope.method == "workspace.apply":
+            return self.apply(envelope, origin=origin)
         handler = handlers.get(envelope.method)
         if handler is None:  # pragma: no cover - the method set is closed
             return _rejected(
@@ -569,11 +675,42 @@ class WorkspaceService:
         return handler(envelope)
 
     # ------------------------------------------------------------------
+    # Event origin (SPEC.md sections 2.2 and 9.1)
+    # ------------------------------------------------------------------
+
+    def dispatch_as(
+        self, envelope: CommandEnvelope, *, origin: str
+    ) -> CommandResponse:
+        """Route one envelope under an explicit event origin.
+
+        The transport supplies caller identity: the framed host channel
+        speaks for the local user, while an agent adapter proposes the
+        same commands as programmatic changes. Bindings observe
+        committed user changes only (SPEC.md section 9.2), so the origin
+        decides whether a parameter change may start an action.
+        """
+
+        if origin not in ("user", "programmatic"):
+            raise ValueError(
+                f"origin {origin!r} is neither 'user' nor 'programmatic'"
+            )
+        return self.dispatch(envelope, origin=origin)
+
+    # ------------------------------------------------------------------
     # Mutations (SPEC.md sections 12.2, 12.3, 12.5)
     # ------------------------------------------------------------------
 
-    def apply(self, envelope: CommandEnvelope) -> CommandResponse:
-        """Apply one ``workspace.apply`` transaction."""
+    def apply(
+        self, envelope: CommandEnvelope, *, origin: str = "user"
+    ) -> CommandResponse:
+        """Apply one ``workspace.apply`` transaction.
+
+        The origin derives from the authenticated caller (SPEC.md
+        section 9.1): the host channel speaks for the local user, and
+        only a committed user change fires the ``parameter.changed``
+        bindings of the candidate (section 9.2). A programmatic change
+        commits the same state without emitting any event.
+        """
 
         if envelope.workspaceId != self._state.workspace_id:
             return _rejected(
@@ -608,8 +745,30 @@ class WorkspaceService:
         )
         if not plan.ok:
             return _rejected(envelope.requestId, *plan.diagnostics)
+        admission = None
+        if origin == "user":
+            # A committed user change reserves its generations in this
+            # same transaction (SPEC.md sections 9.3 and 13.1). Invalid
+            # edits never reach this point: the plan already rejected
+            # them, so nothing was committed, reserved, or scheduled.
+            changed = value_changed_parameters(
+                plan.new_states, plan.touched_state_paths
+            )
+            triggers = triggered_actions(plan.candidate, changed)
+            if triggers:
+                # The triggered admissions capture the world this
+                # transaction commits: the group revisions it bumps and
+                # the action revisions it writes.
+                bumps = self._group_revision_bumps(plan.candidate)
+                admission = self._plan_triggered_admissions(
+                    plan, triggers, self._clock(), bumps
+                )
         return self._commit(
-            envelope.requestId, envelope.method, payload_hash, plan
+            envelope.requestId,
+            envelope.method,
+            payload_hash,
+            plan,
+            admission=admission,
         )
 
     def preview(self, envelope: CommandEnvelope) -> CommandResponse:
@@ -830,8 +989,17 @@ class WorkspaceService:
         plan: MutationPlan,
         *,
         result_of: "Callable[[WorkspaceState], dict] | None" = None,
+        admission: "AdmissionRecords | None" = None,
     ) -> CommandResponse:
-        """Commit one planned transaction atomically or not at all."""
+        """Commit one planned transaction atomically or not at all.
+
+        The scheduling records of the same transaction ride along: the
+        generations a triggering user change reserved, the intents it
+        admitted, and the output group revisions the mutation bumped.
+        Everything lands in one atomic append, so a restart never sees a
+        committed parameter change without the generation it reserves
+        (SPEC.md sections 9.3 and 13.1).
+        """
 
         # The compiler read set is checked again at commit (SPEC.md 12.2):
         # an intervening mutation to any read record conflicts without
@@ -850,7 +1018,13 @@ class WorkspaceService:
                     ),
                 )
 
-        changed = plan.changed_records()
+        scheduling = admission or AdmissionRecords()
+        scheduling = AdmissionRecords(
+            groups=[*scheduling.groups, *self._group_revision_bumps(plan.candidate)],
+            intents=list(scheduling.intents),
+            runs=list(scheduling.runs),
+        )
+        changed = sorted(set(plan.changed_records() + scheduling.changed_paths()))
         predicted = self._state.commit_sequence + 1
         new_revisions = plan.new_revisions(self._state)
         for parameter_id, state_value in plan.new_states.items():
@@ -887,10 +1061,19 @@ class WorkspaceService:
                 "changedRecords": changed,
                 "revisions": dict(sorted(new_revisions.items())),
             }
+            # The admissions a triggering user change fired ride in the
+            # same transaction; an uneventful one reports none.
+            admitted = [
+                self._admission_summary(item)
+                for item in scheduling.intents
+                if item.status != "expired"
+            ]
+            if admitted:
+                result["admissions"] = admitted
         else:
             result = result_of(new_state)
         active = tuple(record_to_wire(run) for run in active_run_records(self._runs))
-        return self._append_transaction(
+        response = self._append_transaction(
             request_id,
             method,
             payload_hash,
@@ -905,7 +1088,62 @@ class WorkspaceService:
                     ),
                 )
             ],
+            trailing_records=self._scheduling_records(scheduling),
         )
+        self._adopt_scheduling(scheduling)
+        return response
+
+    def _group_revision_bumps(self, candidate: dict) -> list[OutputGroupRecord]:
+        """Return the bumped records of groups whose contract changed.
+
+        The output group revision increments when targets, target kinds,
+        output contracts, or ownership change (SPEC.md section 13.3). A
+        group without a record yet starts at revision one when it is
+        first admitted against, so only existing records are bumped
+        here. A projection title or a layout change never appears in
+        the comparison.
+        """
+
+        bumps: list[OutputGroupRecord] = []
+        now = _utc_now()
+        for group_id in sorted(
+            changed_output_groups(self._state.document, candidate)
+        ):
+            existing = self._output_groups.get(group_id)
+            if existing is not None:
+                bumps.append(
+                    bump_group_revision(
+                        existing,
+                        output_group=group_id,
+                        workspace_id=self._state.workspace_id,
+                        now=now,
+                    )
+                )
+        return bumps
+
+    def _scheduling_records(
+        self, scheduling: AdmissionRecords
+    ) -> "list[tuple[str, dict]]":
+        """Return the trailing record pairs one admission commits."""
+
+        records: list[tuple[str, dict]] = []
+        for group in scheduling.groups:
+            records.append((OUTPUT_GROUP_KIND, record_to_wire(group)))
+        for intent in scheduling.intents:
+            records.append((PENDING_INTENT_KIND, record_to_wire(intent)))
+        for run in scheduling.runs:
+            records.append((RUN_KIND, record_to_wire(run)))
+        return records
+
+    def _adopt_scheduling(self, scheduling: AdmissionRecords) -> None:
+        """Adopt the scheduling records of one committed transaction."""
+
+        for group in scheduling.groups:
+            self._output_groups[group.outputGroup] = group
+        for intent in scheduling.intents:
+            self._pending_intents[intent.outputGroup] = intent
+        for run in scheduling.runs:
+            self._runs[run.runId] = run
 
     def _append_transaction(
         self,
@@ -988,6 +1226,7 @@ class WorkspaceService:
         *,
         changed: "Sequence[str]" = (),
         run_records: "Sequence[RunRecord]" = (),
+        admission: "AdmissionRecords | None" = None,
     ) -> OkResponse:
         """Commit one processed request with its receipt.
 
@@ -995,23 +1234,36 @@ class WorkspaceService:
         replays the stored answer and reuse with different content fails
         (SPEC.md sections 12.5 and 12.6). The transaction advances the
         commit sequence once even when it changed no record; it appends
-        one notification only when records changed.
+        one notification only when records changed. The scheduling
+        records of an admission ride along in the same atomic append.
         """
 
+        scheduling = admission or AdmissionRecords()
+        all_changed = sorted(
+            set(
+                [
+                    *changed,
+                    *(run_path(run.runId) for run in run_records),
+                    *scheduling.changed_paths(),
+                ]
+            )
+        )
         new_state = self._state.with_commit(self._state.commit_sequence + 1)
         response = self._append_transaction(
             request_id,
             method,
             payload_hash,
             new_state,
-            changed=changed,
+            changed=all_changed,
             result=result,
             trailing_records=[
                 (RUN_KIND, record_to_wire(run)) for run in run_records
-            ],
+            ]
+            + self._scheduling_records(scheduling),
         )
         for run in run_records:
             self._runs[run.runId] = run
+        self._adopt_scheduling(scheduling)
         return response
 
     # ------------------------------------------------------------------
@@ -1431,12 +1683,14 @@ class WorkspaceService:
         The activation needs the projection revision and the revision of
         every binding that connects the control to an action (SPEC.md
         section 12.6). A control without a binding is a reported no-op.
-        A bound activation is admitted against the permission grant set:
-        a covering live grant answers the authority decision, while a
-        missing grant answers the successful ``approvalRequired``
-        result with the captured intent the host approval binds to. It
-        is an admission state, never a permission grant and never a
-        claimed execution (SPEC.md sections 12.6, 13.1, and 15.1).
+        A bound activation is admitted in one transaction that reserves
+        the generation, captures the invocation snapshot, and stores the
+        pending intent. A covering live grant dispatches the immediately
+        due intent into a minted run; a missing grant answers the
+        successful ``approvalRequired`` result with the captured intent
+        the host approval binds to. That is an admission state, never a
+        permission grant and never a claimed execution (SPEC.md sections
+        12.6, 13.1, and 15.1).
         """
 
         payload_hash = canonical_hash(model_to_wire(envelope))
@@ -1533,15 +1787,352 @@ class WorkspaceService:
 
         binding_id, binding = matching[0]
         action_id = binding["effect"]["action"]
-        action = document["actions"].get(action_id)
-        if action is None:
+        return self._admit_action(
+            action_id,
+            origin=origin,
+            debounce_ms=int(binding.get("debounceMs", 0)),
+            request_id=envelope.requestId,
+            method=envelope.method,
+            payload_hash=payload_hash,
+            context={"binding": binding_id},
+            action_not_found_path=f"/bindings/{binding_id}/effect/action",
+        )
+
+    def _action_invoke(self, envelope: CommandEnvelope) -> CommandResponse:
+        """Invoke one action manually (SPEC.md sections 12.6 and 13.1).
+
+        A manual invocation reserves a generation just like a bound
+        event and requires ``expected["actions/<id>"]``. It carries no
+        debounce: an admitted and granted invocation dispatches in the
+        admitting transaction itself. Admission deduplicates both
+        manual and bound invocations through the request receipt.
+        """
+
+        payload_hash = canonical_hash(model_to_wire(envelope))
+        replay = self._replay_or_reject(envelope.requestId, payload_hash)
+        if replay is not None:
+            return replay
+        parsed = _parsed_payload(envelope)
+        if isinstance(parsed, MeltCommandError):
+            return _rejected(envelope.requestId, *parsed.diagnostics)
+        if not self._state.present:
             return _rejected(
                 envelope.requestId,
                 _diagnostic(
                     DiagnosticCode.REFERENCE,
-                    f"/bindings/{binding_id}/effect/action",
-                    f"binding {binding_id!r} targets action"
-                    f" {action_id!r}, which does not exist",
+                    "/workspaceId",
+                    f"workspace {self._state.workspace_id!r} holds no"
+                    " document; create the workspace before invoking an"
+                    " action",
+                ),
+            )
+        record = entity_path("actions", parsed.actionId)
+        diagnostics = expectation_diagnostics(
+            self._state, dict(envelope.expected or {}), [record]
+        )
+        if diagnostics:
+            return _rejected(envelope.requestId, *sorted_diagnostics(diagnostics))
+        return self._admit_action(
+            parsed.actionId,
+            origin="user",
+            debounce_ms=0,
+            request_id=envelope.requestId,
+            method=envelope.method,
+            payload_hash=payload_hash,
+            context={},
+            action_not_found_path="/payload/actionId",
+        )
+
+    # ------------------------------------------------------------------
+    # Admission, debounce, and generations (SPEC.md sections 7.3, 9.3, 13.1)
+    # ------------------------------------------------------------------
+
+    def _captured_parameters(
+        self,
+        action: Mapping,
+        new_states: "Mapping[str, ParameterStateValue] | None" = None,
+    ) -> dict:
+        """Return the parameter values an admission of this action captures.
+
+        A user action captures all mapped parameter values when its
+        pending intent is updated (SPEC.md section 9.3); the captured
+        values and revisions ride with the intent, so the approval shows
+        exactly what would run. A mutation-triggered admission passes
+        the states its own transaction is committing, so coalesced
+        bindings capture the final values (section 13.1).
+        """
+
+        captured: dict = {}
+        for name, mapping in sorted(action.get("parameters", {}).items()):
+            parameter_id = mapping["parameter"]
+            stored = None
+            if new_states is not None and parameter_id in new_states:
+                stored = new_states[parameter_id]
+            else:
+                stored = self._state.parameter_states.get(parameter_id)
+            captured[name] = {
+                "parameter": parameter_id,
+                "value": None if stored is None else stored.value,
+                "stateRevision": 0 if stored is None else stored.revision,
+            }
+        return captured
+
+    def _registration_facts(self, registration_id: str, registration) -> "tuple[str | None, str | None]":
+        """Return the admission facts of one registration.
+
+        A committed registration record is authoritative; a fixture
+        registry entry may cite the same facts so an admission against
+        it can capture its snapshot (SPEC.md section 7.3).
+        """
+
+        record = self._registrations.get(registration_id)
+        if record is not None:
+            return record.script.artifact, record.environmentFingerprint
+        return (
+            registration.script_artifact,
+            registration.environment_fingerprint,
+        )
+
+    def _admission_snapshot(
+        self,
+        action_id: str,
+        action: Mapping,
+        registration,
+        group_revision: int,
+        generation: int,
+        *,
+        new_states: "Mapping[str, ParameterStateValue] | None" = None,
+        action_revision: "int | None" = None,
+    ) -> "InvocationSnapshot | Diagnostic":
+        """Capture the invocation snapshot of one admission (section 7.3).
+
+        Returns the snapshot, or the diagnostic that names the missing
+        fact. The registration must expose its script hash and its
+        resolved environment fingerprint: a committed registration
+        always carries both, and a fixture registry entry may cite them.
+        ``action_revision`` overrides the committed revision for an
+        admission planned inside a transaction that replaces the action.
+        """
+
+        registration_id = action["implementation"]["registrationId"]
+        script_artifact, fingerprint = self._registration_facts(
+            registration_id, registration
+        )
+        if script_artifact is None or fingerprint is None:
+            return _diagnostic(
+                DiagnosticCode.REGISTRATION,
+                f"/actions/{action_id}/implementation/registrationId",
+                f"registration {registration_id!r} carries no captured"
+                " script hash or environment fingerprint, so an admitted"
+                " run could not snapshot it",
+                hint="Register the script through action.register, or"
+                " cite its admission facts in the trusted registry.",
+            )
+        captured = self._captured_parameters(action, new_states)
+        return InvocationSnapshot(
+            action_id=action_id,
+            action_revision=(
+                self._state.current_revision(entity_path("actions", action_id))
+                if action_revision is None
+                else action_revision
+            ),
+            registration_id=registration_id,
+            registration_revision=registration.revision,
+            script_artifact=script_artifact,
+            environment_fingerprint=fingerprint,
+            output_group=action["outputGroup"],
+            output_group_revision=group_revision,
+            generation=generation,
+            parameters={
+                name: CapturedParameter(
+                    value=item["value"], revision=item["stateRevision"]
+                )
+                for name, item in captured.items()
+            },
+            parameter_ids={
+                name: item["parameter"] for name, item in captured.items()
+            },
+            inputs={
+                name: dict(reference)
+                for name, reference in sorted(action.get("inputs", {}).items())
+            },
+        )
+
+    def _plan_triggered_admissions(
+        self,
+        plan: MutationPlan,
+        triggers: "Mapping[str, int]",
+        now_epoch: float,
+        group_bumps: "Sequence[OutputGroupRecord]" = (),
+    ) -> AdmissionRecords:
+        """Plan the admissions one committed user change triggers.
+
+        Several bindings that target one action arrive coalesced into
+        one entry, so one intent with the final parameter values of the
+        transaction is admitted per action (SPEC.md section 13.1). The
+        records commit with the mutation in one transaction, and every
+        captured revision is the revision this transaction writes.
+        """
+
+        records = AdmissionRecords()
+        group_view = {
+            **self._output_groups,
+            **{bump.outputGroup: bump for bump in group_bumps},
+        }
+        action_revisions = {
+            path[len("actions/") :]: revision
+            for path, revision in plan.new_revisions(self._state).items()
+            if path.startswith("actions/")
+        }
+        for action_id in sorted(triggers):
+            self._plan_one_admission(
+                plan.candidate["actions"][action_id],
+                action_id,
+                debounce_ms=triggers[action_id],
+                origin="user",
+                now_epoch=now_epoch,
+                records=records,
+                new_states=plan.new_states,
+                group_view=group_view,
+                action_revision=action_revisions.get(action_id),
+            )
+        return records
+
+    def _plan_one_admission(
+        self,
+        action: Mapping,
+        action_id: str,
+        *,
+        debounce_ms: int,
+        origin: str,
+        now_epoch: float,
+        records: AdmissionRecords,
+        new_states: "Mapping[str, ParameterStateValue] | None" = None,
+        group_view: "Mapping[str, OutputGroupRecord] | None" = None,
+        action_revision: "int | None" = None,
+    ) -> "PendingIntentRecord | None":
+        """Plan one admission into the given record set.
+
+        Reserves the generation of the action's output group, expires
+        the pending intent the new request replaces, captures the
+        invocation snapshot, checks authority, and appends the pending
+        intent plus, for an immediately due granted admission, the run
+        record. The caller commits every appended record atomically.
+        """
+
+        now = timestamp_of(now_epoch)
+        workspace_id = self._state.workspace_id
+        group_id = action["outputGroup"]
+        groups = self._output_groups if group_view is None else group_view
+        group, generation = reserve_generation(
+            groups.get(group_id), group_id, workspace_id, now
+        )
+        records.groups.append(group)
+        entry = self._action_registry.entry(
+            action["implementation"]["registrationId"]
+        )
+        if entry is None:
+            # The registration left the trusted registry, so the
+            # trigger admits nothing. The generation stays reserved: a
+            # qualifying event reserved it, and no older run may still
+            # claim to be current (SPEC.md section 9.3).
+            return None
+        snapshot_or_error = self._admission_snapshot(
+            action_id,
+            action,
+            entry,
+            group.revision,
+            generation,
+            new_states=new_states,
+            action_revision=action_revision,
+        )
+        if isinstance(snapshot_or_error, Diagnostic):
+            # The registration carries no admission facts, so the
+            # trigger admits nothing for the same reason.
+            return None
+        snapshot = snapshot_or_error
+        replaced = self._pending_intents.get(group_id)
+        if replaced is not None and replaced.status in (
+            "pending",
+            "approvalRequired",
+        ):
+            records.intents.append(
+                expire_intent(replaced, reason="replaced", now=now)
+            )
+        intent_ref = mint_intent_id()
+        decision = authority_at_admission(
+            self._grants,
+            required_permission=entry.required_permission,
+            registration_id=snapshot.registration_id,
+            registration_revision=snapshot.registration_revision,
+            action_id=snapshot.action_id,
+            action_revision=snapshot.action_revision,
+            output_group=snapshot.output_group,
+            output_group_revision=snapshot.output_group_revision,
+            generation=snapshot.generation,
+            intent_id=intent_ref,
+        )
+        due_at_epoch = now_epoch + debounce_ms / 1000
+        granted = decision.granted and debounce_ms == 0
+        status = "dispatched" if granted else (
+            "pending" if decision.granted else "approvalRequired"
+        )
+        intent = build_pending_intent(
+            snapshot,
+            workspace_id=workspace_id,
+            intent_ref=intent_ref,
+            debounce_ms=debounce_ms,
+            due_at_epoch=due_at_epoch,
+            status=status,
+            origin=origin,
+            reason="" if decision.granted else decision.reason,
+            now=now,
+        )
+        records.intents.append(intent)
+        if granted:
+            records.runs.append(
+                build_run_record(
+                    intent,
+                    run_id=mint_run_id(),
+                    permission_decision=decision.grant_id,
+                    now=now,
+                )
+            )
+        return intent
+
+    def _admit_action(
+        self,
+        action_id: str,
+        *,
+        origin: str,
+        debounce_ms: int,
+        request_id: str,
+        method: str,
+        payload_hash: str,
+        context: dict,
+        action_not_found_path: str,
+    ) -> CommandResponse:
+        """Admit one intent of an action (SPEC.md sections 12.6 and 13.1).
+
+        The admitting transaction reserves the generation of the output
+        group, captures the full invocation snapshot, and stores the
+        pending intent. A covering live grant dispatches an immediately
+        due intent into a minted run record in the same transaction;
+        without one the successful ``approvalRequired`` result carries
+        the captured intent the host approval binds to. Either way the
+        reservation already makes older runs ineligible for current
+        publication (section 9.3).
+        """
+
+        document = self._state.document
+        action = document["actions"].get(action_id)
+        if action is None:
+            return _rejected(
+                request_id,
+                _diagnostic(
+                    DiagnosticCode.REFERENCE,
+                    action_not_found_path,
+                    f"action {action_id!r} does not exist",
                 ),
             )
         registration = self._action_registry.entry(
@@ -1549,7 +2140,7 @@ class WorkspaceService:
         )
         if registration is None:
             return _rejected(
-                envelope.requestId,
+                request_id,
                 _diagnostic(
                     DiagnosticCode.REGISTRATION,
                     f"/actions/{action_id}/implementation/registrationId",
@@ -1561,95 +2152,601 @@ class WorkspaceService:
                     " registration the action cites.",
                 ),
             )
-        # Admission checks permission before anything runs (SPEC.md
-        # sections 13.1 and 15.1). Grants are host generated outside
-        # exported documents, so a covering grant is the only authority
-        # here. The activation captures its intent first: the check
-        # binds to that intent, and a host approval of it mints a grant
-        # pinned to exactly these captured values.
-        registration_id = action["implementation"]["registrationId"]
-        action_revision = self._state.current_revision(
-            entity_path("actions", action_id)
+        facts_error = self._admission_facts_error(action_id, action, registration)
+        if facts_error is not None:
+            return _rejected(request_id, facts_error)
+        now_epoch = self._clock()
+        records = AdmissionRecords()
+        intent = self._plan_one_admission(
+            action,
+            action_id,
+            debounce_ms=debounce_ms,
+            origin=origin,
+            now_epoch=now_epoch,
+            records=records,
         )
-        intent_ref = mint_intent_id()
-        decision = authority_at_admission(
-            self._grants,
-            required_permission=registration.required_permission,
-            registration_id=registration_id,
-            registration_revision=registration.revision,
-            action_id=action_id,
-            action_revision=action_revision,
-            output_group=action["outputGroup"],
-            intent_id=intent_ref,
-        )
-        # The captured intent every answer of this admission carries.
-        # If its definitions change before approval, a grant minted
-        # from them stops covering and a new admission with its own
-        # captured values is required (SPEC.md section 12.6).
-        intent = {
-            "intentRef": intent_ref,
-            "actionId": action_id,
-            "actionRevision": action_revision,
-            "registrationId": registration_id,
-            "registrationRevision": registration.revision,
-            "outputGroup": action["outputGroup"],
-            "capturedParameters": self._captured_parameters(action),
-            "capturedInputs": {
-                name: dict(reference)
-                for name, reference in sorted(action.get("inputs", {}).items())
-            },
-        }
-        if decision.granted:
-            # A live grant covers this activation. Admission with an
-            # invocation snapshot and a reserved generation belongs to
-            # the scheduling subsystem (backlog task T016); this result
-            # reports the authority decision alone and still admits no
-            # run, so it never claims an execution that did not happen.
-            result = {
-                "status": "granted",
-                "origin": origin,
-                "action": action_id,
-                "binding": binding_id,
-                "requiredPermission": registration.required_permission,
-                "permissionDecision": decision.grant_id,
-                "intent": intent,
-                "admission": "pending-scheduler",
-            }
-            return self._commit_receipted(
-                envelope.requestId, envelope.method, payload_hash, result
-            )
+        run = records.runs[0] if records.runs else None
         result = {
-            "status": "approvalRequired",
+            **context,
+            "status": (
+                "approvalRequired" if intent.status == "approvalRequired"
+                else "granted"
+            ),
             "origin": origin,
             "action": action_id,
-            "binding": binding_id,
             "requiredPermission": registration.required_permission,
-            "reason": decision.reason,
-            "intent": intent,
+            "intent": self._intent_result(intent),
+            "run": None if run is None else self._run_summary(run),
         }
+        if intent.status == "approvalRequired":
+            result["reason"] = intent.reason
+        else:
+            result["permissionDecision"] = (
+                None if run is None else run.permissionDecision
+            )
         return self._commit_receipted(
-            envelope.requestId, envelope.method, payload_hash, result
+            request_id,
+            method,
+            payload_hash,
+            result,
+            admission=records,
         )
 
-    def _captured_parameters(self, action: Mapping) -> dict:
-        """Return the parameter values an admission of this action captures.
+    def _admission_facts_error(
+        self, action_id: str, action: Mapping, registration
+    ) -> "Diagnostic | None":
+        """Return the diagnostic for missing admission facts, or None."""
 
-        A user action captures all mapped parameter values when its
-        pending intent is updated (SPEC.md section 9.3); the captured
-        values and revisions ride with the intent, so the approval shows
-        exactly what would run.
-        """
+        registration_id = action["implementation"]["registrationId"]
+        script_artifact, fingerprint = self._registration_facts(
+            registration_id, registration
+        )
+        if script_artifact is None or fingerprint is None:
+            return _diagnostic(
+                DiagnosticCode.REGISTRATION,
+                f"/actions/{action_id}/implementation/registrationId",
+                f"registration {registration_id!r} carries no captured"
+                " script hash or environment fingerprint, so no run"
+                " could snapshot it",
+                hint="Register the script through action.register, or"
+                " cite its admission facts in the trusted registry.",
+            )
+        return None
+
+    def _intent_result(self, intent: PendingIntentRecord) -> dict:
+        """The captured intent every admission answer carries."""
 
         captured: dict = {}
-        for name, mapping in sorted(action.get("parameters", {}).items()):
-            parameter_id = mapping["parameter"]
-            stored = self._state.parameter_states.get(parameter_id)
+        for name in sorted(intent.parameters):
             captured[name] = {
-                "parameter": parameter_id,
-                "value": None if stored is None else stored.value,
-                "stateRevision": 0 if stored is None else stored.revision,
+                "parameter": intent.parameterIds.get(name, name),
+                "value": intent.parameters[name].value,
+                "stateRevision": intent.parameters[name].revision,
             }
-        return captured
+        return {
+            "intentRef": intent.intentRef,
+            "actionId": intent.actionId,
+            "actionRevision": intent.actionRevision,
+            "registrationId": intent.registrationId,
+            "registrationRevision": intent.registrationRevision,
+            "scriptArtifact": intent.scriptArtifact,
+            "environmentFingerprint": intent.environmentFingerprint,
+            "outputGroup": intent.outputGroup,
+            "outputGroupRevision": intent.outputGroupRevision,
+            "generation": intent.generation,
+            "capturedParameters": captured,
+            "capturedInputs": {
+                name: dict(reference)
+                for name, reference in sorted(intent.inputs.items())
+            },
+            "debounceMs": intent.debounceMs,
+            "dueAt": intent.dueAt,
+            "status": intent.status,
+        }
+
+    def _run_summary(self, run: RunRecord) -> dict:
+        """The bounded run view an admission answer carries."""
+
+        return {
+            "runId": run.runId,
+            "actionId": run.actionId,
+            "outputGroup": run.outputGroup,
+            "outputGroupRevision": run.outputGroupRevision,
+            "generation": run.generation,
+            "state": run.state,
+            "disposition": run.disposition,
+            "permissionDecision": run.permissionDecision,
+        }
+
+    def _admission_summary(self, intent: PendingIntentRecord) -> dict:
+        """The admission view a mutation answer reports."""
+
+        summary = self._intent_result(intent)
+        summary["origin"] = intent.origin
+        return summary
+
+    # ------------------------------------------------------------------
+    # Debounce dispatch and launch (SPEC.md sections 9.3, 13.1, 13.2)
+    # ------------------------------------------------------------------
+
+    def dispatch_due_intents(
+        self, now_epoch: "float | None" = None
+    ) -> list[dict]:
+        """Fire every due debounce timer (SPEC.md sections 9.3 and 13.1).
+
+        Each due intent dispatches in its own transaction: definitions
+        are rechecked and authority re-asked at dispatch time, a stale
+        intent expires, an uncovered one returns to its approval state,
+        and a covered one mints its run record from the captured
+        snapshot. The values a run receives are the captured ones; no
+        workspace change reaches an admitted run's inputs.
+        """
+
+        now_epoch = self._clock() if now_epoch is None else now_epoch
+        results: list[dict] = []
+        # due_intents reads a stable view: each dispatch replaces at
+        # most the intent it dispatches, so the walk stays correct.
+        for intent in due_intents(self._pending_intents, now_epoch):
+            outcome = self._dispatch_one_intent(
+                self._pending_intents[intent.outputGroup], now_epoch
+            )
+            results.append(outcome)
+        return results
+
+    def _intent_definition_error(
+        self, intent: PendingIntentRecord
+    ) -> "Diagnostic | None":
+        """Recheck the definitions one due intent captured."""
+
+        def _group_revision(group_id: str) -> int:
+            group = self._output_groups.get(group_id)
+            return 0 if group is None else group.revision
+
+        return intent_definition_error(
+            document=self._state.document,
+            action_revision_of=lambda action_id: self._state.current_revision(
+                entity_path("actions", action_id)
+            ),
+            registry_entry_of=self._action_registry.entry,
+            group_revision_of=_group_revision,
+            intent=intent,
+        )
+
+    def _dispatch_one_intent(
+        self, intent: PendingIntentRecord, now_epoch: float
+    ) -> dict:
+        """Dispatch one due intent in one durable transaction."""
+
+        now = timestamp_of(now_epoch)
+        records = AdmissionRecords()
+        outcome: dict = {
+            "intentRef": intent.intentRef,
+            "actionId": intent.actionId,
+            "outputGroup": intent.outputGroup,
+            "generation": intent.generation,
+        }
+        stale = self._intent_definition_error(intent)
+        if stale is not None:
+            expired = expire_intent(
+                intent, reason=stale.message, now=now
+            )
+            records.intents.append(expired)
+            outcome.update(
+                {
+                    "status": "expired",
+                    "reason": stale.message,
+                    "diagnostic": model_to_wire(stale),
+                }
+            )
+            self._commit_scheduling(records)
+            return outcome
+        entry = self._action_registry.entry(intent.registrationId)
+        decision = authority_at_admission(
+            self._grants,
+            required_permission=entry.required_permission,
+            registration_id=intent.registrationId,
+            registration_revision=intent.registrationRevision,
+            action_id=intent.actionId,
+            action_revision=intent.actionRevision,
+            output_group=intent.outputGroup,
+            output_group_revision=intent.outputGroupRevision,
+            generation=intent.generation,
+            intent_id=intent.intentRef,
+        )
+        if not decision.granted:
+            # The timer fired without authority: the request waits for
+            # its host approval again and reports why (SPEC.md sections
+            # 12.6 and 13.1).
+            waiting = intent.model_copy(
+                update={
+                    "status": "approvalRequired",
+                    "reason": decision.reason,
+                    "updatedAt": now,
+                }
+            )
+            records.intents.append(waiting)
+            outcome.update(
+                {
+                    "status": "approvalRequired",
+                    "reason": decision.reason,
+                }
+            )
+            self._commit_scheduling(records)
+            return outcome
+        run = build_run_record(
+            intent,
+            run_id=mint_run_id(),
+            permission_decision=decision.grant_id,
+            now=now,
+        )
+        records.intents.append(
+            intent.model_copy(
+                update={"status": "dispatched", "updatedAt": now}
+            )
+        )
+        records.runs.append(run)
+        outcome.update(
+            {
+                "status": "dispatched",
+                "permissionDecision": decision.grant_id,
+                "run": self._run_summary(run),
+            }
+        )
+        self._commit_scheduling(records)
+        return outcome
+
+    def _commit_scheduling(self, records: AdmissionRecords) -> None:
+        """Commit scheduling records alone, in one atomic transaction.
+
+        Timer dispatch, run-state transitions, and restart marking share
+        this path: no command envelope drives them, so no receipt is
+        stored, and the transaction advances the commit sequence once
+        with one notification for every changed record.
+        """
+
+        if records.empty:
+            return
+        new_state = self._state.with_commit(self._state.commit_sequence + 1)
+        changed = records.changed_paths()
+        notification = {
+            "recordType": "changeNotification",
+            "schemaVersion": RECORD_SCHEMA_VERSION,
+            "workspaceId": new_state.workspace_id,
+            "epoch": new_state.epoch,
+            "commitSequence": new_state.commit_sequence,
+            "changedRecords": changed,
+        }
+        parse_record(notification)
+        payload = [(NOTIFICATION_KIND, notification)]
+        payload.extend(self._scheduling_records(records))
+        sequence, _ = self._store.append_records(payload)
+        if sequence != new_state.commit_sequence:
+            raise RuntimeError(
+                f"scheduling commit landed at sequence {sequence} instead"
+                f" of the predicted {new_state.commit_sequence}; the"
+                " single-writer sequence prediction is broken"
+            )
+        self._state = new_state
+        self._notifications.append(notification)
+        self._adopt_scheduling(records)
+
+    def _mark_restart_interrupted(self) -> None:
+        """Mark active jobs and pending timers interrupted (SPEC.md 14).
+
+        Startup step 5 and section 9.3: a restart never executes or
+        resumes uncertain Python effects. Queued or running runs and
+        timer-running intents become ``interrupted`` in one durable
+        transaction; an approval-required request keeps waiting for its
+        host approval, because no work of its own was in flight.
+        """
+
+        now = _utc_now()
+        records = AdmissionRecords()
+        for run_id in sorted(self._runs):
+            run = self._runs[run_id]
+            if run.state in ACTIVE_RUN_STATES:
+                records.runs.append(
+                    run.model_copy(
+                        update={"state": "interrupted", "updatedAt": now}
+                    )
+                )
+        for group in sorted(self._pending_intents):
+            intent = self._pending_intents[group]
+            if intent.status == "pending":
+                records.intents.append(interrupt_intent(intent, now=now))
+        self._commit_scheduling(records)
+
+    # ------------------------------------------------------------------
+    # Launch (SPEC.md sections 13.1 and 13.2)
+    # ------------------------------------------------------------------
+
+    def launch_admitted_run(self, run_id: str) -> RunLaunchOutcome:
+        """Launch one admitted run through its fresh process.
+
+        The pre-launch rechecks run immediately before the process
+        starts: registration availability, the resolved environment
+        fingerprint against the admission snapshot, and the permission
+        grant (SPEC.md sections 13.1 and 15.1). A refused recheck never
+        executes and never reports failure as successful completion; a
+        revoked grant additionally requests cancellation of the run.
+        The child environment is credential-free by construction of the
+        launcher (section 15.1).
+        """
+
+        run = self._runs.get(run_id)
+        if run is None:
+            raise permission_error(
+                f"run {run_id!r} does not exist",
+                "/runId",
+                code=DiagnosticCode.REFERENCE,
+            )
+        if run.state != "queued":
+            return RunLaunchOutcome(
+                run_id=run_id,
+                launched=False,
+                state=run.state,
+                refusal=(
+                    _diagnostic(
+                        DiagnosticCode.CONFLICT,
+                        "/runId",
+                        f"run {run_id!r} is {run.state!r}; only a queued"
+                        " run can launch",
+                    ),
+                ),
+            )
+        running = [
+            other for other in self._runs.values() if other.state == "running"
+        ]
+        if running:
+            return RunLaunchOutcome(
+                run_id=run_id,
+                launched=False,
+                state=run.state,
+                refusal=(
+                    _diagnostic(
+                        DiagnosticCode.CONFLICT,
+                        "/runId",
+                        f"workspace already executes run"
+                        f" {sorted(running)[0].runId!r}; only one project"
+                        " execution runs at a time per workspace"
+                        " (SPEC.md section 13.1)",
+                    ),
+                ),
+            )
+        refusal = self._launch_recheck_error(run)
+        if refusal is not None:
+            return RunLaunchOutcome(
+                run_id=run_id,
+                launched=False,
+                state=run.state,
+                refusal=(refusal,),
+            )
+        decision = self.execution_authority_for_run(run_id, at="launch")
+        if not decision.granted:
+            if revocation_blocks(decision):
+                cancelled = run.model_copy(
+                    update={
+                        "state": "cancelled",
+                        "updatedAt": _utc_now(),
+                    }
+                )
+                self._commit_scheduling(AdmissionRecords(runs=[cancelled]))
+                return RunLaunchOutcome(
+                    run_id=run_id,
+                    launched=False,
+                    state="cancelled",
+                    refusal=(
+                        _diagnostic(
+                            DiagnosticCode.PERMISSION,
+                            "/permissionDecision",
+                            f"the grant that admitted run {run_id!r} was"
+                            " revoked; the launch was refused and the run"
+                            " was cancelled (SPEC.md sections 13.5 and"
+                            " 15.1)",
+                        ),
+                    ),
+                )
+            return RunLaunchOutcome(
+                run_id=run_id,
+                launched=False,
+                state=run.state,
+                refusal=(
+                    _diagnostic(
+                        DiagnosticCode.PERMISSION,
+                        "/permissionDecision",
+                        f"run {run_id!r} lost its execution permission:"
+                        f" {decision.reason}; the run waits for a host"
+                        " approval (SPEC.md sections 13.1 and 15.1)",
+                    ),
+                ),
+            )
+
+        registration = self._registrations[run.registrationId]
+        layout = self._store.layout
+        staging = layout.staging_directory(run.runId)
+        try:
+            script_bytes = self._store.artifacts.read(registration.script.artifact)
+        except OSError as error:
+            return RunLaunchOutcome(
+                run_id=run_id,
+                launched=False,
+                state=run.state,
+                refusal=(
+                    _diagnostic(
+                        DiagnosticCode.ARTIFACT,
+                        "/scriptArtifact",
+                        f"the captured script artifact of run {run_id!r}"
+                        f" is unreadable: {error}",
+                    ),
+                ),
+            )
+        inputs: dict[str, str] = {}
+        for name, reference in sorted(run.inputs.items()):
+            version = (
+                (self._state.document or {})
+                .get("sources", {})
+                .get(reference.sourceId, {})
+                .get("versions", {})
+                .get(str(reference.version))
+            )
+            if version is None:
+                return RunLaunchOutcome(
+                    run_id=run_id,
+                    launched=False,
+                    state=run.state,
+                    refusal=(
+                        _diagnostic(
+                            DiagnosticCode.REFERENCE,
+                            f"/inputs/{name}",
+                            f"captured input {name!r} cites source"
+                            f" {reference.sourceId!r} version"
+                            f" {reference.version}, which the saved"
+                            " document no longer holds",
+                        ),
+                    ),
+                )
+            inputs[name] = str(
+                self._store.artifacts.path_for(version["artifact"])
+            )
+        script_path = materialize_script(staging, script_bytes)
+        manifest = build_manifest(
+            run_id=run.runId,
+            workspace_id=self._state.workspace_id,
+            action_id=run.actionId,
+            script_path=script_path,
+            parameters={
+                name: captured.value
+                for name, captured in run.parameters.items()
+            },
+            inputs=inputs,
+            outputs=dict(registration.outputs),
+            staging_directory=staging,
+        )
+        write_run_manifest(staging, manifest)
+        self._transition_run(run, "running")
+        try:
+            result = launch_run(
+                manifest, log_directory=layout.log_directory(run.runId)
+            )
+        except (MeltLaunchError, OSError) as error:
+            failed = self._runs[run_id].model_copy(
+                update={"state": "failed", "updatedAt": _utc_now()}
+            )
+            self._commit_scheduling(AdmissionRecords(runs=[failed]))
+            return RunLaunchOutcome(
+                run_id=run_id,
+                launched=False,
+                state="failed",
+                refusal=(
+                    _diagnostic(
+                        DiagnosticCode.REFERENCE,
+                        "/manifest",
+                        f"the launch of run {run_id!r} failed"
+                        f" operationally: {error}",
+                    ),
+                ),
+            )
+        state = "succeeded" if result.complete else "failed"
+        finished = self._runs[run_id].model_copy(
+            update={"state": state, "updatedAt": _utc_now()}
+        )
+        self._commit_scheduling(AdmissionRecords(runs=[finished]))
+        return RunLaunchOutcome(
+            run_id=run_id,
+            launched=True,
+            state=state,
+            exit_code=result.exit_code,
+            staged=result.staged,
+            manifest_path=str(result.manifest_path),
+            stdout_path=str(result.stdout_path),
+            stderr_path=str(result.stderr_path),
+        )
+
+    def _launch_recheck_error(self, run: RunRecord) -> "Diagnostic | None":
+        """Recheck registration and environment before one launch."""
+
+        entry = self._action_registry.entry(run.registrationId)
+        if entry is None:
+            return _diagnostic(
+                DiagnosticCode.REGISTRATION,
+                "/registrationId",
+                f"registration {run.registrationId!r} is no longer"
+                " available; the run cannot launch (SPEC.md section 13.1)",
+                hint="Register the script again; environment repair and"
+                " re-registration are separate operations.",
+            )
+        if entry.revision != run.registrationRevision:
+            return _diagnostic(
+                DiagnosticCode.REGISTRATION,
+                "/registrationId",
+                f"registration {run.registrationId!r} moved to revision"
+                f" {entry.revision}; the run captured revision"
+                f" {run.registrationRevision} (SPEC.md section 7.3)",
+            )
+        registration = self._registrations.get(run.registrationId)
+        if registration is None:
+            return _diagnostic(
+                DiagnosticCode.REGISTRATION,
+                "/registrationId",
+                f"registration {run.registrationId!r} holds no captured"
+                " script in this workspace, so no fresh process could"
+                " execute it",
+                hint="Only a service-registered script can launch;"
+                " a fixture registry entry cannot run.",
+            )
+        if registration.environmentFingerprint != run.environmentFingerprint:
+            return _diagnostic(
+                DiagnosticCode.REGISTRATION,
+                "/environmentFingerprint",
+                f"the registration now resolves environment"
+                f" {registration.environmentFingerprint!r}, but the run"
+                f" captured {run.environmentFingerprint!r}"
+                " (SPEC.md section 7.3)",
+            )
+        resolved = local_environment().fingerprint
+        if resolved != run.environmentFingerprint:
+            return _diagnostic(
+                DiagnosticCode.REGISTRATION,
+                "/environmentFingerprint",
+                f"the resolved project environment is {resolved!r}, but"
+                f" the run captured {run.environmentFingerprint!r};"
+                " environment repair is a separate operation"
+                " (SPEC.md sections 13.1 and 14)",
+            )
+        return None
+
+    def _transition_run(self, run: RunRecord, state: str) -> None:
+        """Record one run state transition durably."""
+
+        updated = run.model_copy(
+            update={"state": state, "updatedAt": _utc_now()}
+        )
+        self._commit_scheduling(AdmissionRecords(runs=[updated]))
+
+    def queued_run_ids(self) -> list[str]:
+        """The queued runs in admission order, oldest generation first."""
+
+        return [
+            run.runId
+            for run in sorted(
+                self._runs.values(),
+                key=lambda item: (item.createdAt, item.runId),
+            )
+            if run.state == "queued"
+        ]
+
+    def launch_next_run(self) -> "RunLaunchOutcome | None":
+        """Launch the next queued run, if one exists.
+
+        The harness drives the single execution slot of the workspace
+        through this entry point: it launches at most one queued run
+        per call and reports a refusal unchanged.
+        """
+
+        queued = self.queued_run_ids()
+        if not queued:
+            return None
+        return self.launch_admitted_run(queued[0])
 
     def _run_cancel(self, envelope: CommandEnvelope) -> CommandResponse:
         """Cancel one run (SPEC.md sections 12.6 and 13.5).
@@ -1813,7 +2910,44 @@ class WorkspaceService:
             grantedAt=_utc_now(),
         )
         self._commit_permission_record(record)
+        # The approval applies to its captured intent (SPEC.md section
+        # 12.6): every approval-required request this grant covers
+        # dispatches now, with its own definitions rechecked, so the
+        # approval never executes a newer request.
+        self._dispatch_covered_intents(record)
         return record
+
+    def _dispatch_covered_intents(self, grant: PermissionGrantRecord) -> None:
+        """Dispatch every pending intent one new grant covers."""
+
+        for group in sorted(self._pending_intents):
+            intent = self._pending_intents[group]
+            if intent.status != "approvalRequired":
+                continue
+            if not self._grant_covers_intent(grant, intent):
+                continue
+            self._dispatch_one_intent(intent, self._clock())
+
+    def _grant_covers_intent(
+        self, grant: PermissionGrantRecord, intent: PendingIntentRecord
+    ) -> bool:
+        """Report whether one grant covers one captured intent."""
+
+        if grant.kind == "projectExecution":
+            return grant.registrationId == intent.registrationId
+        return (
+            grant.intentId == intent.intentRef
+            and grant.registrationId == intent.registrationId
+            and grant.registrationRevision == intent.registrationRevision
+            and grant.actionId == intent.actionId
+            and grant.actionRevision == intent.actionRevision
+            and grant.outputGroup == intent.outputGroup
+            and (
+                grant.outputGroupRevision is None
+                or grant.outputGroupRevision == intent.outputGroupRevision
+            )
+            and (grant.generation is None or grant.generation == intent.generation)
+        )
 
     def revoke_execution_permission(
         self, grant_id: str, *, revoked_by: str
@@ -2053,6 +3187,8 @@ def _load_state(
     SourceCatalog,
     dict[str, RegistrationRecord],
     dict[str, PermissionGrantRecord],
+    dict[str, OutputGroupRecord],
+    dict[str, PendingIntentRecord],
 ]:
     """Rebuild the current state from the committed record stream.
 
@@ -2064,6 +3200,11 @@ def _load_state(
     and its execution authority against the same grants, without
     rereading any artifact bytes or executing project code (SPEC.md
     section 14, startup steps 2 and 3).
+
+    The committed output group records rebuild the reserved generations
+    and the group revisions, and the newest pending intent record of
+    each group rebuilds its pending request, so a reopened workspace
+    restores its scheduling state without executing anything either.
     """
 
     latest_snapshot = None
@@ -2073,6 +3214,8 @@ def _load_state(
     artifacts: dict[str, CatalogArtifact] = {}
     registrations: dict[str, RegistrationRecord] = {}
     grants: dict[str, PermissionGrantRecord] = {}
+    output_groups: dict[str, OutputGroupRecord] = {}
+    pending_intents: dict[str, PendingIntentRecord] = {}
     for record in store.records():
         if record.kind == SNAPSHOT_KIND:
             latest_snapshot = record
@@ -2102,6 +3245,12 @@ def _load_state(
         elif record.kind == PERMISSION_KIND:
             grant = parse_record(record.data)
             grants[grant.grantId] = grant
+        elif record.kind == OUTPUT_GROUP_KIND:
+            group = parse_record(record.data)
+            output_groups[group.outputGroup] = group
+        elif record.kind == PENDING_INTENT_KIND:
+            intent = parse_record(record.data)
+            pending_intents[intent.outputGroup] = intent
     imports = SourceCatalog(artifacts)
     if latest_snapshot is None:
         state = WorkspaceState(
@@ -2109,7 +3258,17 @@ def _load_state(
             epoch=store.epoch,
             commit_sequence=store.commit_sequence,
         )
-        return state, receipts, notifications, runs, imports, registrations, grants
+        return (
+            state,
+            receipts,
+            notifications,
+            runs,
+            imports,
+            registrations,
+            grants,
+            output_groups,
+            pending_intents,
+        )
     snapshot = parse_record(latest_snapshot.data)
     state = WorkspaceState(
         workspace_id=store.workspace_id,
@@ -2125,7 +3284,17 @@ def _load_state(
         },
         incarnations=dict(snapshot.incarnations),
     )
-    return state, receipts, notifications, runs, imports, registrations, grants
+    return (
+        state,
+        receipts,
+        notifications,
+        runs,
+        imports,
+        registrations,
+        grants,
+        output_groups,
+        pending_intents,
+    )
 
 
 def _snapshot_wire(

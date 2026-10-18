@@ -30,6 +30,13 @@ publication immediately. Model credentials never reach a project
 process: launch sites build child environments through
 ``runtime.execution.project_process_environment``.
 
+The service owns scheduling (SPEC.md sections 7.3, 9.3, and 13.1):
+admissions capture the invocation snapshot, reserve their generation
+in the admitting transaction, and keep one pending intent per output
+group; debounce timers dispatch due intents, and one launch path
+rechecks permission, registration availability, and the environment
+fingerprint immediately before the fresh process starts.
+
 Typical use:
 
 ```python
@@ -38,6 +45,8 @@ from runtime.workspace import WorkspaceService
 
 with WorkspaceService.open(platform, "sales-demo") as service:
     response = service.dispatch(envelope)  # any parsed command envelope
+    service.dispatch_due_intents()          # fire due debounce timers
+    service.launch_next_run()               # drive the one execution slot
 ```
 
 Requests also arrive framed on a private channel: a four-byte
@@ -77,7 +86,11 @@ from runtime.workspace.mutations import (
     initial_state_from_document,
     plan_mutation,
 )
-from melt.schema.records import PermissionGrantRecord
+from melt.schema.records import (
+    OutputGroupRecord,
+    PendingIntentRecord,
+    PermissionGrantRecord,
+)
 from runtime.workspace.permissions import (
     GRANT_ID_PREFIX,
     GRANT_KINDS,
@@ -106,6 +119,19 @@ from runtime.workspace.registry import (
     register_script,
     validate_contract,
 )
+from runtime.workspace.scheduling import (
+    AdmissionRecords,
+    InvocationSnapshot,
+    RunLaunchOutcome,
+    build_pending_intent,
+    build_run_record,
+    changed_output_groups,
+    due_intents,
+    is_newest_generation,
+    mint_run_id,
+    reserve_generation,
+    triggered_actions,
+)
 from runtime.workspace.service import (
     LANGUAGE_VERSION,
     REVISION_PRECONDITION_METHODS,
@@ -120,8 +146,12 @@ from runtime.workspace.service import (
 from runtime.workspace.state import (
     ARTIFACT_KIND,
     ENTITY_COLLECTIONS,
+    INTENT_COLLECTION,
     LAYOUT_PATH,
     NOTIFICATION_KIND,
+    OUTPUT_GROUP_COLLECTION,
+    OUTPUT_GROUP_KIND,
+    PENDING_INTENT_KIND,
     PERMISSION_COLLECTION,
     PERMISSION_KIND,
     RECEIPT_KIND,
@@ -133,6 +163,8 @@ from runtime.workspace.state import (
     ParameterStateValue,
     WorkspaceState,
     entity_path,
+    intent_path,
+    output_group_path,
     permission_path,
     pointer_key,
     registration_path,
@@ -160,17 +192,23 @@ __all__ = [
     "GRANT_ID_PREFIX",
     "GRANT_KINDS",
     "IMPORT_KINDS",
+    "INTENT_COLLECTION",
     "INTENT_ID_PREFIX",
     "LANGUAGE_VERSION",
     "LAYOUT_PATH",
     "MutationPlan",
     "NOTIFICATION_KIND",
     "NotificationWindow",
+    "OUTPUT_GROUP_COLLECTION",
+    "OUTPUT_GROUP_KIND",
+    "PENDING_INTENT_KIND",
     "ParameterStateValue",
     "PendingSet",
     "PERMISSION_COLLECTION",
     "PERMISSION_KIND",
     "PermissionGrantRecord",
+    "OutputGroupRecord",
+    "PendingIntentRecord",
     "RECEIPT_KIND",
     "REVISION_PRECONDITION_METHODS",
     "REGISTRATION_COLLECTION",
@@ -184,9 +222,11 @@ __all__ = [
     "SUPPORTED_PROTOCOL_VERSIONS",
     "TOKEN_LIFETIME",
     "TOKEN_PREFIX",
+    "AdmissionRecords",
     "AuthorityDecision",
     "CapturedArtifact",
     "EnvironmentCatalog",
+    "InvocationSnapshot",
     "KnownEnvironment",
     "MeasuredArtifact",
     "MeasuredScript",
@@ -194,6 +234,7 @@ __all__ = [
     "MeltPermissionError",
     "MeltRegistrationError",
     "MeltTokenError",
+    "RunLaunchOutcome",
     "TokenStore",
     "UNANSWERED_METHODS",
     "WorkspaceService",
@@ -203,19 +244,27 @@ __all__ = [
     "authority_at_admission",
     "authority_at_launch",
     "authority_at_publication",
+    "build_pending_intent",
     "build_registration",
+    "build_run_record",
+    "changed_output_groups",
     "contract_of",
     "current_diagnostics",
+    "due_intents",
     "entity_path",
     "expectation_diagnostics",
     "import_version",
     "initial_state_from_document",
+    "intent_path",
     "is_live",
+    "is_newest_generation",
     "local_environment",
     "measure_artifact",
     "mint_grant_id",
     "mint_intent_id",
+    "mint_run_id",
     "next_version_number",
+    "output_group_path",
     "permission_path",
     "plan_mutation",
     "pointer_key",
@@ -225,12 +274,14 @@ __all__ = [
     "registration_entry_of",
     "registration_identity",
     "registration_path",
+    "reserve_generation",
     "revocation_blocks",
     "run_path",
     "run_version",
     "snapshot_result",
     "source_path",
     "state_path",
+    "triggered_actions",
     "validate_contract",
     "values_equal",
 ]
