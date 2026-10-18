@@ -54,6 +54,9 @@ OUTPUT_GROUP_KIND = "melt.outputGroup"
 PENDING_INTENT_KIND = "melt.pendingIntent"
 """The committed record that holds one pending request (section 9.3)."""
 
+PUBLICATION_KIND = "melt.publication"
+"""The committed record that holds one publication receipt (13.4)."""
+
 SOURCE_COLLECTION = "sources"
 """The source collection: service-owned, not a mutation target (12.2)."""
 
@@ -148,6 +151,15 @@ INTENT_COLLECTION = "intents"
     notifications but never in a document collection.
     """
 
+PUBLICATION_COLLECTION = "publications"
+"""The publication receipt collection: service-owned, never a mutation
+    target.
+
+    Publication is a service transaction over run results (SPEC.md
+    section 13.4), so receipt paths appear in change notifications but
+    never in a document collection or an ``expected`` map.
+    """
+
 
 def output_group_path(output_group: str) -> str:
     """Return the record path of one output group's counters."""
@@ -159,6 +171,12 @@ def intent_path(intent_ref: str) -> str:
     """Return the record path of one pending intent."""
 
     return f"{INTENT_COLLECTION}/{intent_ref}"
+
+
+def publication_path(publication_id: str) -> str:
+    """Return the record path of one publication receipt (section 13.4)."""
+
+    return f"{PUBLICATION_COLLECTION}/{publication_id}"
 
 
 def pointer_key(path: str) -> str:
@@ -259,6 +277,8 @@ __all__ = [
     "PERMISSION_COLLECTION",
     "PERMISSION_KIND",
     "PENDING_INTENT_KIND",
+    "PUBLICATION_COLLECTION",
+    "PUBLICATION_KIND",
     "ParameterStateValue",
     "RECEIPT_KIND",
     "REGISTRATION_COLLECTION",
@@ -272,6 +292,7 @@ __all__ = [
     "output_group_path",
     "permission_path",
     "pointer_key",
+    "publication_path",
     "registration_path",
     "run_path",
     "source_path",

@@ -6,7 +6,8 @@ negotiate older records instead of silently misreading them
 (SPEC.md section 14). Version 1 is the only version in `melt/v0.1`.
 
 Records in this module: `RunRecord`, `RegistrationRecord`,
-`PermissionGrantRecord`, `ArtifactRecord`, `ParameterState`,
+`PermissionGrantRecord`, `ArtifactRecord`, `OutputGroupRecord`,
+`PendingIntentRecord`, `PublicationRecord`, `ParameterState`,
 `CommandReceipt`, `Snapshot`, `ChangeNotification`, `PageRequest`, and
 `PageResponse`.
 """
@@ -185,6 +186,36 @@ class PendingIntentRecord(RecordBase):
     reason: str = ""
     createdAt: Timestamp
     updatedAt: Timestamp
+
+
+PublicationOutcomeKind = Literal["current", "superseded", "rejected"]
+"""How one publication concluded: it became the current result, it stayed
+historical because a newer request superseded it, or it was refused."""
+
+
+class PublicationRecord(RecordBase):
+    """One publication receipt (SPEC.md sections 13.4 and 14).
+
+    The publication transaction stores this record beside the run record
+    it concluded: the run keeps its disposition and output references,
+    while this receipt names the attempt itself. Recovery reconciles
+    staging directories against these receipts (section 14, startup step
+    6): a staging tree whose run holds no receipt marks work whose
+    publication never committed.
+    """
+
+    recordType: Literal["publication"]
+    publicationId: OpaqueId
+    workspaceId: EntityId
+    runId: OpaqueId
+    actionId: EntityId
+    outputGroup: EntityId
+    generation: PositiveSafeInt
+    outcome: PublicationOutcomeKind
+    reason: str = ""
+    outputs: dict[EntityId, SourceReference] = Field(default_factory=dict)
+    cancellationRequested: StrictBool = False
+    publishedAt: Timestamp
 
 
 class ScriptArtifact(MeltModel):
@@ -488,6 +519,7 @@ MeltRecord = Union[
     ArtifactRecord,
     OutputGroupRecord,
     PendingIntentRecord,
+    PublicationRecord,
     ParameterState,
     CommandReceipt,
     Snapshot,
@@ -503,6 +535,7 @@ RECORD_TYPES: dict[str, int] = {
     "artifact": RECORD_SCHEMA_VERSION,
     "outputGroup": RECORD_SCHEMA_VERSION,
     "pendingIntent": RECORD_SCHEMA_VERSION,
+    "publication": RECORD_SCHEMA_VERSION,
     "parameterState": RECORD_SCHEMA_VERSION,
     "commandReceipt": RECORD_SCHEMA_VERSION,
     "snapshot": RECORD_SCHEMA_VERSION,
@@ -598,6 +631,8 @@ __all__ = [
     "ParameterState",
     "PendingIntentRecord",
     "PermissionGrantRecord",
+    "PublicationOutcomeKind",
+    "PublicationRecord",
     "RECORD_SCHEMA_VERSION",
     "RECORD_TYPES",
     "RegistrationRecord",

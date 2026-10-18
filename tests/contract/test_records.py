@@ -61,6 +61,7 @@ def test_record_types_are_versioned():
         "artifact",
         "outputGroup",
         "pendingIntent",
+        "publication",
         "parameterState",
         "commandReceipt",
         "snapshot",

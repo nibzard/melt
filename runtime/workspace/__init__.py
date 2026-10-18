@@ -37,6 +37,18 @@ group; debounce timers dispatch due intents, and one launch path
 rechecks permission, registration availability, and the environment
 fingerprint immediately before the fresh process starts.
 
+The service also owns atomic publication (SPEC.md sections 13.3 to
+13.5): it verifies the staged outputs of a completed run
+independently, finalizes the immutable artifact paths, rechecks every
+eligibility condition — including the publication permission gate —
+inside one owning transaction, allocates the output source versions
+with service-only run provenance, updates every target reference
+together, and stores the run disposition with a publication receipt.
+Obsolete runs archive as superseded historical output; every output
+group reports `empty`, `pending`, `current`, `stale`, or `error`
+status with `resultIsStale` and the captured parameters of the
+retained result.
+
 Typical use:
 
 ```python
@@ -47,6 +59,7 @@ with WorkspaceService.open(platform, "sales-demo") as service:
     response = service.dispatch(envelope)  # any parsed command envelope
     service.dispatch_due_intents()          # fire due debounce timers
     service.launch_next_run()               # drive the one execution slot
+    service.publish_run(run_id)             # publish the completed run
 ```
 
 Requests also arrive framed on a private channel: a four-byte
@@ -90,6 +103,7 @@ from melt.schema.records import (
     OutputGroupRecord,
     PendingIntentRecord,
     PermissionGrantRecord,
+    PublicationRecord,
 )
 from runtime.workspace.permissions import (
     GRANT_ID_PREFIX,
@@ -104,6 +118,26 @@ from runtime.workspace.permissions import (
     mint_grant_id,
     mint_intent_id,
     revocation_blocks,
+)
+from runtime.workspace.publication import (
+    CURRENT,
+    NOT_PUBLISHABLE,
+    PUBLICATION_ID_PREFIX,
+    REJECTED,
+    RESULT_STATUSES,
+    SUPERSEDED,
+    PublicationOutcome,
+    VerifiedOutput,
+    allocate_output_sources,
+    append_output_versions,
+    mint_publication_id,
+    obsolescence_error,
+    output_source_mapping,
+    result_statuses,
+    retarget_projections,
+    staged_output_path,
+    target_ineligibility,
+    verify_staged_outputs,
 )
 from runtime.workspace.registry import (
     DEFAULT_ENVIRONMENT_ID,
@@ -154,6 +188,8 @@ from runtime.workspace.state import (
     PENDING_INTENT_KIND,
     PERMISSION_COLLECTION,
     PERMISSION_KIND,
+    PUBLICATION_COLLECTION,
+    PUBLICATION_KIND,
     RECEIPT_KIND,
     REGISTRATION_COLLECTION,
     REGISTRATION_KIND,
@@ -167,6 +203,7 @@ from runtime.workspace.state import (
     output_group_path,
     permission_path,
     pointer_key,
+    publication_path,
     registration_path,
     run_path,
     source_path,
@@ -186,6 +223,7 @@ __all__ = [
     "ACTIVE_RUN_STATES",
     "ARTIFACT_KIND",
     "CAPTURE_KINDS",
+    "CURRENT",
     "DEFAULT_ENVIRONMENT_ID",
     "ENTITY_COLLECTIONS",
     "EntityTouch",
@@ -197,11 +235,15 @@ __all__ = [
     "LANGUAGE_VERSION",
     "LAYOUT_PATH",
     "MutationPlan",
+    "NOT_PUBLISHABLE",
     "NOTIFICATION_KIND",
     "NotificationWindow",
     "OUTPUT_GROUP_COLLECTION",
     "OUTPUT_GROUP_KIND",
     "PENDING_INTENT_KIND",
+    "PUBLICATION_COLLECTION",
+    "PUBLICATION_ID_PREFIX",
+    "PUBLICATION_KIND",
     "ParameterStateValue",
     "PendingSet",
     "PERMISSION_COLLECTION",
@@ -209,7 +251,11 @@ __all__ = [
     "PermissionGrantRecord",
     "OutputGroupRecord",
     "PendingIntentRecord",
+    "PublicationOutcome",
+    "PublicationRecord",
     "RECEIPT_KIND",
+    "RESULT_STATUSES",
+    "REJECTED",
     "REVISION_PRECONDITION_METHODS",
     "REGISTRATION_COLLECTION",
     "REGISTRATION_KIND",
@@ -220,6 +266,7 @@ __all__ = [
     "SERVICE_VERSION",
     "SOURCE_COLLECTION",
     "SUPPORTED_PROTOCOL_VERSIONS",
+    "SUPERSEDED",
     "TOKEN_LIFETIME",
     "TOKEN_PREFIX",
     "AdmissionRecords",
@@ -237,9 +284,12 @@ __all__ = [
     "RunLaunchOutcome",
     "TokenStore",
     "UNANSWERED_METHODS",
+    "VerifiedOutput",
     "WorkspaceService",
     "WorkspaceState",
     "active_run_records",
+    "allocate_output_sources",
+    "append_output_versions",
     "append_source_version",
     "authority_at_admission",
     "authority_at_launch",
@@ -262,26 +312,35 @@ __all__ = [
     "measure_artifact",
     "mint_grant_id",
     "mint_intent_id",
+    "mint_publication_id",
     "mint_run_id",
     "next_version_number",
+    "obsolescence_error",
     "output_group_path",
+    "output_source_mapping",
     "permission_path",
     "plan_mutation",
     "pointer_key",
     "preview_effects",
+    "publication_path",
     "register_artifact",
     "register_script",
     "registration_entry_of",
     "registration_identity",
     "registration_path",
     "reserve_generation",
+    "result_statuses",
+    "retarget_projections",
     "revocation_blocks",
     "run_path",
     "run_version",
     "snapshot_result",
     "source_path",
+    "staged_output_path",
     "state_path",
+    "target_ineligibility",
     "triggered_actions",
     "validate_contract",
     "values_equal",
+    "verify_staged_outputs",
 ]
