@@ -49,9 +49,11 @@ make check
 
 `make check` calls `scripts/check.sh`. The script checks the pinned
 interpreter, syncs `.venv` from `uv.lock`, installs the pinned Pi Durable
-adapter when missing, and runs pytest over `tests/contract`,
-`tests/recovery`, `tests/native`, and `tests/integration`. It needs no
-macOS or Apple tools.
+adapter when missing, verifies the canonical document hashes with the
+independent JavaScript canonicalizer, and runs pytest over
+`tests/contract`, `tests/recovery`, `tests/native`, and
+`tests/integration`. It needs no macOS or Apple tools. The command is
+the merge gate: do not merge while it fails.
 
 Run pytest directly inside the environment:
 
@@ -441,7 +443,7 @@ minimum 200 it has two rows, and the monthly totals become 300 and
 ## Contract fixtures
 
 `fixtures/` holds the shared contract suite of SPEC.md section 18.1
-(backlog task T004):
+(backlog tasks T004 and T020):
 
 - `fixtures/valid/` documents and command envelopes that must pass,
   including the full sales example with a real artifact hash.
@@ -455,4 +457,17 @@ minimum 200 it has two rows, and the monthly totals become 300 and
 `tests/contract/test_fixtures.py` runs the set. Entries enforced by
 the compiler (T005) or the service (T009) name their owning task in
 the manifest; the suite drives them through full compilation and a
-seeded workspace service respectively.
+seeded workspace service respectively. Every valid command envelope
+also commits: the state migration applies against a service seeded to
+the revisions its `expected` map records. Every fixture decodes as its
+recorded layer requires, so a schema entry that suddenly parsed, or a
+compiler entry that stopped parsing, fails the suite.
+
+`tests/contract/test_cli.py` drives `melt validate` and `melt compile`
+over the same manifest and the whole valid set. Canonical hashes agree
+across the supported languages: `fixtures/valid/document-hashes.json`
+records the RFC 8785 hash of every valid document, the Python suite
+fails when it goes stale, and `scripts/verify_canonical_hashes.mjs`
+recomputes it with an independent JavaScript canonicalizer that also
+replays the RFC 8785 reference vectors. `make check` runs both, so the
+contract suite blocks merges on failure.

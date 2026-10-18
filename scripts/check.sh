@@ -4,6 +4,13 @@
 # This is the single check command promised by backlog task T001:
 #   ./scripts/check.sh        (or: make check)
 #
+# The suite includes the contract fixture suite of SPEC.md section 18.1
+# (backlog task T020): pytest runs tests/contract/test_fixtures.py and
+# tests/contract/test_cli.py over every fixture in fixtures/valid and
+# fixtures/invalid/manifest.json, and step 4 verifies the canonical
+# hashes across the supported languages. A failure fails this command,
+# and this command is the merge gate: do not merge while it fails.
+#
 # The command needs a Python 3.12 interpreter, uv, the committed uv.lock,
 # Node with npm, and the committed Pi Durable adapter pin. It never uses
 # macOS or Apple tools (SPEC.md section 2.2).
@@ -45,7 +52,15 @@ if [ ! -d runtime/storage/pi_adapter/node_modules/@earendil-works/pi-durable ]; 
     (cd runtime/storage/pi_adapter && npm ci --no-audit --no-fund)
 fi
 
-# 4. Run the whole suite: contract, recovery, native, and integration.
+# 4. Verify the canonical hashes across the supported languages
+#    (backlog task T020, SPEC.md sections 4.2 and 18.1). The verifier
+#    runs the RFC 8785 reference vectors and every valid document
+#    through an independent JavaScript canonicalizer and compares the
+#    hashes against fixtures/valid/document-hashes.json. The contract
+#    suite runs it again inside pytest.
+node scripts/verify_canonical_hashes.mjs
+
+# 5. Run the whole suite: contract, recovery, native, and integration.
 uv run --locked python3 -m pytest
 
 echo "check.sh: full Melt test suite passed"

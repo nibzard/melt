@@ -22,4 +22,10 @@ Rules:
   length match a file under `fixtures/sales/` and an entry in
   `fixtures/catalog.json`.
 - `document-hashes.json` is generated from the documents. The test
-  suite fails when it goes stale.
+  suite fails when it goes stale, and `scripts/verify_canonical_hashes.mjs`
+  recomputes every entry with an independent JavaScript canonicalizer.
+- Command envelopes record the workspace state they address in their
+  `expected` map. `commands/state-migration.json` addresses
+  `parameters/minimum` at entity revision 2 and `state/minimum` at
+  revision 4; `tests/contract/test_fixtures.py` drives a service into
+  that state and proves the envelope commits.
