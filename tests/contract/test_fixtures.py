@@ -7,12 +7,12 @@ implementation. This module proves the fixture set itself:
 - The valid set covers the shapes that SPEC.md section 18.1 requires.
 - Every invalid fixture in ``fixtures/invalid/manifest.json`` carries a
   known diagnostic code and a JSON Pointer. The entries that the schema
-  layer enforces fail with exactly the expected diagnostic, and the
-  entries the compiler enforces fail through full compilation against
-  ``fixtures/catalog.json`` (backlog task T005). The service entries
-  stay well formed at this layer, because their rejection needs the
-  service semantics of T009. Their content is still verified here, so
-  the drift each fixture claims is real.
+  layer enforces fail with exactly the expected diagnostic, the entries
+  the compiler enforces fail through full compilation against
+  ``fixtures/catalog.json`` (backlog task T005), and the entries the
+  service enforces fail through a seeded workspace service (backlog task
+  T009): each command envelope is applied against the workspace state
+  its ``expected`` map addresses.
 - The artifact hashes are real: the catalog matches the bytes on disk,
   the bytes regenerate identically, and every document that cites a
   catalog artifact agrees with its byte length and measured schema.
@@ -25,6 +25,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import struct
+import uuid
 from pathlib import Path
 
 import pyarrow as pa
@@ -40,6 +41,8 @@ from melt.schema.commands import (
 from melt.schema.diagnostics import DIAGNOSTIC_CODES
 from melt.schema.document import MeltDocumentError, parse_document
 from runtime.compiler import CompileRequest, compile_document, load_catalog
+from runtime.storage import PlatformAdapter, storage_worker_available
+from runtime.workspace import WorkspaceService
 
 # ---------------------------------------------------------------------------
 # Fixture set constants
@@ -132,6 +135,84 @@ def compiler_inputs(repo_root: Path):
     return load_catalog(
         (repo_root / "fixtures" / "catalog.json").read_text(encoding="utf-8")
     )
+
+
+@pytest.fixture(scope="module")
+def seeded_service(service_root: Path):
+    """A workspace service holding the state the command fixtures address.
+
+    The workspace ``sales-demo`` holds ``parameters/minimum`` at entity
+    revision 2 with stored value 0 at state revision 1, which is the
+    state every service-enforced command fixture assumes. The service
+    runs against the shared isolated root under the Looper resource
+    prefix; it needs the storage worker of backlog task T008.
+    """
+
+    available, reason = storage_worker_available()
+    if not available:
+        pytest.skip(reason)
+    adapter = PlatformAdapter.with_root(
+        service_root / f"fixture-service-{uuid.uuid4().hex[:12]}"
+    )
+    service = WorkspaceService.open(adapter, "sales-demo")
+    try:
+        created = service.create_workspace(
+            {
+                "language": "melt/v0.1",
+                "workspaceId": "sales-demo",
+                "title": "Sales analysis",
+                "sources": {},
+                "parameters": {
+                    "minimum": {
+                        "type": "number",
+                        "default": 0,
+                        "nullable": False,
+                        "constraints": {
+                            "minimum": 0,
+                            "maximum": 1000000000,
+                        },
+                    }
+                },
+                "actions": {},
+                "projections": {},
+                "bindings": {},
+                "layout": {"root": None, "hidden": []},
+            },
+            "01-seed-create",
+        )
+        assert created.ok, created.errors
+        replaced = service.apply(
+            parse_command(
+                json.dumps(
+                    {
+                        "protocolVersion": 1,
+                        "workspaceId": "sales-demo",
+                        "requestId": "01-seed-replace",
+                        "method": "workspace.apply",
+                        "expected": {"parameters/minimum": 1},
+                        "operations": [
+                            {
+                                "op": "entity.replace",
+                                "collection": "parameters",
+                                "id": "minimum",
+                                "value": {
+                                    "type": "number",
+                                    "default": 0,
+                                    "nullable": False,
+                                    "constraints": {"minimum": 0},
+                                },
+                            }
+                        ],
+                    }
+                )
+            )
+        )
+        assert replaced.ok, replaced.errors
+        assert service.entity_revisions["parameters/minimum"] == 2
+        assert service.parameter_state["minimum"].value == 0.0
+        yield service
+    finally:
+        service.close()
 
 
 @pytest.fixture(scope="module")
@@ -362,15 +443,12 @@ def read_fixture(entry: dict) -> str:
 
 
 def test_invalid_fixture_fails_with_the_expected_diagnostic(
-    invalid_entry: dict, compiler_inputs
+    invalid_entry: dict, compiler_inputs, request
 ) -> None:
     """Schema entries fail at parse time; compiler entries fail at
-    compilation against the catalog."""
+    compilation against the catalog; service entries fail when the
+    workspace service applies them to the state they address."""
 
-    if invalid_entry["enforcedBy"] == "service":
-        pytest.skip(
-            f"enforced by {invalid_entry['enforcedBy']} ({invalid_entry['ownerTask']})"
-        )
     text = read_fixture(invalid_entry)
     if invalid_entry["enforcedBy"] == "compiler":
         source_catalog, action_registry = compiler_inputs
@@ -385,6 +463,13 @@ def test_invalid_fixture_fails_with_the_expected_diagnostic(
         pairs = [
             (diagnostic.code, diagnostic.path) for diagnostic in result.diagnostics
         ]
+    elif invalid_entry["enforcedBy"] == "service":
+        # Requested lazily so the entries the schema and compiler layers
+        # enforce keep running where no storage worker is available.
+        seeded_service = request.getfixturevalue("seeded_service")
+        response = seeded_service.apply(parse_command(text))
+        assert response.ok is False, invalid_entry["file"]
+        pairs = [(error.code, error.path) for error in response.errors]
     elif invalid_entry["kind"] == "document":
         with pytest.raises(MeltDocumentError) as raised:
             parse_document(text)
