@@ -1207,6 +1207,30 @@ def test_invalid_envelopes_answer_with_salvaged_request_ids(
         {
             "protocolVersion": 1,
             "workspaceId": WORKSPACE,
+            "requestId": "01-register",
+            "method": "action.register",
+            "payload": {
+                "scriptToken": "melttok_example",
+                "environmentId": "env-1",
+                "contract": {
+                    "parameters": {},
+                    "inputs": {},
+                    "outputs": {},
+                },
+            },
+        }
+    ).encode("utf-8")
+    answer = service.handle_request(payload)
+    assert answer.ok is False
+    assert [(error.code, error.path) for error in answer.errors] == [
+        ("E_SCHEMA", "/method")
+    ]
+    # Source import is answered now (backlog task T011): the request
+    # passes method dispatch and reports the missing workspace instead.
+    payload = json.dumps(
+        {
+            "protocolVersion": 1,
+            "workspaceId": WORKSPACE,
             "requestId": "01-import",
             "method": "source.import",
             "payload": {
@@ -1219,5 +1243,5 @@ def test_invalid_envelopes_answer_with_salvaged_request_ids(
     answer = service.handle_request(payload)
     assert answer.ok is False
     assert [(error.code, error.path) for error in answer.errors] == [
-        ("E_SCHEMA", "/method")
+        ("E_REFERENCE", "/workspaceId")
     ]

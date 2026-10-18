@@ -156,10 +156,24 @@ execution. `run.cancel` and `run.inspect` answer and update run records
 idempotently. Artifact and script tokens are minted by the host capture
 operation: opaque, workspace-scoped handles that expire after
 15 minutes (`service.capture_artifact_token` and
-`service.redeem_artifact_token`). Source import, registration, manual
-invocation, and table paging arrive with their owning backlog tasks
-(T011, T013, T016, and T012). The SDK and runner stay scaffolded
-boundaries until backlog tasks T011 and T015.
+`service.redeem_artifact_token`). Registration, manual invocation, and
+table paging arrive with their owning backlog tasks (T013, T016, and
+T012). The SDK and runner stay scaffolded boundaries until backlog
+task T015.
+
+`runtime/workspace` also implements the artifact store registration and
+source import of backlog task T011 (SPEC.md sections 5 and 12.6).
+`source.import` redeems one artifact token, rereads the stored bytes,
+verifies their content hash and size, measures the schema the bytes
+carry (Parquet columns with retained original labels, PNG dimensions,
+UTF-8 text), and commits one immutable, append-only source version
+with import provenance. The `expected` map carries the source record
+revision, or zero for a new source. No document command can forge an
+artifact record: the mutation operations address no source collection,
+and references name only versions the service issued. Run provenance
+is attached by the publication path alone. The verified artifact
+records rebuild the trusted source catalog on restart, so saved
+sources compile again without rereading any bytes.
 
 ## Contract fixtures
 

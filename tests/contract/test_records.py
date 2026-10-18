@@ -146,30 +146,76 @@ def test_registration_record_rejects_other_replay_classes():
 # ---------------------------------------------------------------------------
 
 
-def test_artifact_record_round_trips():
-    wire = {
+def artifact_record() -> dict:
+    return {
         "recordType": "artifact",
         "schemaVersion": 1,
         "artifact": HASH,
+        "kind": "table",
         "byteLength": 4200,
         "mediaType": "application/vnd.apache.parquet",
+        "schema": {
+            "columns": [
+                {"id": "month", "type": "string", "nullable": False},
+                {"id": "revenue", "type": "float64", "nullable": False},
+            ],
+            "rowKey": None,
+        },
         "createdAt": NOW,
     }
-    record = parse_record(wire)
-    assert record_to_wire(record) == wire
+
+
+def test_artifact_record_round_trips():
+    record = parse_record(artifact_record())
+    # The stored wire is the model-normalized form: optional column
+    # fields ride as explicit nulls, the same normalization every
+    # document snapshot uses.
+    assert record_to_wire(record) == {
+        **artifact_record(),
+        "schema": {
+            "columns": [
+                {
+                    "id": "month",
+                    "type": "string",
+                    "nullable": False,
+                    "label": None,
+                    "precision": None,
+                    "scale": None,
+                },
+                {
+                    "id": "revenue",
+                    "type": "float64",
+                    "nullable": False,
+                    "label": None,
+                    "precision": None,
+                    "scale": None,
+                },
+            ],
+            "rowKey": None,
+        },
+    }
+    # The measured schema rides under its wire name and stays readable.
+    assert record.schema.columns[0].id == "month"
 
 
 def test_artifact_record_rejects_uppercase_hashes():
-    assert codes(
-        {
-            "recordType": "artifact",
-            "schemaVersion": 1,
-            "artifact": "sha256:" + "AB" * 32,
-            "byteLength": 1,
-            "mediaType": "image/png",
-            "createdAt": NOW,
-        }
-    )[0] == ("E_ARTIFACT", "/artifact")
+    assert codes(artifact_record() | {"artifact": "sha256:" + "AB" * 32})[0] == (
+        "E_ARTIFACT",
+        "/artifact",
+    )
+
+
+def test_artifact_record_requires_kind_and_schema():
+    # The service registers an artifact only after it verified the
+    # bytes, size, hash, kind, media type, and schema (SPEC.md 5.1), so
+    # the persisted record carries every one of those facts.
+    assert codes(artifact_record() | {"kind": "script"})[0][0] == "E_TYPE"
+    del_kind = dict(artifact_record())
+    del del_kind["kind"]
+    assert codes(del_kind)[0] == ("E_SCHEMA", "/kind")
+    del_schema = dict(artifact_record())
+    del del_schema["schema"]
+    assert codes(del_schema)[0] == ("E_SCHEMA", "/schema")
 
 
 @pytest.mark.parametrize(

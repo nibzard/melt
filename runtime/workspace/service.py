@@ -26,6 +26,15 @@ answers ``approvalRequired`` as a successful result when the permission
 grant is missing: it never grants permission and never reports an
 execution that did not happen.
 
+``source.import`` registers one captured artifact as a new immutable
+source version (SPEC.md sections 5 and 12.6). The service rereads the
+stored bytes, verifies their content hash and size, measures the schema
+the bytes carry, and appends the version with import provenance in one
+atomic transaction. Run provenance is attached only by the publication
+path; no document command reaches it. The verified artifact records
+rebuild the imported source catalog on restart, so saved sources
+compile again without rereading any bytes.
+
 The service is the sole writer: it holds the workspace ``owner.lock``
 through a :class:`~runtime.storage.WorkspaceStore` and commits each
 transaction as one atomic append on the owning connection. Because the
@@ -79,10 +88,18 @@ from runtime.compiler.catalog import (
     EMPTY_ACTION_REGISTRY,
     EMPTY_SOURCE_CATALOG,
     ActionRegistry,
+    CatalogArtifact,
     SourceCatalog,
 )
 from runtime.compiler.compiler import CompileRequest, compile_document
 from runtime.storage import PlatformAdapter, WorkspaceStore
+from runtime.workspace.importer import (
+    MeasuredArtifact,
+    MeltImportError,
+    append_source_version,
+    import_version,
+    register_artifact,
+)
 from runtime.workspace.inspection import (
     active_run_records,
     current_diagnostics,
@@ -97,6 +114,7 @@ from runtime.workspace.mutations import (
     plan_mutation,
 )
 from runtime.workspace.state import (
+    ARTIFACT_KIND,
     LAYOUT_PATH,
     NOTIFICATION_KIND,
     RECEIPT_KIND,
@@ -107,6 +125,7 @@ from runtime.workspace.state import (
     entity_path,
     pointer_key,
     run_path,
+    source_path,
     state_path,
 )
 from runtime.workspace.tokens import CapturedArtifact, TokenStore
@@ -125,18 +144,24 @@ LANGUAGE_VERSION = "melt/v0.1"
 """The only language version this service compiles."""
 
 REVISION_PRECONDITION_METHODS = frozenset(
-    ("workspace.apply", "workspace.preview", "action.invoke", "control.activate")
+    (
+        "workspace.apply",
+        "workspace.preview",
+        "source.import",
+        "action.invoke",
+        "control.activate",
+    )
 )
 """The methods whose envelope may carry an expected map (section 12.6)."""
 
 UNANSWERED_METHODS = frozenset(
-    ("source.import", "action.register", "action.invoke", "table.page")
+    ("action.register", "action.invoke", "table.page")
 )
 """Methods this service does not answer yet.
 
-Each arrives with the subsystem that owns it: artifact import, the
-registration registry, invocation scheduling, and the trusted table
-reader. Until then the methods are refused, never silently accepted.
+Each arrives with the subsystem that owns it: the registration
+registry, invocation scheduling, and the trusted table reader. Until
+then the methods are refused, never silently accepted.
 """
 
 ACTIVE_RUN_STATES = ("queued", "running")
@@ -198,6 +223,7 @@ class WorkspaceService:
         runs: "Mapping[str, RunRecord] | None" = None,
         source_catalog: "SourceCatalog | None" = None,
         action_registry: "ActionRegistry | None" = None,
+        imports: "SourceCatalog | None" = None,
         frame_limit: int | None = None,
         limits: ServiceLimits = DEFAULT_LIMITS,
     ):
@@ -206,7 +232,9 @@ class WorkspaceService:
         self._receipts = receipts
         self._notifications = notifications
         self._runs: dict[str, RunRecord] = dict(runs or {})
-        self._source_catalog = source_catalog or EMPTY_SOURCE_CATALOG
+        self._fixture_catalog = source_catalog or EMPTY_SOURCE_CATALOG
+        self._imports = imports or SourceCatalog()
+        self._source_catalog = self._merge_catalog()
         self._action_registry = action_registry or EMPTY_ACTION_REGISTRY
         self._limits = limits
         self._frame_limit = (
@@ -235,7 +263,7 @@ class WorkspaceService:
 
         store = WorkspaceStore.open(platform, workspace_id, node=node)
         try:
-            state, receipts, notifications, runs = _load_state(store)
+            state, receipts, notifications, runs, imports = _load_state(store)
         except BaseException:
             store.close()
             raise
@@ -247,6 +275,7 @@ class WorkspaceService:
             runs=runs,
             source_catalog=source_catalog,
             action_registry=action_registry,
+            imports=imports,
             frame_limit=frame_limit,
             limits=limits,
         )
@@ -316,6 +345,34 @@ class WorkspaceService:
 
         return self._store
 
+    @property
+    def source_catalog(self) -> SourceCatalog:
+        """The trusted source catalog this service compiles against.
+
+        Imported artifacts override fixture entries, because the service
+        measured those bytes itself (SPEC.md sections 5.1 and 11.1).
+        """
+
+        return SourceCatalog(dict(self._source_catalog.artifacts))
+
+    def _merge_catalog(self) -> SourceCatalog:
+        return SourceCatalog(
+            {**self._fixture_catalog.artifacts, **self._imports.artifacts}
+        )
+
+    def _catalog_entry_of(self, measured: MeasuredArtifact) -> CatalogArtifact:
+        """Return the catalog entry one measured artifact contributes."""
+
+        return CatalogArtifact.model_validate(
+            {
+                "path": f"artifacts/{measured.artifact[len('sha256:') :]}",
+                "kind": measured.kind,
+                "mediaType": measured.mediaType,
+                "byteLength": measured.byteLength,
+                "schema": measured.schema,
+            }
+        )
+
     def receipt(self, request_id: str) -> "dict | None":
         stored = self._receipts.get(request_id)
         return None if stored is None else dict(stored)
@@ -375,6 +432,7 @@ class WorkspaceService:
             "workspace.create": self._workspace_create,
             "workspace.inspect": self._workspace_inspect,
             "workspace.subscribe": self._workspace_subscribe,
+            "source.import": self._source_import,
             "control.activate": self._control_activate,
             "run.cancel": self._run_cancel,
             "run.inspect": self._run_inspect,
@@ -713,30 +771,66 @@ class WorkspaceService:
             }
         else:
             result = result_of(new_state)
+        active = tuple(record_to_wire(run) for run in active_run_records(self._runs))
+        return self._append_transaction(
+            request_id,
+            method,
+            payload_hash,
+            new_state,
+            changed=changed,
+            result=result,
+            leading_records=[
+                (
+                    SNAPSHOT_KIND,
+                    _snapshot_wire(
+                        new_state, self._state.commit_sequence, active
+                    ),
+                )
+            ],
+        )
+
+    def _append_transaction(
+        self,
+        request_id: str,
+        method: str,
+        payload_hash: str,
+        new_state: WorkspaceState,
+        *,
+        changed: "Sequence[str]",
+        result: dict,
+        leading_records: "Sequence[tuple[str, dict]]" = (),
+        trailing_records: "Sequence[tuple[str, dict]]" = (),
+    ) -> OkResponse:
+        """Append one transaction's records atomically and adopt its state.
+
+        The receipt sits between the leading records (the committed
+        snapshot) and the trailing records (run and artifact records),
+        and the notification lands last, so every consumer that reads
+        the stream in order sees a change only after its receipt.
+        """
+
+        predicted = new_state.commit_sequence
         response = OkResponse(
             requestId=request_id,
             ok=True,
             commitSequence=predicted,
             result=result,
         )
-
-        active = tuple(record_to_wire(run) for run in active_run_records(self._runs))
-        records: list[tuple[str, dict]] = [
-            (SNAPSHOT_KIND, _snapshot_wire(new_state, self._state.commit_sequence, active)),
-            (
-                RECEIPT_KIND,
-                {
-                    "recordType": "commandReceipt",
-                    "schemaVersion": RECORD_SCHEMA_VERSION,
-                    "requestId": request_id,
-                    "method": method,
-                    "requestPayloadHash": payload_hash,
-                    "response": model_to_wire(response),
-                    "commitSequence": predicted,
-                    "receivedAt": _utc_now(),
-                },
-            ),
-        ]
+        receipt = (
+            RECEIPT_KIND,
+            {
+                "recordType": "commandReceipt",
+                "schemaVersion": RECORD_SCHEMA_VERSION,
+                "requestId": request_id,
+                "method": method,
+                "requestPayloadHash": payload_hash,
+                "response": model_to_wire(response),
+                "commitSequence": predicted,
+                "receivedAt": _utc_now(),
+            },
+        )
+        records: list[tuple[str, dict]] = [*leading_records, receipt]
+        records.extend(trailing_records)
         if changed:
             records.append(
                 (
@@ -747,7 +841,7 @@ class WorkspaceService:
                         "workspaceId": new_state.workspace_id,
                         "epoch": new_state.epoch,
                         "commitSequence": predicted,
-                        "changedRecords": changed,
+                        "changedRecords": list(changed),
                     },
                 )
             )
@@ -762,7 +856,7 @@ class WorkspaceService:
                 " prediction is broken"
             )
         self._state = new_state
-        self._receipts[request_id] = dict(records[1][1])
+        self._receipts[request_id] = dict(receipt[1])
         if changed:
             self._notifications.append(dict(records[-1][1]))
         return response
@@ -786,60 +880,20 @@ class WorkspaceService:
         one notification only when records changed.
         """
 
-        predicted = self._state.commit_sequence + 1
-        response = OkResponse(
-            requestId=request_id,
-            ok=True,
-            commitSequence=predicted,
+        new_state = self._state.with_commit(self._state.commit_sequence + 1)
+        response = self._append_transaction(
+            request_id,
+            method,
+            payload_hash,
+            new_state,
+            changed=changed,
             result=result,
+            trailing_records=[
+                (RUN_KIND, record_to_wire(run)) for run in run_records
+            ],
         )
-        records: list[tuple[str, dict]] = [
-            (
-                RECEIPT_KIND,
-                {
-                    "recordType": "commandReceipt",
-                    "schemaVersion": RECORD_SCHEMA_VERSION,
-                    "requestId": request_id,
-                    "method": method,
-                    "requestPayloadHash": payload_hash,
-                    "response": model_to_wire(response),
-                    "commitSequence": predicted,
-                    "receivedAt": _utc_now(),
-                },
-            )
-        ]
-        for run in run_records:
-            records.append((RUN_KIND, record_to_wire(run)))
-        if changed:
-            records.append(
-                (
-                    NOTIFICATION_KIND,
-                    {
-                        "recordType": "changeNotification",
-                        "schemaVersion": RECORD_SCHEMA_VERSION,
-                        "workspaceId": self._state.workspace_id,
-                        "epoch": self._state.epoch,
-                        "commitSequence": predicted,
-                        "changedRecords": list(changed),
-                    },
-                )
-            )
-        for kind, data in records:
-            parse_record(data)  # refuse to commit a record we would reject
-
-        sequence, _ = self._store.append_records(records)
-        if sequence != predicted:
-            raise RuntimeError(
-                f"commit landed at sequence {sequence} instead of the"
-                f" predicted {predicted}; the single-writer sequence"
-                " prediction is broken"
-            )
-        self._state = self._state.with_commit(predicted)
-        self._receipts[request_id] = dict(records[0][1])
         for run in run_records:
             self._runs[run.runId] = run
-        if changed:
-            self._notifications.append(dict(records[-1][1]))
         return response
 
     # ------------------------------------------------------------------
@@ -975,6 +1029,153 @@ class WorkspaceService:
             commitSequence=self._state.commit_sequence,
             result=result,
         )
+
+    # ------------------------------------------------------------------
+    # Source import (SPEC.md sections 5, 12.6)
+    # ------------------------------------------------------------------
+
+    def _source_import(self, envelope: CommandEnvelope) -> CommandResponse:
+        """Register one captured artifact as a new source version.
+
+        The artifact token stands for bytes the service itself captured
+        and stored; a client cannot supply a path or forge a record
+        (SPEC.md sections 5.1 and 12.6). The service rereads the stored
+        bytes, verifies their hash and size, measures their schema, and
+        appends one immutable version to the logical source. ``expected``
+        carries the source record's revision, or zero for a new source,
+        so a concurrent import surfaces as a conflict instead of a
+        silent overwrite. Imports use durable request receipts like
+        every other admission.
+        """
+
+        payload_hash = canonical_hash(model_to_wire(envelope))
+        replay = self._replay_or_reject(envelope.requestId, payload_hash)
+        if replay is not None:
+            return replay
+        parsed = _parsed_payload(envelope)
+        if isinstance(parsed, MeltCommandError):
+            return _rejected(envelope.requestId, *parsed.diagnostics)
+        if not self._state.present:
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.REFERENCE,
+                    "/workspaceId",
+                    f"workspace {self._state.workspace_id!r} holds no"
+                    " document; create the workspace before importing"
+                    " sources",
+                ),
+            )
+        record = source_path(parsed.sourceId)
+        diagnostics = expectation_diagnostics(
+            self._state, dict(envelope.expected or {}), [record]
+        )
+        if diagnostics:
+            return _rejected(envelope.requestId, *sorted_diagnostics(diagnostics))
+        captured = self._tokens.redeem(parsed.artifactToken)
+        if captured is None:
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.ARTIFACT,
+                    "/payload/artifactToken",
+                    "artifact token is unknown, expired, or scoped to"
+                    " another workspace",
+                    hint="Capture the artifact again through the host"
+                    " import operation; a restart withdraws every"
+                    " outstanding token.",
+                ),
+            )
+        try:
+            measured = register_artifact(self._store.artifacts, captured)
+            version = import_version(measured, parsed.originLabel)
+            candidate, number = append_source_version(
+                self._state.document, parsed.sourceId, measured, version
+            )
+        except MeltImportError as error:
+            return _rejected(envelope.requestId, *error.diagnostics)
+
+        entry = self._catalog_entry_of(measured)
+        catalog = SourceCatalog(
+            {**self._source_catalog.artifacts, measured.artifact: entry}
+        )
+        result = compile_document(
+            CompileRequest(
+                document=candidate,
+                source_catalog=catalog,
+                action_registry=self._action_registry,
+                parameter_states={
+                    parameter_id: {
+                        "value": stored.value,
+                        "revision": stored.revision,
+                    }
+                    for parameter_id, stored in self._state.parameter_states.items()
+                },
+            )
+        )
+        if not result.ok:
+            return _rejected(envelope.requestId, *result.diagnostics)
+
+        entity_revisions = dict(self._state.entity_revisions)
+        new_revision = self._state.current_revision(record) + 1
+        entity_revisions[record] = new_revision
+        new_state = WorkspaceState(
+            workspace_id=self._state.workspace_id,
+            epoch=self._state.epoch,
+            commit_sequence=self._state.commit_sequence + 1,
+            # The normalized wire form keeps the canonical document hash
+            # stable across restarts (SPEC.md section 4.2).
+            document=model_to_wire(Document.model_validate(candidate)),
+            entity_revisions=entity_revisions,
+            parameter_states=dict(self._state.parameter_states),
+            incarnations=dict(self._state.incarnations),
+        )
+        active = tuple(record_to_wire(run) for run in active_run_records(self._runs))
+        trailing: list[tuple[str, dict]] = []
+        if measured.artifact not in self._imports.artifacts:
+            # The first registration of these bytes commits the verified
+            # artifact record the reopened catalog rebuilds from.
+            trailing.append(
+                (
+                    ARTIFACT_KIND,
+                    {
+                        "recordType": "artifact",
+                        "schemaVersion": RECORD_SCHEMA_VERSION,
+                        "artifact": measured.artifact,
+                        "kind": measured.kind,
+                        "mediaType": measured.mediaType,
+                        "byteLength": measured.byteLength,
+                        "schema": measured.schema,
+                        "createdAt": _utc_now(),
+                    },
+                )
+            )
+        import_result = {
+            "source": {"sourceId": parsed.sourceId, "version": number},
+            "sourceRevision": new_revision,
+            "artifact": measured.artifact,
+            "kind": measured.kind,
+            "mediaType": measured.mediaType,
+            "byteLength": measured.byteLength,
+            "schema": measured.schema,
+        }
+        response = self._append_transaction(
+            envelope.requestId,
+            envelope.method,
+            payload_hash,
+            new_state,
+            changed=[record],
+            result=import_result,
+            leading_records=[
+                (SNAPSHOT_KIND, _snapshot_wire(new_state, self._state.commit_sequence, active))
+            ],
+            trailing_records=trailing,
+        )
+        self._imports = SourceCatalog(
+            {**self._imports.artifacts, measured.artifact: entry}
+        )
+        self._source_catalog = self._merge_catalog()
+        return response
 
     # ------------------------------------------------------------------
     # Control activation and runs (SPEC.md sections 12.6, 13.1)
@@ -1356,14 +1557,25 @@ class WorkspaceService:
 def _load_state(
     store: WorkspaceStore,
 ) -> tuple[
-    WorkspaceState, dict[str, dict], list[dict], dict[str, RunRecord]
+    WorkspaceState,
+    dict[str, dict],
+    list[dict],
+    dict[str, RunRecord],
+    SourceCatalog,
 ]:
-    """Rebuild the current state from the committed record stream."""
+    """Rebuild the current state from the committed record stream.
+
+    The verified artifact records rebuild the imported source catalog,
+    so a reopened workspace compiles its saved sources against the same
+    measured schemas without rereading any artifact bytes (SPEC.md
+    section 14, startup steps 2 and 3).
+    """
 
     latest_snapshot = None
     receipts: dict[str, dict] = {}
     notifications: list[dict] = []
     runs: dict[str, RunRecord] = {}
+    artifacts: dict[str, CatalogArtifact] = {}
     for record in store.records():
         if record.kind == SNAPSHOT_KIND:
             latest_snapshot = record
@@ -1376,13 +1588,25 @@ def _load_state(
         elif record.kind == RUN_KIND:
             run = parse_record(record.data)
             runs[run.runId] = run
+        elif record.kind == ARTIFACT_KIND:
+            artifact = parse_record(record.data)
+            artifacts[artifact.artifact] = CatalogArtifact.model_validate(
+                {
+                    "path": f"artifacts/{artifact.artifact[len('sha256:') :]}",
+                    "kind": artifact.kind,
+                    "mediaType": artifact.mediaType,
+                    "byteLength": artifact.byteLength,
+                    "schema": model_to_wire(artifact.schema),
+                }
+            )
+    imports = SourceCatalog(artifacts)
     if latest_snapshot is None:
         state = WorkspaceState(
             workspace_id=store.workspace_id,
             epoch=store.epoch,
             commit_sequence=store.commit_sequence,
         )
-        return state, receipts, notifications, runs
+        return state, receipts, notifications, runs, imports
     snapshot = parse_record(latest_snapshot.data)
     state = WorkspaceState(
         workspace_id=store.workspace_id,
@@ -1398,7 +1622,7 @@ def _load_state(
         },
         incarnations=dict(snapshot.incarnations),
     )
-    return state, receipts, notifications, runs
+    return state, receipts, notifications, runs, imports
 
 
 def _snapshot_wire(
