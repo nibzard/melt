@@ -35,6 +35,20 @@ path; no document command reaches it. The verified artifact records
 rebuild the imported source catalog on restart, so saved sources
 compile again without rereading any bytes.
 
+``action.register`` stores one trusted registration (SPEC.md sections
+7.2 and 12.6): the captured script artifact and hash, the project root
+and working-directory policy, the resolved environment fingerprint,
+the parameter and input contract with declared outputs, the required
+permission, and the fixed ``nonReplaySafe`` classification.
+Registration verifies the stored bytes and never executes the script.
+The registration identifier covers the captured bytes and the
+environment, so edited scripts arrive as new registrations and a
+changed contract over the same capture advances the registration's
+immutable revision. Committed registration records rebuild the action
+registry on restart, so saved actions compile again; an action whose
+registration is unavailable stays disabled while its projections
+remain readable.
+
 The service is the sole writer: it holds the workspace ``owner.lock``
 through a :class:`~runtime.storage.WorkspaceStore` and commits each
 transaction as one atomic append on the owning connection. Because the
@@ -80,6 +94,7 @@ from melt.schema.document import Document, document_semantic_diagnostics
 from melt.schema.limits import DEFAULT_LIMITS, ServiceLimits, limits_wire
 from melt.schema.records import (
     RECORD_SCHEMA_VERSION,
+    RegistrationRecord,
     RunRecord,
     parse_record,
     record_to_wire,
@@ -113,17 +128,31 @@ from runtime.workspace.mutations import (
     initial_state_from_document,
     plan_mutation,
 )
+from runtime.workspace.registry import (
+    EnvironmentCatalog,
+    KnownEnvironment,
+    MeltRegistrationError,
+    build_registration,
+    contract_of,
+    registration_entry_of,
+    registration_identity,
+    registration_to_wire,
+    register_script,
+    validate_contract,
+)
 from runtime.workspace.state import (
     ARTIFACT_KIND,
     LAYOUT_PATH,
     NOTIFICATION_KIND,
     RECEIPT_KIND,
+    REGISTRATION_KIND,
     RUN_KIND,
     SNAPSHOT_KIND,
     ParameterStateValue,
     WorkspaceState,
     entity_path,
     pointer_key,
+    registration_path,
     run_path,
     source_path,
     state_path,
@@ -155,13 +184,13 @@ REVISION_PRECONDITION_METHODS = frozenset(
 """The methods whose envelope may carry an expected map (section 12.6)."""
 
 UNANSWERED_METHODS = frozenset(
-    ("action.register", "action.invoke", "table.page")
+    ("action.invoke", "table.page")
 )
 """Methods this service does not answer yet.
 
-Each arrives with the subsystem that owns it: the registration
-registry, invocation scheduling, and the trusted table reader. Until
-then the methods are refused, never silently accepted.
+Each arrives with the subsystem that owns it: invocation scheduling
+and the trusted table reader. Until then the methods are refused,
+never silently accepted.
 """
 
 ACTIVE_RUN_STATES = ("queued", "running")
@@ -224,6 +253,8 @@ class WorkspaceService:
         source_catalog: "SourceCatalog | None" = None,
         action_registry: "ActionRegistry | None" = None,
         imports: "SourceCatalog | None" = None,
+        registrations: "Mapping[str, RegistrationRecord] | None" = None,
+        environments: "Mapping[str, str] | None" = None,
         frame_limit: int | None = None,
         limits: ServiceLimits = DEFAULT_LIMITS,
     ):
@@ -235,7 +266,12 @@ class WorkspaceService:
         self._fixture_catalog = source_catalog or EMPTY_SOURCE_CATALOG
         self._imports = imports or SourceCatalog()
         self._source_catalog = self._merge_catalog()
-        self._action_registry = action_registry or EMPTY_ACTION_REGISTRY
+        self._fixture_registry = action_registry or EMPTY_ACTION_REGISTRY
+        self._registrations: dict[str, RegistrationRecord] = dict(
+            registrations or {}
+        )
+        self._action_registry = self._merge_registry()
+        self._environments = EnvironmentCatalog(environments)
         self._limits = limits
         self._frame_limit = (
             DEFAULT_LIMITS.control_frame_bytes if frame_limit is None else frame_limit
@@ -255,6 +291,7 @@ class WorkspaceService:
         *,
         source_catalog: "SourceCatalog | None" = None,
         action_registry: "ActionRegistry | None" = None,
+        environments: "Mapping[str, str] | None" = None,
         frame_limit: int | None = None,
         limits: ServiceLimits = DEFAULT_LIMITS,
         node: str | None = None,
@@ -263,7 +300,9 @@ class WorkspaceService:
 
         store = WorkspaceStore.open(platform, workspace_id, node=node)
         try:
-            state, receipts, notifications, runs, imports = _load_state(store)
+            state, receipts, notifications, runs, imports, registrations = (
+                _load_state(store)
+            )
         except BaseException:
             store.close()
             raise
@@ -276,6 +315,8 @@ class WorkspaceService:
             source_catalog=source_catalog,
             action_registry=action_registry,
             imports=imports,
+            registrations=registrations,
+            environments=environments,
             frame_limit=frame_limit,
             limits=limits,
         )
@@ -355,9 +396,42 @@ class WorkspaceService:
 
         return SourceCatalog(dict(self._source_catalog.artifacts))
 
+    @property
+    def action_registry(self) -> ActionRegistry:
+        """The trusted action registry this service compiles against.
+
+        Registrations the service committed override fixture entries,
+        because the service captured and verified those scripts itself
+        (SPEC.md sections 7.2 and 11.1).
+        """
+
+        return ActionRegistry(dict(self._action_registry.registrations))
+
+    @property
+    def registrations(self) -> dict[str, RegistrationRecord]:
+        """Every committed registration, keyed by registration ID."""
+
+        return dict(self._registrations)
+
+    def known_environments(self) -> dict[str, KnownEnvironment]:
+        """The environments this service may register scripts against."""
+
+        return self._environments.entries()
+
     def _merge_catalog(self) -> SourceCatalog:
         return SourceCatalog(
             {**self._fixture_catalog.artifacts, **self._imports.artifacts}
+        )
+
+    def _merge_registry(self) -> ActionRegistry:
+        return ActionRegistry(
+            {
+                **self._fixture_registry.registrations,
+                **{
+                    registration_id: registration_entry_of(record)
+                    for registration_id, record in self._registrations.items()
+                },
+            }
         )
 
     def _catalog_entry_of(self, measured: MeasuredArtifact) -> CatalogArtifact:
@@ -433,6 +507,7 @@ class WorkspaceService:
             "workspace.inspect": self._workspace_inspect,
             "workspace.subscribe": self._workspace_subscribe,
             "source.import": self._source_import,
+            "action.register": self._action_register,
             "control.activate": self._control_activate,
             "run.cancel": self._run_cancel,
             "run.inspect": self._run_inspect,
@@ -1178,6 +1253,132 @@ class WorkspaceService:
         return response
 
     # ------------------------------------------------------------------
+    # Action registration (SPEC.md sections 7.2 and 12.6)
+    # ------------------------------------------------------------------
+
+    def _action_register(self, envelope: CommandEnvelope) -> CommandResponse:
+        """Register one captured script as a trusted registration.
+
+        The script token stands for bytes the service itself captured
+        and stored; the environment must already be known to the service
+        (SPEC.md section 12.6). Registration verifies the stored bytes
+        and never executes the script: no run record is created, no
+        process is started, and no permission is granted. The
+        registration identifier covers the captured bytes and the
+        resolved environment, so an edited script arrives as a new
+        registration while an unchanged capture resolves to the
+        registration it already has. A changed contract over the same
+        capture advances that registration's immutable revision.
+        """
+
+        payload_hash = canonical_hash(model_to_wire(envelope))
+        replay = self._replay_or_reject(envelope.requestId, payload_hash)
+        if replay is not None:
+            return replay
+        parsed = _parsed_payload(envelope)
+        if isinstance(parsed, MeltCommandError):
+            return _rejected(envelope.requestId, *parsed.diagnostics)
+        if not self._state.present:
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.REFERENCE,
+                    "/workspaceId",
+                    f"workspace {self._state.workspace_id!r} holds no"
+                    " document; create the workspace before registering"
+                    " scripts",
+                ),
+            )
+        environment = self._environments.resolve(parsed.environmentId)
+        if environment is None:
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.REFERENCE,
+                    "/payload/environmentId",
+                    f"environment {parsed.environmentId!r} is not known to"
+                    " this service",
+                    hint="Resolve the environment with the service first;"
+                    " an environment that went missing disables new"
+                    " registrations, not saved projections.",
+                ),
+            )
+        captured = self._tokens.redeem(parsed.scriptToken)
+        if captured is None:
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.ARTIFACT,
+                    "/payload/scriptToken",
+                    "script token is unknown, expired, or scoped to"
+                    " another workspace",
+                    hint="Capture the script again through the host"
+                    " registration operation; a restart withdraws every"
+                    " outstanding token.",
+                ),
+            )
+        try:
+            script = register_script(self._store.artifacts, captured)
+            validate_contract(parsed.contract)
+        except MeltRegistrationError as error:
+            return _rejected(envelope.requestId, *error.diagnostics)
+
+        registration_id = registration_identity(
+            script.artifact, environment.fingerprint
+        )
+        existing = self._registrations.get(registration_id)
+        if existing is not None and _same_contract(existing, parsed.contract):
+            # The identical capture is already registered: answer the
+            # stored registration and commit nothing but the receipt.
+            result = _registration_result(existing, environment, created=False)
+            return self._commit_receipted(
+                envelope.requestId, envelope.method, payload_hash, result
+            )
+        revision = 1 if existing is None else existing.revision + 1
+        record = build_registration(
+            registration_id=registration_id,
+            revision=revision,
+            script=script,
+            environment_fingerprint=environment.fingerprint,
+            contract=parsed.contract,
+            created_at=_utc_now(),
+        )
+        record_path = registration_path(registration_id)
+        entity_revisions = dict(self._state.entity_revisions)
+        entity_revisions[record_path] = revision
+        new_state = WorkspaceState(
+            workspace_id=self._state.workspace_id,
+            epoch=self._state.epoch,
+            commit_sequence=self._state.commit_sequence + 1,
+            # Registration touches no document record; the committed
+            # document passes through unchanged.
+            document=self._state.document,
+            entity_revisions=entity_revisions,
+            parameter_states=dict(self._state.parameter_states),
+            incarnations=dict(self._state.incarnations),
+        )
+        active = tuple(record_to_wire(run) for run in active_run_records(self._runs))
+        result = _registration_result(record, environment, created=True)
+        response = self._append_transaction(
+            envelope.requestId,
+            envelope.method,
+            payload_hash,
+            new_state,
+            changed=[record_path],
+            result=result,
+            leading_records=[
+                (
+                    SNAPSHOT_KIND,
+                    _snapshot_wire(new_state, self._state.commit_sequence, active),
+                )
+            ],
+            trailing_records=[(REGISTRATION_KIND, registration_to_wire(record))],
+        )
+        self._registrations[registration_id] = record
+        self._action_registry = self._merge_registry()
+        return response
+
+    # ------------------------------------------------------------------
     # Control activation and runs (SPEC.md sections 12.6, 13.1)
     # ------------------------------------------------------------------
 
@@ -1562,13 +1763,16 @@ def _load_state(
     list[dict],
     dict[str, RunRecord],
     SourceCatalog,
+    dict[str, RegistrationRecord],
 ]:
     """Rebuild the current state from the committed record stream.
 
-    The verified artifact records rebuild the imported source catalog,
+    The verified artifact records rebuild the imported source catalog
+    and the committed registration records rebuild the action registry,
     so a reopened workspace compiles its saved sources against the same
-    measured schemas without rereading any artifact bytes (SPEC.md
-    section 14, startup steps 2 and 3).
+    measured schemas and its saved actions against the same
+    registrations, without rereading any artifact bytes or executing
+    project code (SPEC.md section 14, startup steps 2 and 3).
     """
 
     latest_snapshot = None
@@ -1576,6 +1780,7 @@ def _load_state(
     notifications: list[dict] = []
     runs: dict[str, RunRecord] = {}
     artifacts: dict[str, CatalogArtifact] = {}
+    registrations: dict[str, RegistrationRecord] = {}
     for record in store.records():
         if record.kind == SNAPSHOT_KIND:
             latest_snapshot = record
@@ -1599,6 +1804,9 @@ def _load_state(
                     "schema": model_to_wire(artifact.schema),
                 }
             )
+        elif record.kind == REGISTRATION_KIND:
+            registration = parse_record(record.data)
+            registrations[registration.registrationId] = registration
     imports = SourceCatalog(artifacts)
     if latest_snapshot is None:
         state = WorkspaceState(
@@ -1606,7 +1814,7 @@ def _load_state(
             epoch=store.epoch,
             commit_sequence=store.commit_sequence,
         )
-        return state, receipts, notifications, runs, imports
+        return state, receipts, notifications, runs, imports, registrations
     snapshot = parse_record(latest_snapshot.data)
     state = WorkspaceState(
         workspace_id=store.workspace_id,
@@ -1622,7 +1830,7 @@ def _load_state(
         },
         incarnations=dict(snapshot.incarnations),
     )
-    return state, receipts, notifications, runs, imports
+    return state, receipts, notifications, runs, imports, registrations
 
 
 def _snapshot_wire(
@@ -1664,6 +1872,35 @@ def _snapshot_wire(
 
 def model_to_wire_diagnostics(error: MeltSchemaError) -> list[dict]:
     return [model_to_wire(item) for item in error.diagnostics]
+
+
+def _same_contract(record: RegistrationRecord, contract) -> bool:
+    """Report whether a registration already declares this contract."""
+
+    return model_to_wire(contract_of(record)) == model_to_wire(contract)
+
+
+def _registration_result(
+    record: RegistrationRecord, environment: KnownEnvironment, *, created: bool
+) -> dict:
+    """Build the answer of one ``action.register`` request (12.6)."""
+
+    return {
+        "registrationId": record.registrationId,
+        "revision": record.revision,
+        "created": created,
+        "script": {
+            "artifact": record.script.artifact,
+            "byteLength": record.script.byteLength,
+            "mediaType": record.script.mediaType,
+        },
+        "environmentId": environment.environment_id,
+        "environmentFingerprint": record.environmentFingerprint,
+        "projectRoot": record.projectRoot,
+        "workingDirectoryPolicy": record.workingDirectoryPolicy,
+        "requiredPermission": record.requiredPermission,
+        "replayClassification": record.replayClassification,
+    }
 
 
 def _salvage_request_id(payload: bytes) -> "str | None":

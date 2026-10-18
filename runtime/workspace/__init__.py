@@ -11,7 +11,13 @@ activation, and run cancellation and inspection. ``source.import``
 registers one captured artifact as a new immutable source version: the
 service verifies the stored bytes, their hash, size, kind, media type,
 and measured schema before anything is committed, and no document
-command can forge an artifact record. Artifact and script tokens are
+command can forge an artifact record. ``action.register`` stores one
+trusted registration: the captured script artifact and hash, the
+project root and working-directory policy, the environment
+fingerprint, the contract, the required permission, and the fixed
+``nonReplaySafe`` classification. Registration verifies bytes and
+never executes the script; edited scripts become new registrations.
+Artifact and script tokens are
 minted by the host capture operation and stay workspace-scoped for
 15 minutes.
 
@@ -62,6 +68,20 @@ from runtime.workspace.mutations import (
     initial_state_from_document,
     plan_mutation,
 )
+from runtime.workspace.registry import (
+    DEFAULT_ENVIRONMENT_ID,
+    EnvironmentCatalog,
+    KnownEnvironment,
+    MeltRegistrationError,
+    MeasuredScript,
+    build_registration,
+    contract_of,
+    local_environment,
+    registration_entry_of,
+    registration_identity,
+    register_script,
+    validate_contract,
+)
 from runtime.workspace.service import (
     LANGUAGE_VERSION,
     REVISION_PRECONDITION_METHODS,
@@ -79,6 +99,8 @@ from runtime.workspace.state import (
     LAYOUT_PATH,
     NOTIFICATION_KIND,
     RECEIPT_KIND,
+    REGISTRATION_COLLECTION,
+    REGISTRATION_KIND,
     RUN_KIND,
     SNAPSHOT_KIND,
     SOURCE_COLLECTION,
@@ -86,6 +108,7 @@ from runtime.workspace.state import (
     WorkspaceState,
     entity_path,
     pointer_key,
+    registration_path,
     run_path,
     source_path,
     state_path,
@@ -104,6 +127,7 @@ __all__ = [
     "ACTIVE_RUN_STATES",
     "ARTIFACT_KIND",
     "CAPTURE_KINDS",
+    "DEFAULT_ENVIRONMENT_ID",
     "ENTITY_COLLECTIONS",
     "EntityTouch",
     "IMPORT_KINDS",
@@ -116,6 +140,8 @@ __all__ = [
     "PendingSet",
     "RECEIPT_KIND",
     "REVISION_PRECONDITION_METHODS",
+    "REGISTRATION_COLLECTION",
+    "REGISTRATION_KIND",
     "RUN_KIND",
     "SNAPSHOT_KIND",
     "SNAPSHOT_REQUIRED",
@@ -126,8 +152,12 @@ __all__ = [
     "TOKEN_LIFETIME",
     "TOKEN_PREFIX",
     "CapturedArtifact",
+    "EnvironmentCatalog",
+    "KnownEnvironment",
     "MeasuredArtifact",
+    "MeasuredScript",
     "MeltImportError",
+    "MeltRegistrationError",
     "MeltTokenError",
     "TokenStore",
     "UNANSWERED_METHODS",
@@ -135,21 +165,29 @@ __all__ = [
     "WorkspaceState",
     "active_run_records",
     "append_source_version",
+    "build_registration",
+    "contract_of",
     "current_diagnostics",
     "entity_path",
     "expectation_diagnostics",
     "import_version",
     "initial_state_from_document",
+    "local_environment",
     "measure_artifact",
     "next_version_number",
     "plan_mutation",
     "pointer_key",
     "preview_effects",
     "register_artifact",
+    "register_script",
+    "registration_entry_of",
+    "registration_identity",
+    "registration_path",
     "run_path",
     "run_version",
     "snapshot_result",
     "source_path",
     "state_path",
+    "validate_contract",
     "values_equal",
 ]

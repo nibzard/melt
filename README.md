@@ -156,10 +156,9 @@ execution. `run.cancel` and `run.inspect` answer and update run records
 idempotently. Artifact and script tokens are minted by the host capture
 operation: opaque, workspace-scoped handles that expire after
 15 minutes (`service.capture_artifact_token` and
-`service.redeem_artifact_token`). Registration, manual invocation, and
-table paging arrive with their owning backlog tasks (T013, T016, and
-T012). The SDK and runner stay scaffolded boundaries until backlog
-task T015.
+`service.redeem_artifact_token`). Manual invocation and table paging
+arrive with their owning backlog tasks (T016 and T012). The SDK and
+runner stay scaffolded boundaries until backlog task T015.
 
 `runtime/workspace` also implements the artifact store registration and
 source import of backlog task T011 (SPEC.md sections 5 and 12.6).
@@ -174,6 +173,29 @@ and references name only versions the service issued. Run provenance
 is attached by the publication path alone. The verified artifact
 records rebuild the trusted source catalog on restart, so saved
 sources compile again without rereading any bytes.
+
+`runtime/workspace` also implements the action registration registry of
+backlog task T013 (SPEC.md sections 7.2 and 12.6). `action.register`
+redeems one script token, rereads the stored bytes, verifies their
+content hash and size, and commits one trusted registration record:
+the registration identifier and immutable revision, the captured
+script artifact and hash, the project root and working-directory
+policy, the resolved environment fingerprint, the parameter and input
+contract with declared outputs, the required execution permission, and
+the fixed `nonReplaySafe` classification. Registration never executes
+the script. The identifier covers the captured bytes and the resolved
+environment, so editing a script produces a new registration and an
+unchanged capture resolves to the registration it already has; a
+changed contract over the same capture advances the registration's
+revision. Action mappings must exactly satisfy the registration
+contract: the compiler rejects a mapped parameter that widens or
+leaves open any constraint dimension the registration bounds. The
+committed registration records rebuild the registry on restart, so
+saved actions compile again; an action whose registration is
+unavailable after restoration stays disabled while its projections
+remain readable. Environments resolve through the service
+(`service.known_environments()`), and the local interpreter is always
+known.
 
 ## Contract fixtures
 
