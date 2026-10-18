@@ -1,4 +1,4 @@
-.PHONY: check lock probe-setup probe fixtures
+.PHONY: check lock probe-setup probe fixtures benchmark-round1
 
 # One command that runs the full Melt test suite (backlog task T001).
 check:
@@ -7,6 +7,13 @@ check:
 # Re-resolve dependencies and rewrite uv.lock after editing pyproject.toml.
 lock:
 	uv lock
+
+# Record the round 1 performance measurements of SPEC.md section 19
+# (backlog task T023). The raw JSON lands under the ignored
+# build/benchmarks; pass --output to refresh the committed record
+# under docs/performance together with its report.
+benchmark-round1:
+	uv run --locked python3 scripts/benchmark_round1.py
 
 # Install the pinned Pi Durable storage adapter (backlog task T002,
 # SPEC.md section 14). check.sh runs this when the pin is missing.
