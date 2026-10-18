@@ -3,7 +3,8 @@
 The real artifact bytes that the contract fixtures cite. The task
 suite for the hero workflow (SPEC.md section 18.2, backlog task T019)
 reuses the sales table. The command-line harness (backlog task T018)
-drives its full loop from these files.
+drives its full loop from these files, and the hero proof of task T019
+runs the six steps over them.
 
 | File | Contents |
 |---|---|
@@ -14,6 +15,7 @@ drives its full loop from these files.
 | `sales-script.py` | The registered script of the loop: the example script of SPEC.md section 13.2 |
 | `contract.json` | The registration contract of the script (parameters, inputs, outputs) |
 | `definitions.json` | The definition apply of the loop: the action, both projections, both bindings, and the layout, with a `${registration}` placeholder for the minted registration identifier |
+| `layout-move.json` | The pane move of hero step 4: one `layout.replace` that stacks the split vertically with the plot moved above the table |
 
 `scripts/build_fixture_artifacts.py` builds all three from fixed
 inputs under the pinned toolchain, so regeneration is byte-identical:

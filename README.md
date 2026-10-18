@@ -404,6 +404,40 @@ Exit codes follow the round-1 convention: 0 for a successful answer, 1
 for a rejected request (`ok: false`), and 2 for an operational failure
 of the harness itself.
 
+### Hero workflow
+
+`tests/integration/test_hero_workflow.py` proves the six hero steps of
+SPEC.md section 18.2 through real harness processes (backlog task
+T019). The input holds rows (2026-01, 100), (2026-01, 300), and
+(2026-02, 200). At minimum zero the output table has three rows. At
+minimum 200 it has two rows, and the monthly totals become 300 and
+200. The steps:
+
+1. `create`, `import`, `register`, and `apply` build the workspace
+   without executing: no run exists and the output group stays empty.
+2. `approve`, `invoke --launch --publish` run the action and publish
+   both outputs together. Both output sources appear at version 1
+   with run provenance, both target projections point at that one
+   publication, and the plot exports as a PNG artifact.
+3. `set --value 200 --dispatch --launch --publish` reruns through the
+   bound action with zero model calls: every command runs with fake
+   model credentials in its environment, the runs still succeed, and
+   no persisted byte under the data root carries them.
+4. The pane moves through `apply --operations
+   fixtures/sales/layout-move.json` in the staged window of an
+   execution — its process completed, its publication pending — and
+   the moved layout survives that publication and the compiled plan.
+   A mutation concurrent with a live process needs the non-blocking
+   execution slot of backlog task T035 (race suite T021).
+5. A fresh command reopens the workspace offline: values, bindings,
+   sources, and layout restore, and nothing executes. The restart
+   interrupts the pending debounce request, keeps the retained result
+   readable with its captured parameters, and reports it stale.
+6. `invoke` again admits a run whose captured inputs name `sales-input`
+   version 1 and whose captured parameters name the committed
+   minimum; reopening marks it interrupted instead of executing it.
+
+
 ## Contract fixtures
 
 `fixtures/` holds the shared contract suite of SPEC.md section 18.1
