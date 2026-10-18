@@ -197,6 +197,30 @@ remain readable. Environments resolve through the service
 (`service.known_environments()`), and the local interpreter is always
 known.
 
+`runtime/workspace` also implements permissions and the permission
+rechecks of backlog task T014 (SPEC.md section 15.1). Document
+validity is not execution authority: specific-run and project
+execution grants live in the service record stream, outside every
+exported document, and only the authenticated host permission endpoint
+(`service.grant_execution_permission` and
+`service.revoke_execution_permission`) mints or revokes them. No
+command envelope method, document field, or registration contract can
+grant anything. Admission rechecks the grant set before anything runs:
+a missing grant answers the successful approval-required result with
+the captured intent a host approval binds to, and a covering grant
+answers the authority decision without admitting a run. The launch and
+publication paths recheck again through `authority_at_launch` and
+`authority_at_publication` (`service.execution_authority_for_run`),
+where revocation blocks publication immediately and requests
+cancellation. Model credentials never reach a project process: launch
+sites build child environments through
+`runtime.execution.project_process_environment` and guard them with
+`assert_no_model_credentials`. The default limit table of section 15.2
+is enforced with `E_LIMIT` diagnostics that name the resource and the
+allowed bound across the schema, command, frame, and import layers;
+the table page, run log, and staged output bounds land with their
+owning subsystems (T012, T015, and T017).
+
 ## Contract fixtures
 
 `fixtures/` holds the shared contract suite of SPEC.md section 18.1

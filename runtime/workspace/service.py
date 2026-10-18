@@ -49,6 +49,15 @@ registry on restart, so saved actions compile again; an action whose
 registration is unavailable stays disabled while its projections
 remain readable.
 
+Execution authority is separate from every document (SPEC.md section
+15.1). Specific-run and project execution grants live in the service
+record stream, minted and revoked only through the authenticated host
+permission endpoint that no command envelope reaches. Admission
+rechecks the grant set before anything runs, and the launch and
+publication paths recheck it again, where revocation blocks
+publication and requests cancellation. A grant never enters a
+document, a snapshot, or a compiler input.
+
 The service is the sole writer: it holds the workspace ``owner.lock``
 through a :class:`~runtime.storage.WorkspaceStore` and commits each
 transaction as one atomic append on the owning connection. Because the
@@ -57,8 +66,8 @@ exists, the sequence of the next commit is predicted and verified after
 the append.
 
 State restoration on open loads the last committed snapshot, receipts,
-notifications, and run records from the record stream without importing
-or executing project code (SPEC.md section 14, steps 2 and 3).
+notifications, run records, and grants from the record stream without
+importing or executing project code (SPEC.md section 14, steps 2 and 3).
 """
 
 from __future__ import annotations
@@ -94,6 +103,7 @@ from melt.schema.document import Document, document_semantic_diagnostics
 from melt.schema.limits import DEFAULT_LIMITS, ServiceLimits, limits_wire
 from melt.schema.records import (
     RECORD_SCHEMA_VERSION,
+    PermissionGrantRecord,
     RegistrationRecord,
     RunRecord,
     parse_record,
@@ -128,6 +138,17 @@ from runtime.workspace.mutations import (
     initial_state_from_document,
     plan_mutation,
 )
+from runtime.workspace.permissions import (
+    GRANT_KINDS,
+    AuthorityDecision,
+    authority_at_admission,
+    authority_at_launch,
+    authority_at_publication,
+    build_grant,
+    mint_grant_id,
+    mint_intent_id,
+    permission_error,
+)
 from runtime.workspace.registry import (
     EnvironmentCatalog,
     KnownEnvironment,
@@ -144,6 +165,7 @@ from runtime.workspace.state import (
     ARTIFACT_KIND,
     LAYOUT_PATH,
     NOTIFICATION_KIND,
+    PERMISSION_KIND,
     RECEIPT_KIND,
     REGISTRATION_KIND,
     RUN_KIND,
@@ -151,6 +173,7 @@ from runtime.workspace.state import (
     ParameterStateValue,
     WorkspaceState,
     entity_path,
+    permission_path,
     pointer_key,
     registration_path,
     run_path,
@@ -255,6 +278,7 @@ class WorkspaceService:
         imports: "SourceCatalog | None" = None,
         registrations: "Mapping[str, RegistrationRecord] | None" = None,
         environments: "Mapping[str, str] | None" = None,
+        grants: "Mapping[str, PermissionGrantRecord] | None" = None,
         frame_limit: int | None = None,
         limits: ServiceLimits = DEFAULT_LIMITS,
     ):
@@ -272,6 +296,7 @@ class WorkspaceService:
         )
         self._action_registry = self._merge_registry()
         self._environments = EnvironmentCatalog(environments)
+        self._grants: dict[str, PermissionGrantRecord] = dict(grants or {})
         self._limits = limits
         self._frame_limit = (
             DEFAULT_LIMITS.control_frame_bytes if frame_limit is None else frame_limit
@@ -300,9 +325,15 @@ class WorkspaceService:
 
         store = WorkspaceStore.open(platform, workspace_id, node=node)
         try:
-            state, receipts, notifications, runs, imports, registrations = (
-                _load_state(store)
-            )
+            (
+                state,
+                receipts,
+                notifications,
+                runs,
+                imports,
+                registrations,
+                grants,
+            ) = _load_state(store)
         except BaseException:
             store.close()
             raise
@@ -317,6 +348,7 @@ class WorkspaceService:
             imports=imports,
             registrations=registrations,
             environments=environments,
+            grants=grants,
             frame_limit=frame_limit,
             limits=limits,
         )
@@ -412,6 +444,17 @@ class WorkspaceService:
         """Every committed registration, keyed by registration ID."""
 
         return dict(self._registrations)
+
+    @property
+    def grants(self) -> dict[str, PermissionGrantRecord]:
+        """Every committed execution grant, keyed by grant ID.
+
+        Grants live outside the exported document: they rebuild from the
+        committed grant records on restart, and no document command can
+        read or change them (SPEC.md section 15.1).
+        """
+
+        return dict(self._grants)
 
     def known_environments(self) -> dict[str, KnownEnvironment]:
         """The environments this service may register scripts against."""
@@ -1388,10 +1431,12 @@ class WorkspaceService:
         The activation needs the projection revision and the revision of
         every binding that connects the control to an action (SPEC.md
         section 12.6). A control without a binding is a reported no-op.
-        A bound activation is admitted: with the permission grant
-        missing it answers the successful ``approvalRequired`` result,
-        which is an admission state, never a permission grant and never
-        a claimed execution (SPEC.md sections 12.6 and 13.1).
+        A bound activation is admitted against the permission grant set:
+        a covering live grant answers the authority decision, while a
+        missing grant answers the successful ``approvalRequired``
+        result with the captured intent the host approval binds to. It
+        is an admission state, never a permission grant and never a
+        claimed execution (SPEC.md sections 12.6, 13.1, and 15.1).
         """
 
         payload_hash = canonical_hash(model_to_wire(envelope))
@@ -1517,22 +1562,94 @@ class WorkspaceService:
                 ),
             )
         # Admission checks permission before anything runs (SPEC.md
-        # section 13.1). No grant store is attached to this service yet,
-        # and grants are host generated outside exported documents
-        # (section 15.1), so the required grant is missing here: the
-        # successful approvalRequired result follows. It records the
-        # admission state only; it grants no permission, reserves no
-        # generation, and reports no execution.
+        # sections 13.1 and 15.1). Grants are host generated outside
+        # exported documents, so a covering grant is the only authority
+        # here. The activation captures its intent first: the check
+        # binds to that intent, and a host approval of it mints a grant
+        # pinned to exactly these captured values.
+        registration_id = action["implementation"]["registrationId"]
+        action_revision = self._state.current_revision(
+            entity_path("actions", action_id)
+        )
+        intent_ref = mint_intent_id()
+        decision = authority_at_admission(
+            self._grants,
+            required_permission=registration.required_permission,
+            registration_id=registration_id,
+            registration_revision=registration.revision,
+            action_id=action_id,
+            action_revision=action_revision,
+            output_group=action["outputGroup"],
+            intent_id=intent_ref,
+        )
+        # The captured intent every answer of this admission carries.
+        # If its definitions change before approval, a grant minted
+        # from them stops covering and a new admission with its own
+        # captured values is required (SPEC.md section 12.6).
+        intent = {
+            "intentRef": intent_ref,
+            "actionId": action_id,
+            "actionRevision": action_revision,
+            "registrationId": registration_id,
+            "registrationRevision": registration.revision,
+            "outputGroup": action["outputGroup"],
+            "capturedParameters": self._captured_parameters(action),
+            "capturedInputs": {
+                name: dict(reference)
+                for name, reference in sorted(action.get("inputs", {}).items())
+            },
+        }
+        if decision.granted:
+            # A live grant covers this activation. Admission with an
+            # invocation snapshot and a reserved generation belongs to
+            # the scheduling subsystem (backlog task T016); this result
+            # reports the authority decision alone and still admits no
+            # run, so it never claims an execution that did not happen.
+            result = {
+                "status": "granted",
+                "origin": origin,
+                "action": action_id,
+                "binding": binding_id,
+                "requiredPermission": registration.required_permission,
+                "permissionDecision": decision.grant_id,
+                "intent": intent,
+                "admission": "pending-scheduler",
+            }
+            return self._commit_receipted(
+                envelope.requestId, envelope.method, payload_hash, result
+            )
         result = {
             "status": "approvalRequired",
             "origin": origin,
             "action": action_id,
             "binding": binding_id,
             "requiredPermission": registration.required_permission,
+            "reason": decision.reason,
+            "intent": intent,
         }
         return self._commit_receipted(
             envelope.requestId, envelope.method, payload_hash, result
         )
+
+    def _captured_parameters(self, action: Mapping) -> dict:
+        """Return the parameter values an admission of this action captures.
+
+        A user action captures all mapped parameter values when its
+        pending intent is updated (SPEC.md section 9.3); the captured
+        values and revisions ride with the intent, so the approval shows
+        exactly what would run.
+        """
+
+        captured: dict = {}
+        for name, mapping in sorted(action.get("parameters", {}).items()):
+            parameter_id = mapping["parameter"]
+            stored = self._state.parameter_states.get(parameter_id)
+            captured[name] = {
+                "parameter": parameter_id,
+                "value": None if stored is None else stored.value,
+                "stateRevision": 0 if stored is None else stored.revision,
+            }
+        return captured
 
     def _run_cancel(self, envelope: CommandEnvelope) -> CommandResponse:
         """Cancel one run (SPEC.md sections 12.6 and 13.5).
@@ -1611,6 +1728,177 @@ class WorkspaceService:
             commitSequence=self._state.commit_sequence,
             result={"run": wire, "outputs": dict(wire.get("outputs", {}))},
         )
+
+    # ------------------------------------------------------------------
+    # Host permission operations (SPEC.md sections 12.6 and 15.1)
+    # ------------------------------------------------------------------
+
+    def grant_execution_permission(
+        self,
+        *,
+        kind: str,
+        registration_id: str,
+        granted_by: str,
+        required_permission: "str | None" = None,
+        action_id: "str | None" = None,
+        action_revision: "int | None" = None,
+        registration_revision: "int | None" = None,
+        output_group: "str | None" = None,
+        output_group_revision: "int | None" = None,
+        intent_id: "str | None" = None,
+        generation: "int | None" = None,
+    ) -> PermissionGrantRecord:
+        """Mint one execution grant for a host permission control.
+
+        This is the authenticated native permission endpoint behind a
+        host-generated permission control (SPEC.md sections 12.6 and
+        15.1). No command envelope method reaches it, no document field
+        names a grant, and no source text, model output, or terminal
+        output can supply one: the host control alone calls this with
+        the identity of the control the user operated.
+
+        A ``projectExecution`` grant covers every admission of one
+        trusted registration under the explicit project trust policy the
+        host recorded. A ``specificRun`` grant covers exactly the
+        captured admission intent it pins; the host reads those pins
+        from the approval-required result of the activation that
+        produced the intent.
+        """
+
+        if kind not in GRANT_KINDS:
+            raise permission_error(
+                f"grant kind {kind!r} is neither specificRun nor"
+                " projectExecution",
+                "/kind",
+                hint="Grant either one captured intent or one whole"
+                " trusted registration (SPEC.md section 15.1).",
+            )
+        entry = self._action_registry.entry(registration_id)
+        if entry is None:
+            raise permission_error(
+                f"registration {registration_id!r} is not in the trusted"
+                " registry; a grant cannot cover it",
+                "/registrationId",
+                hint="Register the script first; an unavailable"
+                " registration cannot gain execution authority.",
+                code=DiagnosticCode.REFERENCE,
+            )
+        if required_permission is None:
+            required_permission = entry.required_permission
+        elif required_permission != entry.required_permission:
+            raise permission_error(
+                f"the grant names permission {required_permission!r}, but"
+                f" registration {registration_id!r} requires"
+                f" {entry.required_permission!r}",
+                "/requiredPermission",
+                hint="Grant exactly the permission the registration"
+                " requires.",
+            )
+        # build_grant enforces the kind-specific scope and raises
+        # MeltPermissionError with the record's own diagnostics.
+        record = build_grant(
+            grantId=mint_grant_id(),
+            workspaceId=self._state.workspace_id,
+            kind=kind,
+            requiredPermission=required_permission,
+            registrationId=registration_id,
+            actionId=action_id,
+            actionRevision=action_revision,
+            registrationRevision=registration_revision,
+            outputGroup=output_group,
+            outputGroupRevision=output_group_revision,
+            intentId=intent_id,
+            generation=generation,
+            grantedBy=granted_by,
+            grantedAt=_utc_now(),
+        )
+        self._commit_permission_record(record)
+        return record
+
+    def revoke_execution_permission(
+        self, grant_id: str, *, revoked_by: str
+    ) -> PermissionGrantRecord:
+        """Revoke one execution grant. Idempotent and immediate.
+
+        Revocation covers nothing afterwards: the next admission asks
+        for approval again, and every launch and publication recheck of
+        a run that relied on the grant denies it and requests
+        cancellation (SPEC.md sections 13.3 and 13.5).
+        """
+
+        record = self._grants.get(grant_id)
+        if record is None:
+            raise permission_error(
+                f"grant {grant_id!r} does not exist in this workspace",
+                "/grantId",
+            )
+        if record.revokedAt is not None:
+            return record
+        updated = record.model_copy(
+            update={"revokedAt": _utc_now(), "revokedBy": revoked_by}
+        )
+        self._commit_permission_record(updated)
+        return updated
+
+    def execution_authority_for_run(
+        self, run_id: str, *, at: str = "launch"
+    ) -> AuthorityDecision:
+        """Recheck one admitted run's authority against live grants.
+
+        The launch path calls this with ``at="launch"`` immediately
+        before it starts the project process, and the publication path
+        calls it with ``at="publication"`` inside the owning
+        transaction (SPEC.md sections 13.1, 13.3, and 15.1). A denial
+        whose reason is ``permission-revoked`` blocks the publication
+        immediately and requests cancellation of the run.
+        """
+
+        run = self._runs.get(run_id)
+        if run is None:
+            raise permission_error(
+                f"run {run_id!r} does not exist",
+                "/runId",
+                code=DiagnosticCode.REFERENCE,
+            )
+        entry = self._action_registry.entry(run.registrationId)
+        required = None if entry is None else entry.required_permission
+        gate = authority_at_publication if at == "publication" else authority_at_launch
+        return gate(self._grants, run, required_permission=required)
+
+    def _commit_permission_record(self, record: PermissionGrantRecord) -> None:
+        """Commit one grant record and its notification atomically.
+
+        A grant transaction advances the commit sequence once and
+        notifies the ``permissions/<grant-id>`` record, so a subscriber
+        learns that the grant set changed. It stores no command
+        receipt: the permission endpoint is not a document command
+        (SPEC.md section 12.6).
+        """
+
+        new_state = self._state.with_commit(self._state.commit_sequence + 1)
+        wire = record_to_wire(record)
+        parse_record(wire)  # refuse to commit a record we would reject
+        notification = {
+            "recordType": "changeNotification",
+            "schemaVersion": RECORD_SCHEMA_VERSION,
+            "workspaceId": new_state.workspace_id,
+            "epoch": new_state.epoch,
+            "commitSequence": new_state.commit_sequence,
+            "changedRecords": [permission_path(record.grantId)],
+        }
+        parse_record(notification)
+        sequence, _ = self._store.append_records(
+            [(PERMISSION_KIND, wire), (NOTIFICATION_KIND, notification)]
+        )
+        if sequence != new_state.commit_sequence:
+            raise RuntimeError(
+                f"grant commit landed at sequence {sequence} instead of"
+                f" the predicted {new_state.commit_sequence}; the"
+                " single-writer sequence prediction is broken"
+            )
+        self._state = new_state
+        self._notifications.append(notification)
+        self._grants[record.grantId] = record
 
     # ------------------------------------------------------------------
     # Host capture operations (SPEC.md section 12.6)
@@ -1764,15 +2052,18 @@ def _load_state(
     dict[str, RunRecord],
     SourceCatalog,
     dict[str, RegistrationRecord],
+    dict[str, PermissionGrantRecord],
 ]:
     """Rebuild the current state from the committed record stream.
 
-    The verified artifact records rebuild the imported source catalog
-    and the committed registration records rebuild the action registry,
-    so a reopened workspace compiles its saved sources against the same
-    measured schemas and its saved actions against the same
-    registrations, without rereading any artifact bytes or executing
-    project code (SPEC.md section 14, startup steps 2 and 3).
+    The verified artifact records rebuild the imported source catalog,
+    the committed registration records rebuild the action registry, and
+    the committed grant records rebuild the permission grant set, so a
+    reopened workspace compiles its saved sources against the same
+    measured schemas, its saved actions against the same registrations,
+    and its execution authority against the same grants, without
+    rereading any artifact bytes or executing project code (SPEC.md
+    section 14, startup steps 2 and 3).
     """
 
     latest_snapshot = None
@@ -1781,6 +2072,7 @@ def _load_state(
     runs: dict[str, RunRecord] = {}
     artifacts: dict[str, CatalogArtifact] = {}
     registrations: dict[str, RegistrationRecord] = {}
+    grants: dict[str, PermissionGrantRecord] = {}
     for record in store.records():
         if record.kind == SNAPSHOT_KIND:
             latest_snapshot = record
@@ -1807,6 +2099,9 @@ def _load_state(
         elif record.kind == REGISTRATION_KIND:
             registration = parse_record(record.data)
             registrations[registration.registrationId] = registration
+        elif record.kind == PERMISSION_KIND:
+            grant = parse_record(record.data)
+            grants[grant.grantId] = grant
     imports = SourceCatalog(artifacts)
     if latest_snapshot is None:
         state = WorkspaceState(
@@ -1814,7 +2109,7 @@ def _load_state(
             epoch=store.epoch,
             commit_sequence=store.commit_sequence,
         )
-        return state, receipts, notifications, runs, imports, registrations
+        return state, receipts, notifications, runs, imports, registrations, grants
     snapshot = parse_record(latest_snapshot.data)
     state = WorkspaceState(
         workspace_id=store.workspace_id,
@@ -1830,7 +2125,7 @@ def _load_state(
         },
         incarnations=dict(snapshot.incarnations),
     )
-    return state, receipts, notifications, runs, imports, registrations
+    return state, receipts, notifications, runs, imports, registrations, grants
 
 
 def _snapshot_wire(

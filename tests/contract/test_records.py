@@ -57,6 +57,7 @@ def test_record_types_are_versioned():
     assert set(RECORD_TYPES) == {
         "run",
         "registration",
+        "permissionGrant",
         "artifact",
         "parameterState",
         "commandReceipt",

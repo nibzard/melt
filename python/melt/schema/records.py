@@ -6,8 +6,9 @@ negotiate older records instead of silently misreading them
 (SPEC.md section 14). Version 1 is the only version in `melt/v0.1`.
 
 Records in this module: `RunRecord`, `RegistrationRecord`,
-`ArtifactRecord`, `ParameterState`, `CommandReceipt`, `Snapshot`,
-`ChangeNotification`, `PageRequest`, and `PageResponse`.
+`PermissionGrantRecord`, `ArtifactRecord`, `ParameterState`,
+`CommandReceipt`, `Snapshot`, `ChangeNotification`, `PageRequest`, and
+`PageResponse`.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from pydantic import (
     TypeAdapter,
     ValidationError,
     field_validator,
+    model_validator,
 )
 
 from melt.schema.canonical import parse_json
@@ -149,6 +151,89 @@ class RegistrationRecord(RecordBase):
     requiredPermission: NonEmptyStr
     replayClassification: Literal["nonReplaySafe"]
     createdAt: Timestamp
+
+
+GrantKind = Literal["specificRun", "projectExecution"]
+
+
+class PermissionGrantRecord(RecordBase):
+    """One execution grant held outside every exported document (15.1).
+
+    A document never carries a grant: grants live in the service record
+    stream, minted only through the authenticated host permission
+    endpoint, never through a command envelope. A `specificRun` grant
+    covers exactly one captured admission intent and pins the definition
+    revisions it approved, so a changed action, registration, or output
+    group stops it from covering and a new admission is required. A
+    `projectExecution` grant covers every admission of one trusted
+    registration under the explicit project trust policy the host
+    recorded. Revocation is durable and covers nothing afterwards.
+    """
+
+    recordType: Literal["permissionGrant"]
+    grantId: OpaqueId
+    workspaceId: EntityId
+    kind: GrantKind
+    requiredPermission: NonEmptyStr
+    registrationId: OpaqueId
+    actionId: EntityId | None = None
+    actionRevision: PositiveSafeInt | None = None
+    registrationRevision: PositiveSafeInt | None = None
+    outputGroup: EntityId | None = None
+    outputGroupRevision: PositiveSafeInt | None = None
+    intentId: OpaqueId | None = None
+    generation: PositiveSafeInt | None = None
+    grantedBy: NonEmptyStr
+    grantedAt: Timestamp
+    revokedAt: Timestamp | None = None
+    revokedBy: NonEmptyStr | None = None
+
+    @model_validator(mode="after")
+    def _kind_scope(self) -> "PermissionGrantRecord":
+        if self.kind == "specificRun":
+            missing = [
+                name
+                for name in (
+                    "actionId",
+                    "actionRevision",
+                    "registrationRevision",
+                    "outputGroup",
+                    "intentId",
+                )
+                if getattr(self, name) is None
+            ]
+            if missing:
+                raise ValueError(
+                    with_code(
+                        DiagnosticCode.SCHEMA,
+                        "a specificRun grant pins the intent it covers;"
+                        " it requires " + ", ".join(missing),
+                    )
+                )
+        else:
+            pinned = [
+                name
+                for name in (
+                    "actionId",
+                    "actionRevision",
+                    "registrationRevision",
+                    "outputGroup",
+                    "outputGroupRevision",
+                    "intentId",
+                    "generation",
+                )
+                if getattr(self, name) is not None
+            ]
+            if pinned:
+                raise ValueError(
+                    with_code(
+                        DiagnosticCode.SCHEMA,
+                        "a projectExecution grant covers the whole"
+                        " registration and pins no single intent; it"
+                        " carries no " + ", ".join(pinned),
+                    )
+                )
+        return self
 
 
 class ArtifactRecord(RecordBase):
@@ -335,6 +420,7 @@ class PageResponse(RecordBase):
 MeltRecord = Union[
     RunRecord,
     RegistrationRecord,
+    PermissionGrantRecord,
     ArtifactRecord,
     ParameterState,
     CommandReceipt,
@@ -347,6 +433,7 @@ MeltRecord = Union[
 RECORD_TYPES: dict[str, int] = {
     "run": RECORD_SCHEMA_VERSION,
     "registration": RECORD_SCHEMA_VERSION,
+    "permissionGrant": RECORD_SCHEMA_VERSION,
     "artifact": RECORD_SCHEMA_VERSION,
     "parameterState": RECORD_SCHEMA_VERSION,
     "commandReceipt": RECORD_SCHEMA_VERSION,
@@ -433,11 +520,13 @@ __all__ = [
     "CapturedParameter",
     "ChangeNotification",
     "CommandReceipt",
+    "GrantKind",
     "MeltRecord",
     "MeltRecordError",
     "PageRequest",
     "PageResponse",
     "ParameterState",
+    "PermissionGrantRecord",
     "RECORD_SCHEMA_VERSION",
     "RECORD_TYPES",
     "RegistrationRecord",

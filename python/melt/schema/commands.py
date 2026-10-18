@@ -155,7 +155,7 @@ def _page_limit(value: int) -> int:
         raise ValueError(
             with_code(
                 DiagnosticCode.LIMIT,
-                f"table page limit exceeds the allowed bound of {bound}",
+                f"table page rows exceed the allowed bound of {bound}",
             )
         )
     return value

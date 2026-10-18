@@ -45,11 +45,24 @@ ARTIFACT_KIND = "melt.artifact"
 REGISTRATION_KIND = "melt.registration"
 """The committed record that holds one trusted registration (7.2)."""
 
+PERMISSION_KIND = "melt.permissionGrant"
+"""The committed record that holds one execution grant (section 15.1)."""
+
 SOURCE_COLLECTION = "sources"
 """The source collection: service-owned, not a mutation target (12.2)."""
 
 REGISTRATION_COLLECTION = "registrations"
 """The registration collection: service-owned, never a mutation target."""
+
+PERMISSION_COLLECTION = "permissions"
+"""The grant collection: service-owned, never a mutation target.
+
+Grants live outside every exported document. They enter the workspace
+only through the authenticated host permission endpoint, so their record
+paths appear in change notifications but never in a document collection,
+a mutation operation, or an ``expected`` map (SPEC.md sections 12.6 and
+15.1).
+"""
 
 
 def entity_path(collection: str, entity_id: str) -> str:
@@ -97,6 +110,18 @@ def run_path(run_id: str) -> str:
     """
 
     return f"runs/{run_id}"
+
+
+def permission_path(grant_id: str) -> str:
+    """Return the record path of one execution grant (section 15.1).
+
+    Grants carry no revision precondition: the host permission endpoint
+    mints and revokes them outside the command envelope. The path still
+    appears in change notifications so a subscriber learns that the
+    grant set changed.
+    """
+
+    return f"{PERMISSION_COLLECTION}/{grant_id}"
 
 
 def pointer_key(path: str) -> str:
@@ -191,6 +216,8 @@ __all__ = [
     "ENTITY_COLLECTIONS",
     "LAYOUT_PATH",
     "NOTIFICATION_KIND",
+    "PERMISSION_COLLECTION",
+    "PERMISSION_KIND",
     "ParameterStateValue",
     "RECEIPT_KIND",
     "REGISTRATION_COLLECTION",
@@ -200,6 +227,7 @@ __all__ = [
     "SOURCE_COLLECTION",
     "WorkspaceState",
     "entity_path",
+    "permission_path",
     "pointer_key",
     "registration_path",
     "run_path",
