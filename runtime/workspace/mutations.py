@@ -147,7 +147,7 @@ class MutationPlan:
         return revisions
 
 
-def _expectation_diagnostics(
+def expectation_diagnostics(
     state: WorkspaceState,
     expected: dict[str, int],
     touched_paths: "list[str]",
@@ -247,7 +247,7 @@ def plan_mutation(
             _touch(LAYOUT_PATH, index)
 
     expected = dict(envelope.expected or {})
-    diagnostics = _expectation_diagnostics(state, expected, touched_order)
+    diagnostics = expectation_diagnostics(state, expected, touched_order)
     if diagnostics:
         plan.diagnostics = sorted_diagnostics(diagnostics)
         plan.entity_touches = touches
@@ -511,6 +511,7 @@ def initial_state_from_document(
 
 __all__ = [
     "EntityTouch",
+    "expectation_diagnostics",
     "MutationPlan",
     "PendingSet",
     "initial_state_from_document",

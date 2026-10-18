@@ -7,7 +7,7 @@ diagnostic that names the resource and the allowed bound.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 from melt.schema.diagnostics import Diagnostic, DiagnosticCode, with_code
 
@@ -60,3 +60,18 @@ def limit_diagnostic(resource: str, allowed: int, path: str) -> Diagnostic:
         relatedPaths=(),
         hint="Reduce the request, or ask the operator to raise the service policy.",
     )
+
+
+def limits_wire(limits: ServiceLimits = DEFAULT_LIMITS) -> dict:
+    """Return the limit table in its wire shape.
+
+    `session.hello` reports the configured policy so a client can shape
+    its requests before it sends them (SPEC.md section 12.6). The keys
+    use the wire spelling of each resource name.
+    """
+
+    def _camel(name: str) -> str:
+        head, *rest = name.split("_")
+        return head + "".join(part.capitalize() for part in rest)
+
+    return {_camel(name): value for name, value in asdict(limits).items()}
