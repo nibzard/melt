@@ -1142,6 +1142,37 @@ def _serve_and_close(service: WorkspaceService, sock: socket.socket) -> None:
         sock.close()
 
 
+def test_process_frame_answers_a_valid_frame(service_adapter: PlatformAdapter):
+    """One framed request in, one framed response out (SPEC.md 12.1).
+
+    Regression: ``process_frame`` once passed ``decode_frame``'s
+    ``(payload, end)`` tuple straight to ``handle_request``, so every
+    well-formed frame crashed instead of answering. The fix unwraps
+    the payload; this probe keeps it unwrapped.
+    """
+
+    with seeded_service(service_adapter) as service:
+        payload = json.dumps(
+            {
+                "protocolVersion": 1,
+                "workspaceId": WORKSPACE,
+                "requestId": "01-frame-hello",
+                "method": "session.hello",
+                "payload": {
+                    "protocolVersions": [1],
+                    "languageVersions": ["melt/v0.1"],
+                    "clientVersion": "probe/0",
+                },
+            }
+        ).encode("utf-8")
+        answer = service.process_frame(encode_frame(payload))
+        body_bytes, _ = decode_frame(answer)
+        body = json.loads(body_bytes.decode("utf-8"))
+        assert body["requestId"] == "01-frame-hello"
+        assert body["ok"] is True
+        assert body["result"]["protocolVersion"] == 1
+
+
 def test_oversized_frames_are_rejected_before_allocation(
     service_adapter: PlatformAdapter,
 ):
@@ -1202,7 +1233,8 @@ def test_invalid_envelopes_answer_with_salvaged_request_ids(
     assert answer.requestId == "01-bad"
     assert answer.ok is False
     assert answer.errors[0].code == "E_SCHEMA"
-    # An unimplemented method is refused, not silently accepted.
+    # Table paging is answered now (backlog task T012): the request
+    # passes method dispatch and reports the missing workspace.
     payload = json.dumps(
         {
             "protocolVersion": 1,
@@ -1219,7 +1251,7 @@ def test_invalid_envelopes_answer_with_salvaged_request_ids(
     answer = service.handle_request(payload)
     assert answer.ok is False
     assert [(error.code, error.path) for error in answer.errors] == [
-        ("E_SCHEMA", "/method")
+        ("E_REFERENCE", "/workspaceId")
     ]
     # Manual invocation is answered now (backlog task T016): the
     # request passes method dispatch and reports the missing workspace.

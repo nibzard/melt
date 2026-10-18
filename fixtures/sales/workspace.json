@@ -1,0 +1,18 @@
+{
+  "language": "melt/v0.1",
+  "workspaceId": "sales-demo",
+  "title": "Sales analysis",
+  "sources": {},
+  "parameters": {
+    "minimum": {
+      "type": "number",
+      "default": 0,
+      "nullable": false,
+      "constraints": {"minimum": 0, "maximum": 1000000000}
+    }
+  },
+  "actions": {},
+  "projections": {},
+  "bindings": {},
+  "layout": {"root": null, "hidden": []}
+}

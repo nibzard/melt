@@ -8,7 +8,7 @@ develops and tests on Linux only.
 
 ```text
 python/melt/    schema, sdk, runner     (Python package `melt`)
-runtime/        compiler, workspace, execution, storage
+runtime/        compiler, workspace, execution, storage, harness
 protocol/       generated JSON Schema and language models
 fixtures/       valid, invalid, sales
 tests/          contract, recovery, native, integration
@@ -135,6 +135,10 @@ without executing project code. Entry points:
 - `service.dispatch(envelope)` for any section 12.6 method
 - `service.apply(envelope)`, `service.preview(envelope)`, and
   `service.serve(read, write)`
+- `service.process_frame(frame, origin=...)` and
+  `service.handle_request(payload, origin=...)` for one framed
+  request; the origin argument is the event origin of the
+  authenticated caller (SPEC.md sections 2.2 and 9.1)
 
 The service methods of section 12.6 ride the same envelope.
 `session.hello` negotiates protocol and language versions and reports
@@ -156,8 +160,27 @@ revision; both admit through the scheduling core of backlog task T016.
 idempotently. Artifact and script tokens are minted by the host capture
 operation: opaque, workspace-scoped handles that expire after
 15 minutes (`service.capture_artifact_token` and
-`service.redeem_artifact_token`). Table paging arrives with its owning
-backlog task (T012).
+`service.redeem_artifact_token`). Admission answers carry the event
+origin of the authenticated caller: `dispatch` and the framed channel
+speak for the local user, `dispatch_as(envelope,
+origin="programmatic")` speaks for an agent, and the admitted intent
+records which one spoke (SPEC.md sections 2.2 and 9.1).
+
+`runtime/workspace/reader.py` implements the trusted table reader
+(SPEC.md sections 8.2 and 12.7). `table.page` resolves the immutable
+source reference to stored artifact bytes, validates sort keys and
+filter operators against the declared column types before any byte is
+read, combines filters with logical AND, and treats a non-null
+comparison against a null cell as false. Strings compare by Unicode
+code point, sorting places nulls last whatever the direction with the
+original row position as the final tie-breaker, and filters apply
+before sorting and paging. Responses identify the source reference and
+a query hash that covers the source, sort, and filters while excluding
+offset and limit; `int64` and `decimal` cells travel as strings. A
+table wider than the column bound answers an explicit
+column-selection requirement, the encoded byte bound may reduce rows
+but never below one display row, and `hasMore` is true only while a
+further row exists to name in `nextOffset`.
 
 `runtime/workspace` also implements the artifact store registration and
 source import of backlog task T011 (SPEC.md sections 5 and 12.6).
@@ -216,8 +239,8 @@ never reach a project process: launch sites build child environments
 through `runtime.execution.project_process_environment` and guard them
 with `assert_no_model_credentials`. The default limit table of section
 15.2 is enforced with `E_LIMIT` diagnostics that name the resource and
-the allowed bound across the schema, command, frame, and import layers;
-the table page bound lands with its owning subsystem (T012).
+the allowed bound across the schema, command, frame, import, and table
+page layers.
 
 `python/melt/sdk` and `python/melt/runner` implement the Python SDK and
 runner of backlog task T015 (SPEC.md section 13.2). A run receives one
@@ -308,6 +331,51 @@ parameters of the retained result, through
 - `service.publications` for the committed publication receipts
 - `runtime.workspace.publication.verify_staged_outputs` for the
   independent staged-file verification
+
+## Command-line harness
+
+`runtime/harness` is the round-1 stand-in for the native host (SPEC.md
+sections 2.2 and 18.2). One command drives one workspace as the local
+user: it opens the service, sends one request through the framed
+channel the later native host drives, prints the JSON answer, and
+closes the service again. Because every invocation reopens the durable
+store, the loop also proves that nothing between two commands needs a
+live service process.
+
+```bash
+H="uv run --locked python3 -m runtime.harness --root $DATA_ROOT --workspace sales-demo"
+$H hello                                              # negotiate versions
+$H create --document fixtures/sales/workspace.json    # workspace.create
+$H import --source sales-input --file fixtures/sales/sales.parquet --label sales.csv
+$H register --script fixtures/sales/sales-script.py --contract fixtures/sales/contract.json
+$H apply --operations fixtures/sales/definitions.json --registration <registration-id>
+$H plan                                               # inspect the compiled plan
+$H set --parameter minimum --value 200                # user parameter edit
+$H approve --registration <registration-id>           # host permission control
+$H invoke --action analyze-sales --launch --publish   # run and publish
+$H table --source analyze-sales-filtered              # read a table page
+$H artifact --source analyze-sales-monthly --output monthly.png
+$H inspect && $H status && $H runs && $H changes --after 0
+```
+
+The commands cover the full section 12.6 surface plus the host-side
+operations no envelope reaches: `approve`/`revoke` operate the
+authenticated permission endpoint, `pump` fires due debounce timers,
+and `--launch`/`--publish` drive the one execution slot and the
+publication transaction. Because a restart marks queued runs and
+running timers interrupted instead of executing them (SPEC.md sections
+9.3 and 14), admission and execution share one session: pass
+`--dispatch`, `--launch`, and `--publish` on the event command itself.
+
+Event origin is part of the contract. The harness speaks for the local
+user by default; `--origin programmatic` on `set`, `invoke`,
+`activate`, and `apply` routes the same envelope through the
+agent-adapter path, so the admitted intent records a programmatic
+origin instead of a user origin.
+
+Exit codes follow the round-1 convention: 0 for a successful answer, 1
+for a rejected request (`ok: false`), and 2 for an operational failure
+of the harness itself.
 
 ## Contract fixtures
 

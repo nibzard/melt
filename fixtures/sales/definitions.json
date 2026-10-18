@@ -1,0 +1,80 @@
+[
+  {
+    "op": "entity.create",
+    "collection": "actions",
+    "id": "analyze-sales",
+    "value": {
+      "implementation": {"registrationId": "${registration}"},
+      "parameters": {"minimum": {"parameter": "minimum"}},
+      "inputs": {"sales": {"sourceId": "sales-input", "version": 1}},
+      "outputs": {"filtered": "table", "monthly": "image"},
+      "outputGroup": "sales-results",
+      "targets": {"filtered": "sales", "monthly": "revenue"}
+    }
+  },
+  {
+    "op": "entity.create",
+    "collection": "projections",
+    "id": "sales",
+    "value": {
+      "kind": "table",
+      "title": "Sales",
+      "source": null,
+      "config": {"columns": ["month", "revenue"], "selection": "none"},
+      "controls": []
+    }
+  },
+  {
+    "op": "entity.create",
+    "collection": "projections",
+    "id": "revenue",
+    "value": {
+      "kind": "plot",
+      "title": "Revenue by month",
+      "source": null,
+      "config": {"fit": "contain"},
+      "controls": [
+        {
+          "id": "minimum",
+          "kind": "number",
+          "label": "Minimum revenue",
+          "parameter": "minimum"
+        },
+        {"id": "run", "kind": "button", "label": "Run analysis"}
+      ]
+    }
+  },
+  {
+    "op": "entity.create",
+    "collection": "bindings",
+    "id": "minimum-rerun",
+    "value": {
+      "event": {"kind": "parameter.changed", "parameter": "minimum"},
+      "effect": {"kind": "action.invoke", "action": "analyze-sales"},
+      "debounceMs": 250
+    }
+  },
+  {
+    "op": "entity.create",
+    "collection": "bindings",
+    "id": "manual-run",
+    "value": {
+      "event": {"kind": "control.activate", "projection": "revenue", "control": "run"},
+      "effect": {"kind": "action.invoke", "action": "analyze-sales"},
+      "debounceMs": 0
+    }
+  },
+  {
+    "op": "layout.replace",
+    "value": {
+      "root": {
+        "kind": "split",
+        "axis": "horizontal",
+        "ratio": 0.55,
+        "first": {"kind": "pane", "projection": "sales"},
+        "second": {"kind": "pane", "projection": "revenue"}
+      },
+      "hidden": []
+    }
+  }
+]

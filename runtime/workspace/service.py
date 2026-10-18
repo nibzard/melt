@@ -58,6 +58,16 @@ publication paths recheck it again, where revocation blocks
 publication and requests cancellation. A grant never enters a
 document, a snapshot, or a compiler input.
 
+``table.page`` answers bounded pages through the trusted table reader
+of :mod:`runtime.workspace.reader` (SPEC.md sections 8.2 and 12.7).
+The request names an immutable source reference; the service resolves
+it to stored artifact bytes, the reader validates operators against
+the declared column types, filters before sorting and paging, places
+nulls last with the original row position as the final tie-breaker,
+and answers the source reference and query hash with cells in their
+wire shapes. A page request mutates nothing, so it observes the commit
+sequence and stores no receipt.
+
 The service also owns scheduling (SPEC.md sections 7.3, 9.3, and 13.1).
 Every admission captures the full invocation snapshot, reserves its
 generation in the admitting transaction, and stores one pending intent
@@ -201,6 +211,7 @@ from runtime.workspace.publication import (
     target_ineligibility,
     verify_staged_outputs,
 )
+from runtime.workspace.reader import MeltReaderError, PageQuery, read_table_page
 from runtime.workspace.registry import (
     EnvironmentCatalog,
     KnownEnvironment,
@@ -283,15 +294,6 @@ REVISION_PRECONDITION_METHODS = frozenset(
     )
 )
 """The methods whose envelope may carry an expected map (section 12.6)."""
-
-UNANSWERED_METHODS = frozenset(
-    ("table.page",)
-)
-"""Methods this service does not answer yet.
-
-The trusted table reader is the remaining subsystem (backlog task
-T012). Until it lands the method is refused, never silently accepted.
-"""
 
 ACTIVE_RUN_STATES = ("queued", "running")
 
@@ -684,7 +686,8 @@ class WorkspaceService:
         preconditions may carry ``expected``; the envelope model keeps
         operation methods and payload methods apart. ``origin`` is the
         event origin of the caller: the host channel speaks for the
-        local user (SPEC.md sections 2.2 and 9.1).
+        local user, and an agent adapter proposes the same commands as
+        programmatic changes (SPEC.md sections 2.2 and 9.1).
         """
 
         if envelope.method == "session.hello":
@@ -713,16 +716,6 @@ class WorkspaceService:
                     " precondition and carries no expected map",
                 ),
             )
-        if envelope.method in UNANSWERED_METHODS:
-            return _rejected(
-                envelope.requestId,
-                _diagnostic(
-                    DiagnosticCode.SCHEMA,
-                    "/method",
-                    f"method {envelope.method!r} is not implemented by"
-                    " this service",
-                ),
-            )
         handlers: dict[str, Callable[[CommandEnvelope], CommandResponse]] = {
             "workspace.preview": self.preview,
             "workspace.create": self._workspace_create,
@@ -730,13 +723,20 @@ class WorkspaceService:
             "workspace.subscribe": self._workspace_subscribe,
             "source.import": self._source_import,
             "action.register": self._action_register,
-            "action.invoke": self._action_invoke,
-            "control.activate": self._control_activate,
             "run.cancel": self._run_cancel,
             "run.inspect": self._run_inspect,
+            "table.page": self._table_page,
         }
         if envelope.method == "workspace.apply":
             return self.apply(envelope, origin=origin)
+        # Admission answers the event origin of its authenticated caller
+        # (SPEC.md sections 2.2 and 9.1): the host channel speaks for
+        # the local user, and an agent adapter proposes the same command
+        # as a programmatic change.
+        if envelope.method == "action.invoke":
+            return self._action_invoke(envelope, origin=origin)
+        if envelope.method == "control.activate":
+            return self._control_activate(envelope, origin=origin)
         handler = handlers.get(envelope.method)
         if handler is None:  # pragma: no cover - the method set is closed
             return _rejected(
@@ -1757,7 +1757,9 @@ class WorkspaceService:
     # Control activation and runs (SPEC.md sections 12.6, 13.1)
     # ------------------------------------------------------------------
 
-    def _control_activate(self, envelope: CommandEnvelope) -> CommandResponse:
+    def _control_activate(
+        self, envelope: CommandEnvelope, *, origin: str = "user"
+    ) -> CommandResponse:
         """Route one button activation through its binding.
 
         The activation needs the projection revision and the revision of
@@ -1771,6 +1773,12 @@ class WorkspaceService:
         the host approval binds to. That is an admission state, never a
         permission grant and never a claimed execution (SPEC.md sections
         12.6, 13.1, and 15.1).
+
+        ``origin`` derives from the authenticated caller (SPEC.md
+        sections 2.2 and 9.1): the host channel routes a press as a user
+        event, while an agent adapter calls the same handler with a
+        programmatic origin, and the admitted intent records which one
+        spoke.
         """
 
         payload_hash = canonical_hash(model_to_wire(envelope))
@@ -1849,10 +1857,8 @@ class WorkspaceService:
         if diagnostics:
             return _rejected(envelope.requestId, *sorted_diagnostics(diagnostics))
 
-        # A button activation is a user event: the host routes a press
-        # through the same handler an agent adapter would call with a
-        # programmatic origin (SPEC.md sections 2.2 and 9.1).
-        origin = "user"
+        # The event origin comes from the authenticated caller that
+        # dispatched the activation (SPEC.md sections 2.2 and 9.1).
         if not matching:
             result = {
                 "status": "no-op",
@@ -1878,7 +1884,9 @@ class WorkspaceService:
             action_not_found_path=f"/bindings/{binding_id}/effect/action",
         )
 
-    def _action_invoke(self, envelope: CommandEnvelope) -> CommandResponse:
+    def _action_invoke(
+        self, envelope: CommandEnvelope, *, origin: str = "user"
+    ) -> CommandResponse:
         """Invoke one action manually (SPEC.md sections 12.6 and 13.1).
 
         A manual invocation reserves a generation just like a bound
@@ -1886,6 +1894,12 @@ class WorkspaceService:
         debounce: an admitted and granted invocation dispatches in the
         admitting transaction itself. Admission deduplicates both
         manual and bound invocations through the request receipt.
+
+        ``origin`` derives from the authenticated caller (SPEC.md
+        sections 2.2 and 9.1): the harness and the native host speak
+        for the local user, while an agent adapter invokes the same
+        handler as a programmatic change, and the admitted intent
+        records which one spoke.
         """
 
         payload_hash = canonical_hash(model_to_wire(envelope))
@@ -1914,7 +1928,7 @@ class WorkspaceService:
             return _rejected(envelope.requestId, *sorted_diagnostics(diagnostics))
         return self._admit_action(
             parsed.actionId,
-            origin="user",
+            origin=origin,
             debounce_ms=0,
             request_id=envelope.requestId,
             method=envelope.method,
@@ -2322,6 +2336,7 @@ class WorkspaceService:
             "debounceMs": intent.debounceMs,
             "dueAt": intent.dueAt,
             "status": intent.status,
+            "origin": intent.origin,
         }
 
     def _run_summary(self, run: RunRecord) -> dict:
@@ -3370,6 +3385,105 @@ class WorkspaceService:
         )
 
     # ------------------------------------------------------------------
+    # Trusted table paging (SPEC.md sections 8.2 and 12.7)
+    # ------------------------------------------------------------------
+
+    def _table_page(self, envelope: CommandEnvelope) -> CommandResponse:
+        """Answer one bounded table page (SPEC.md section 12.7).
+
+        The request names an immutable source reference. The service
+        resolves it to the stored artifact bytes — never a path a
+        client could choose — validates the operators against the
+        declared column types, and pages the filtered, sorted rows.
+        Reads answer the sequence they observed and store no receipt,
+        because a page request mutates nothing.
+        """
+
+        parsed = _parsed_payload(envelope)
+        if isinstance(parsed, MeltCommandError):
+            return _rejected(envelope.requestId, *parsed.diagnostics)
+        if not self._state.present:
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.REFERENCE,
+                    "/workspaceId",
+                    f"workspace {self._state.workspace_id!r} holds no"
+                    " document; create the workspace before reading a"
+                    " table page",
+                ),
+            )
+        document = self._state.document
+        source = document["sources"].get(parsed.source.sourceId)
+        if source is None:
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.REFERENCE,
+                    "/payload/source/sourceId",
+                    f"source {parsed.source.sourceId!r} does not exist",
+                ),
+            )
+        if source.get("kind") != "table":
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.TYPE,
+                    "/payload/source/sourceId",
+                    f"source {parsed.source.sourceId!r} has kind"
+                    f" {source.get('kind')!r}; only a table source pages"
+                    " (SPEC.md section 12.7)",
+                ),
+            )
+        version = (source.get("versions") or {}).get(
+            str(parsed.source.version)
+        )
+        if version is None:
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.REFERENCE,
+                    "/payload/source/version",
+                    f"source {parsed.source.sourceId!r} holds no version"
+                    f" {parsed.source.version}",
+                ),
+            )
+        try:
+            payload = self._store.artifacts.read(version["artifact"])
+        except OSError as error:
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.ARTIFACT,
+                    "/payload/source",
+                    f"the artifact of source"
+                    f" {parsed.source.sourceId!r} version"
+                    f" {parsed.source.version} is unreadable: {error}",
+                    hint="Report the missing artifact individually;"
+                    " saved projections stay readable (SPEC.md section"
+                    " 14).",
+                ),
+            )
+        query = PageQuery(
+            source=model_to_wire(parsed.source),
+            sort=[model_to_wire(key) for key in parsed.sort],
+            filters=[model_to_wire(item) for item in parsed.filters],
+            offset=parsed.offset,
+            limit=parsed.limit,
+        )
+        page, errors = read_table_page(
+            payload, version["schema"], query, limits=self._limits
+        )
+        if errors is not None:
+            return _rejected(envelope.requestId, *sorted_diagnostics(errors))
+        return OkResponse(
+            requestId=envelope.requestId,
+            ok=True,
+            commitSequence=self._state.commit_sequence,
+            result=page,
+        )
+
+    # ------------------------------------------------------------------
     # Host permission operations (SPEC.md sections 12.6 and 15.1)
     # ------------------------------------------------------------------
 
@@ -3652,12 +3766,18 @@ class WorkspaceService:
     # Framed channel (SPEC.md section 12.1)
     # ------------------------------------------------------------------
 
-    def handle_request(self, payload: bytes) -> "CommandResponse | dict":
+    def handle_request(
+        self, payload: bytes, *, origin: str = "user"
+    ) -> "CommandResponse | dict":
         """Parse one request payload and return its response.
 
         A payload that does not decode into an envelope has no request
         identifier, so the transport-level rejection is a bare error
-        object rather than a :class:`RejectedResponse`.
+        object rather than a :class:`RejectedResponse`. ``origin`` is
+        the event origin of the caller the transport authenticated
+        (SPEC.md sections 2.2 and 9.1): the framed host channel speaks
+        for the local user, and an agent adapter uses the same entry
+        point with a programmatic origin.
         """
 
         try:
@@ -3667,18 +3787,18 @@ class WorkspaceService:
             if request_id is None:
                 return {"ok": False, "errors": model_to_wire_diagnostics(error)}
             return _rejected(request_id, *error.diagnostics)
-        return self.dispatch(envelope)
+        return self.dispatch(envelope, origin=origin)
 
-    def process_frame(self, data: bytes) -> bytes:
+    def process_frame(self, data: bytes, *, origin: str = "user") -> bytes:
         """Answer one framed request with one framed response."""
 
         try:
-            payload = decode_frame(data, limit=self._frame_limit)
+            payload, _ = decode_frame(data, limit=self._frame_limit)
         except MeltCommandError as error:
             return _encode_json(
                 {"ok": False, "errors": model_to_wire_diagnostics(error)}
             )
-        response = self.handle_request(payload)
+        response = self.handle_request(payload, origin=origin)
         return _encode_json(
             model_to_wire(response)
             if hasattr(response, "model_dump")
