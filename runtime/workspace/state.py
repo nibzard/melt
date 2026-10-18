@@ -42,8 +42,14 @@ RUN_KIND = "melt.run"
 ARTIFACT_KIND = "melt.artifact"
 """The committed record that holds one verified artifact (section 5.1)."""
 
+REGISTRATION_KIND = "melt.registration"
+"""The committed record that holds one trusted registration (7.2)."""
+
 SOURCE_COLLECTION = "sources"
 """The source collection: service-owned, not a mutation target (12.2)."""
+
+REGISTRATION_COLLECTION = "registrations"
+"""The registration collection: service-owned, never a mutation target."""
 
 
 def entity_path(collection: str, entity_id: str) -> str:
@@ -67,6 +73,18 @@ def state_path(parameter_id: str) -> str:
     """Return the record path of one stored parameter value."""
 
     return f"state/{parameter_id}"
+
+
+def registration_path(registration_id: str) -> str:
+    """Return the record path of one trusted registration (7.2).
+
+    Registrations enter the workspace only through
+    ``action.register``, so their record paths appear in change
+    notifications and inspection revisions but never in a mutation
+    operation or an ``expected`` map.
+    """
+
+    return f"{REGISTRATION_COLLECTION}/{registration_id}"
 
 
 def run_path(run_id: str) -> str:
@@ -175,12 +193,15 @@ __all__ = [
     "NOTIFICATION_KIND",
     "ParameterStateValue",
     "RECEIPT_KIND",
+    "REGISTRATION_COLLECTION",
+    "REGISTRATION_KIND",
     "RUN_KIND",
     "SNAPSHOT_KIND",
     "SOURCE_COLLECTION",
     "WorkspaceState",
     "entity_path",
     "pointer_key",
+    "registration_path",
     "run_path",
     "source_path",
     "state_path",

@@ -42,6 +42,14 @@ DOCUMENT_COLLECTIONS = (
 ENTITY_COLLECTIONS = frozenset(DOCUMENT_COLLECTIONS) - {"sources"}
 """The collections the mutation operations address (SPEC.md 12.2)."""
 
+SERVICE_COLLECTIONS = ("registrations",)
+"""Service-owned record collections named by change notifications.
+
+``registrations`` holds no document entities, so it appears only in
+the unfiltered view: its revisions tell a subscriber what the registry
+last committed (SPEC.md sections 7.2 and 12.5).
+"""
+
 
 def active_run_records(
     runs: Mapping[str, RunRecord]
@@ -107,7 +115,11 @@ def snapshot_result(
 
     document = state.document or {}
     wanted = frozenset(ids) if ids is not None else None
-    included = frozenset(DOCUMENT_COLLECTIONS) if collection is None else {collection}
+    included = (
+        frozenset(DOCUMENT_COLLECTIONS) | frozenset(SERVICE_COLLECTIONS)
+        if collection is None
+        else {collection}
+    )
 
     def _entities(name: str) -> dict:
         entities = dict(document.get(name, {}))
@@ -290,6 +302,7 @@ __all__ = [
     "ACTIVE_RUN_STATES",
     "DOCUMENT_COLLECTIONS",
     "ENTITY_COLLECTIONS",
+    "SERVICE_COLLECTIONS",
     "active_run_records",
     "current_diagnostics",
     "preview_effects",

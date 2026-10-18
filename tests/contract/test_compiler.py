@@ -330,6 +330,98 @@ def test_widened_parameter_constraints_are_rejected(
     assert ("E_REGISTRATION", "/actions/analyze-sales/parameters/minimum") in pairs
 
 
+def test_open_parameter_dimensions_are_rejected(
+    repo_root: Path, catalog_pair
+) -> None:
+    """A registration-bounded dimension must be bounded by the mapping.
+
+    Leaving a bounded dimension open accepts values the registration
+    rejects, so compilation fails instead of silently narrowing runtime
+    values (SPEC.md section 7.2). The registration bounds the mapped
+    parameter with both a minimum and a maximum.
+    """
+
+    cases = {
+        "no constraints at all": {},
+        "minimum without maximum": {"minimum": 0},
+        "maximum without minimum": {"maximum": 1000000000},
+    }
+    for label, constraints in cases.items():
+        document = json.loads(
+            (repo_root / "fixtures" / "valid" / "sales-full.json").read_text()
+        )
+        document["parameters"]["minimum"]["constraints"] = constraints
+        result = compile_text(json.dumps(document), catalog_pair)
+        assert result.ok is False, label
+        pairs = [(item.code, item.path) for item in result.diagnostics]
+        assert (
+            "E_REGISTRATION",
+            "/actions/analyze-sales/parameters/minimum",
+        ) in pairs, label
+
+
+def test_open_max_length_against_a_bounded_slot_is_rejected(
+    repo_root: Path, catalog_pair
+) -> None:
+    """A string slot bounded by maxLength rejects an open mapping."""
+
+    from melt.schema.commands import RegistrationContract
+
+    source_catalog, _ = catalog_pair
+    document = json.loads(
+        (repo_root / "fixtures" / "valid" / "sales-full.json").read_text()
+    )
+    # The mapped parameter becomes an unconstrained string; the number
+    # control leaves with the old type.
+    document["parameters"]["minimum"] = {
+        "type": "string",
+        "default": "0",
+        "nullable": False,
+        "constraints": {},
+    }
+    document["projections"]["revenue"]["controls"] = [
+        control
+        for control in document["projections"]["revenue"]["controls"]
+        if control["kind"] == "button"
+    ]
+    contract = RegistrationContract.model_validate(
+        {
+            "parameters": {
+                "minimum": {
+                    "type": "string",
+                    "nullable": False,
+                    "constraints": {"maxLength": 64},
+                }
+            },
+            "inputs": {"sales": "table"},
+            "outputs": {"filtered": "table", "monthly": "image"},
+        }
+    )
+    registry = ActionRegistry(
+        {"sales-script-v1": RegistrationEntry("sales-script-v1", 1, contract)}
+    )
+    result = compile_document(
+        CompileRequest(
+            document=document,
+            source_catalog=source_catalog,
+            action_registry=registry,
+        )
+    )
+    assert result.ok is False
+    pairs = [(item.code, item.path) for item in result.diagnostics]
+    assert ("E_REGISTRATION", "/actions/analyze-sales/parameters/minimum") in pairs
+    # Bounding the same dimension compiles again: narrowing is allowed.
+    document["parameters"]["minimum"]["constraints"] = {"maxLength": 32}
+    narrowed = compile_document(
+        CompileRequest(
+            document=document,
+            source_catalog=source_catalog,
+            action_registry=registry,
+        )
+    )
+    assert narrowed.ok, narrowed.diagnostics
+
+
 def test_nullable_parameter_cannot_feed_non_nullable_slot(
     repo_root: Path, catalog_pair
 ) -> None:

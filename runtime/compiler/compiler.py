@@ -415,7 +415,10 @@ def _constraints_fit(parameter, entry) -> "str | None":
 
     The workspace parameter must accept only values the registration
     accepts: constraints may narrow the registration, never widen it
-    (SPEC.md section 7.2).
+    (SPEC.md section 7.2). A dimension the registration bounds must be
+    bounded by the parameter too, because an open dimension would let a
+    committed value outside the registration's accepted range reach an
+    admitted run without any diagnostic.
     """
 
     if parameter.type != entry.type:
@@ -429,17 +432,22 @@ def _constraints_fit(parameter, entry) -> "str | None":
     accepted = entry.constraints
     if accepted is None:
         return None
-    if constraints.minimum is not None and accepted.minimum is not None:
-        if constraints.minimum < accepted.minimum:
+    for dimension in ("minimum", "maximum", "maxLength"):
+        bound = getattr(accepted, dimension)
+        mapped = getattr(constraints, dimension)
+        if bound is None:
+            continue
+        if mapped is None:
             return (
-                f"minimum {constraints.minimum!r} falls below the"
-                f" registration minimum {accepted.minimum!r}"
+                f"constraints set no {dimension}; the registration"
+                f" accepts values only within {dimension} {bound!r}"
             )
-    if constraints.maximum is not None and accepted.maximum is not None:
-        if constraints.maximum > accepted.maximum:
+        widened = mapped < bound if dimension == "minimum" else mapped > bound
+        if widened:
+            verb = "falls below" if dimension == "minimum" else "exceeds"
             return (
-                f"maximum {constraints.maximum!r} exceeds the registration"
-                f" maximum {accepted.maximum!r}"
+                f"{dimension} {mapped!r} {verb} the registration"
+                f" {dimension} {bound!r}"
             )
     if accepted.enum is not None:
         if constraints.enum is None:
@@ -450,15 +458,6 @@ def _constraints_fit(parameter, entry) -> "str | None":
                 "enum accepts values outside the registration enum:"
                 f" {', '.join(repr(item) for item in outside)}"
             )
-    if (
-        constraints.maxLength is not None
-        and accepted.maxLength is not None
-        and constraints.maxLength > accepted.maxLength
-    ):
-        return (
-            f"maxLength {constraints.maxLength} exceeds the registration"
-            f" maxLength {accepted.maxLength}"
-        )
     return None
 
 
