@@ -1,0 +1,33 @@
+# Context
+
+## Background
+Implements the full melt/v0.1 contract from SPEC.md as the Linux
+round 1 defined by AGENTS.md: schema, compiler, workspace service,
+Python SDK and runner, revision-checked atomic changes, durable
+publication, and restart recovery, proved through the command-line
+harness and the sales fixture workflow.
+
+## Why This Way
+- Compilation, execution, publication, and rendering stay separate;
+  the harness is command-line only because Linux comes before native
+  macOS integration (SPEC.md sections 2.2 and 20).
+- The stack is fully pinned (Python 3.12, exact == pins, uv.lock,
+  Pi Durable adapter package-lock.json) so canonical hashes and
+  fixture artifact bytes stay reproducible.
+- to-do.json carries the SPEC-derived backlog; task IDs referenced
+  in code comments (T001, T002, ...) resolve there.
+
+## Gotchas
+- Verify with ./scripts/check.sh (make check). It needs uv, Node
+  >= 22.19 with npm, and runs npm ci for the Pi Durable adapter pin
+  when node_modules is missing.
+- tests/native/test_native_round2.py is skipped by design; native
+  integration belongs to round 2 (backlog task T030).
+- Fixture artifacts under fixtures/sales are regenerated and
+  compared by scripts/build_fixture_artifacts.py; a changed
+  toolchain must rewrite them and fixtures/catalog.json together.
+
+## Related
+- SPEC.md (contract), note.md (design context, SPEC wins)
+- docs/rfcs/001-semantic-interactions.md (next language extension)
+- to-do.json (backlog with task statuses)
