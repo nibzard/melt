@@ -1,0 +1,238 @@
+{
+  "language": "melt/v0.1",
+  "workspaceId": "invalid-demo",
+  "title": "Invalid fixture",
+  "sources": {
+    "sales-input": {
+      "kind": "table",
+      "currentVersion": 1,
+      "versions": {
+        "1": {
+          "artifact": "sha256:42cb3135d0370d5d9b0712adc0835b30c3d48843aa36d0df333851a42afa4598",
+          "mediaType": "application/vnd.apache.parquet",
+          "byteLength": 748,
+          "schema": {
+            "columns": [
+              {
+                "id": "month",
+                "type": "string",
+                "nullable": false
+              },
+              {
+                "id": "revenue",
+                "type": "float64",
+                "nullable": false
+              }
+            ],
+            "rowKey": null
+          },
+          "origin": {
+            "kind": "import",
+            "label": "sales.parquet"
+          }
+        }
+      }
+    }
+  },
+  "parameters": {},
+  "actions": {},
+  "projections": {
+    "row-1": {
+      "kind": "table",
+      "title": "Row 1",
+      "source": {
+        "sourceId": "sales-input",
+        "version": 1
+      },
+      "config": {
+        "columns": null,
+        "selection": "none"
+      },
+      "controls": []
+    },
+    "row-2": {
+      "kind": "table",
+      "title": "Row 2",
+      "source": {
+        "sourceId": "sales-input",
+        "version": 1
+      },
+      "config": {
+        "columns": null,
+        "selection": "none"
+      },
+      "controls": []
+    },
+    "row-3": {
+      "kind": "table",
+      "title": "Row 3",
+      "source": {
+        "sourceId": "sales-input",
+        "version": 1
+      },
+      "config": {
+        "columns": null,
+        "selection": "none"
+      },
+      "controls": []
+    },
+    "row-4": {
+      "kind": "table",
+      "title": "Row 4",
+      "source": {
+        "sourceId": "sales-input",
+        "version": 1
+      },
+      "config": {
+        "columns": null,
+        "selection": "none"
+      },
+      "controls": []
+    },
+    "row-5": {
+      "kind": "table",
+      "title": "Row 5",
+      "source": {
+        "sourceId": "sales-input",
+        "version": 1
+      },
+      "config": {
+        "columns": null,
+        "selection": "none"
+      },
+      "controls": []
+    },
+    "row-6": {
+      "kind": "table",
+      "title": "Row 6",
+      "source": {
+        "sourceId": "sales-input",
+        "version": 1
+      },
+      "config": {
+        "columns": null,
+        "selection": "none"
+      },
+      "controls": []
+    },
+    "row-7": {
+      "kind": "table",
+      "title": "Row 7",
+      "source": {
+        "sourceId": "sales-input",
+        "version": 1
+      },
+      "config": {
+        "columns": null,
+        "selection": "none"
+      },
+      "controls": []
+    },
+    "row-8": {
+      "kind": "table",
+      "title": "Row 8",
+      "source": {
+        "sourceId": "sales-input",
+        "version": 1
+      },
+      "config": {
+        "columns": null,
+        "selection": "none"
+      },
+      "controls": []
+    },
+    "row-9": {
+      "kind": "table",
+      "title": "Row 9",
+      "source": {
+        "sourceId": "sales-input",
+        "version": 1
+      },
+      "config": {
+        "columns": null,
+        "selection": "none"
+      },
+      "controls": []
+    }
+  },
+  "bindings": {},
+  "layout": {
+    "root": {
+      "kind": "split",
+      "axis": "horizontal",
+      "ratio": 0.5,
+      "first": {
+        "kind": "split",
+        "axis": "horizontal",
+        "ratio": 0.5,
+        "first": {
+          "kind": "split",
+          "axis": "horizontal",
+          "ratio": 0.5,
+          "first": {
+            "kind": "split",
+            "axis": "horizontal",
+            "ratio": 0.5,
+            "first": {
+              "kind": "split",
+              "axis": "horizontal",
+              "ratio": 0.5,
+              "first": {
+                "kind": "split",
+                "axis": "horizontal",
+                "ratio": 0.5,
+                "first": {
+                  "kind": "split",
+                  "axis": "horizontal",
+                  "ratio": 0.5,
+                  "first": {
+                    "kind": "split",
+                    "axis": "horizontal",
+                    "ratio": 0.5,
+                    "first": {
+                      "kind": "pane",
+                      "projection": "row-9"
+                    },
+                    "second": {
+                      "kind": "pane",
+                      "projection": "row-8"
+                    }
+                  },
+                  "second": {
+                    "kind": "pane",
+                    "projection": "row-7"
+                  }
+                },
+                "second": {
+                  "kind": "pane",
+                  "projection": "row-6"
+                }
+              },
+              "second": {
+                "kind": "pane",
+                "projection": "row-5"
+              }
+            },
+            "second": {
+              "kind": "pane",
+              "projection": "row-4"
+            }
+          },
+          "second": {
+            "kind": "pane",
+            "projection": "row-3"
+          }
+        },
+        "second": {
+          "kind": "pane",
+          "projection": "row-2"
+        }
+      },
+      "second": {
+        "kind": "pane",
+        "projection": "row-1"
+      }
+    },
+    "hidden": []
+  }
+}

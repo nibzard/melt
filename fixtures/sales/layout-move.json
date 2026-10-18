@@ -1,0 +1,15 @@
+[
+  {
+    "op": "layout.replace",
+    "value": {
+      "root": {
+        "kind": "split",
+        "axis": "vertical",
+        "ratio": 0.55,
+        "first": {"kind": "pane", "projection": "revenue"},
+        "second": {"kind": "pane", "projection": "sales"}
+      },
+      "hidden": []
+    }
+  }
+]

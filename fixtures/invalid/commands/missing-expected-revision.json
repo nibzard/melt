@@ -1,0 +1,8 @@
+{
+  "protocolVersion": 1,
+  "workspaceId": "sales-demo",
+  "requestId": "01-t004-missing-expected-revision",
+  "method": "workspace.apply",
+  "expected": {"parameters/minimum": 2},
+  "operations": [{"op": "parameter.set", "id": "minimum", "value": 200}]
+}

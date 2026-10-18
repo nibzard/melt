@@ -1,0 +1,840 @@
+{
+  "schema_version": 1,
+  "source_files": [
+    "AGENTS.md",
+    "SPEC.md",
+    "note.md",
+    "docs/rfcs/001-semantic-interactions.md"
+  ],
+  "goal": "Ship Melt v0.1 on Linux: JSON schema, compiler, workspace service, Python SDK and runner, revision-checked atomic changes, durable publication, and restart recovery. Prove the complete sales workflow through a command-line harness without a model. Then add the RFC 001 semantic-interaction extension as a separate language version, keeping v0.1 behavior unchanged, before the native macOS round.",
+  "tasks": [
+    {
+      "id": "T001",
+      "title": "Pin Linux toolchain and scaffold packages",
+      "priority": 1,
+      "status": "done",
+      "details": "Scaffold python/melt (schema, sdk, runner), runtime (compiler, workspace, execution, storage), protocol, fixtures/{valid,invalid,sales}, and tests/{contract,recovery,native,integration} per SPEC.md section 17. Pin python3 and all dependencies (pydantic, pyarrow, pandas, matplotlib, pytest) with a lockfile. Provide one command that runs the full test suite. Building and testing require no macOS or Apple tools.",
+      "files": [
+        ".gitignore",
+        "Makefile",
+        "README.md",
+        "fixtures/README.md",
+        "fixtures/invalid/README.md",
+        "fixtures/sales/README.md",
+        "fixtures/valid/README.md",
+        "protocol/generated/README.md",
+        "protocol/schema/README.md",
+        "pyproject.toml",
+        "python/melt/__init__.py",
+        "python/melt/__main__.py",
+        "python/melt/py.typed",
+        "python/melt/runner/__init__.py",
+        "python/melt/schema/__init__.py",
+        "python/melt/schema/canonical.py",
+        "python/melt/schema/commands.py",
+        "python/melt/schema/document.py",
+        "python/melt/schema/limits.py",
+        "python/melt/schema/records.py",
+        "python/melt/sdk/__init__.py",
+        "runtime/__init__.py",
+        "runtime/compiler/__init__.py",
+        "runtime/execution/__init__.py",
+        "runtime/storage/__init__.py",
+        "runtime/workspace/__init__.py",
+        "scripts/check.sh",
+        "tests/conftest.py",
+        "tests/contract/test_cli.py",
+        "tests/contract/test_scaffold.py",
+        "tests/contract/test_toolchain.py",
+        "tests/integration/test_pinned_stack.py",
+        "tests/native/test_native_round2.py",
+        "tests/recovery/test_restart_recovery.py",
+        "uv.lock"
+      ],
+      "updated_at": "2026-10-17T22:11:50Z",
+      "unblock_when": "\"\""
+    },
+    {
+      "id": "T002",
+      "title": "Probe Pi Durable storage and SQLite durability",
+      "priority": 1,
+      "status": "done",
+      "details": "External prerequisite. Probe the pinned Pi Durable storage adapter on Linux with integration tests for atomic updates and committed observation (SPEC.md section 14). Verify synchronous=FULL on the owning connection. Record the tested filesystem and crash model. Resolve adapter gaps before any competing persistence path is implemented.",
+      "depends_on": [
+        "T001"
+      ],
+      "files": [
+        ".gitignore",
+        "Makefile",
+        "README.md",
+        "runtime/storage/pi_adapter/README.md",
+        "runtime/storage/pi_adapter/package-lock.json",
+        "runtime/storage/pi_adapter/package.json",
+        "runtime/storage/pi_adapter/pi_storage.mjs",
+        "runtime/storage/pi_adapter/probe.mjs",
+        "runtime/storage/pi_adapter/probe_worker.mjs",
+        "scripts/check.sh",
+        "tests/integration/test_pi_durable_storage.py"
+      ],
+      "updated_at": "2026-10-17T22:39:09Z",
+      "unblock_when": "\"\""
+    },
+    {
+      "id": "T003",
+      "title": "Implement document and command schema models",
+      "priority": 1,
+      "status": "done",
+      "details": "Author Pydantic models for the melt/v0.1 document and its persisted records (SPEC.md sections 4 through 10 and 17). Reject unknown fields, duplicate keys, non-finite numbers, unsafe integers, and invalid IDs. Enforce the default limits. Implement RFC 8785 canonical hashing with conformance fixtures. Version the record schemas for RunRecord, RegistrationRecord, ArtifactRecord, ParameterState, CommandReceipt, Snapshot, ChangeNotification, PageRequest, and PageResponse.",
+      "depends_on": [
+        "T001"
+      ],
+      "files": [
+        "README.md",
+        "python/melt/schema/__init__.py",
+        "python/melt/schema/canonical.py",
+        "python/melt/schema/commands.py",
+        "python/melt/schema/diagnostics.py",
+        "python/melt/schema/document.py",
+        "python/melt/schema/limits.py",
+        "python/melt/schema/records.py",
+        "runtime/storage/pi_adapter/README.md",
+        "runtime/storage/pi_adapter/probe.mjs",
+        "tests/conftest.py",
+        "tests/contract/jcs/README.md",
+        "tests/contract/jcs/expected-arrays.json",
+        "tests/contract/jcs/expected-french.json",
+        "tests/contract/jcs/expected-structures.json",
+        "tests/contract/jcs/expected-unicode.json",
+        "tests/contract/jcs/expected-values.json",
+        "tests/contract/jcs/expected-weird.json",
+        "tests/contract/jcs/input-arrays.json",
+        "tests/contract/jcs/input-french.json",
+        "tests/contract/jcs/input-structures.json",
+        "tests/contract/jcs/input-unicode.json",
+        "tests/contract/jcs/input-values.json",
+        "tests/contract/jcs/input-weird.json",
+        "tests/contract/test_canonical.py",
+        "tests/contract/test_commands.py",
+        "tests/contract/test_document.py",
+        "tests/contract/test_limits.py",
+        "tests/contract/test_records.py",
+        "tests/integration/test_pi_durable_storage.py"
+      ],
+      "updated_at": "2026-10-17T22:52:17Z",
+      "unblock_when": "\"\""
+    },
+    {
+      "id": "T004",
+      "title": "Build valid and invalid contract fixtures",
+      "priority": 1,
+      "status": "done",
+      "details": "Create fixtures under fixtures/valid and fixtures/invalid per SPEC.md section 18.1. Each invalid fixture carries an expected diagnostic code and JSON Pointer. Cover unknown fields, duplicate keys, invalid IDs, unsupported versions, non-finite numbers, unsafe integers, invalid defaults, wrong parameter types, missing source versions, missing controls, renderer mismatches, layout errors, competing writers, incomplete mappings, invalid migrations, missing expected revisions, registry mismatches, and artifact schema drift. Valid fixtures include the empty workspace, every projection kind, hidden panes, nullable parameters, a state migration, and the full sales example with a real artifact hash.",
+      "depends_on": [
+        "T003"
+      ],
+      "files": [
+        "Makefile",
+        "README.md",
+        "fixtures/README.md",
+        "fixtures/catalog.json",
+        "fixtures/invalid/README.md",
+        "fixtures/invalid/artifact-schema-drift.json",
+        "fixtures/invalid/commands/invalid-state-migration.json",
+        "fixtures/invalid/commands/missing-expected-revision.json",
+        "fixtures/invalid/competing-writers.json",
+        "fixtures/invalid/duplicate-key.json",
+        "fixtures/invalid/incomplete-mapping.json",
+        "fixtures/invalid/invalid-default.json",
+        "fixtures/invalid/invalid-id.json",
+        "fixtures/invalid/layout-duplicate-placement.json",
+        "fixtures/invalid/layout-excessive-depth.json",
+        "fixtures/invalid/layout-invalid-ratio.json",
+        "fixtures/invalid/layout-missing-pane.json",
+        "fixtures/invalid/manifest.json",
+        "fixtures/invalid/missing-control.json",
+        "fixtures/invalid/missing-source-version.json",
+        "fixtures/invalid/non-finite-number.json",
+        "fixtures/invalid/registry-mismatch.json",
+        "fixtures/invalid/renderer-mismatch.json",
+        "fixtures/invalid/unknown-field.json",
+        "fixtures/invalid/unsafe-integer.json",
+        "fixtures/invalid/unsupported-version.json",
+        "fixtures/invalid/wrong-parameter-type.json",
+        "fixtures/sales/README.md",
+        "fixtures/sales/notes.md",
+        "fixtures/sales/revenue.png",
+        "fixtures/sales/sales.parquet",
+        "fixtures/valid/README.md",
+        "fixtures/valid/commands/state-migration.json",
+        "fixtures/valid/document-hashes.json",
+        "fixtures/valid/empty-workspace.json",
+        "fixtures/valid/hidden-panes.json",
+        "fixtures/valid/nullable-parameters.json",
+        "fixtures/valid/projection-document.json",
+        "fixtures/valid/projection-plot.json",
+        "fixtures/valid/projection-table.json",
+        "fixtures/valid/sales-full.json",
+        "scripts/build_fixture_artifacts.py",
+        "tests/contract/test_fixtures.py"
+      ],
+      "updated_at": "2026-10-17T23:09:49Z",
+      "unblock_when": "\"\""
+    },
+    {
+      "id": "T005",
+      "title": "Implement compiler stages, plans, and diagnostics",
+      "priority": 1,
+      "status": "done",
+      "details": "Implement the seven compiler stages and emit render, state, interaction, action, dependency, identity, and layout plans (SPEC.md section 11). Diagnostics use the required codes, JSON Pointer paths, hints without secrets, and deterministic sorting. Equivalent canonical inputs with equal registry versions produce equivalent plans. Compilation performs no project execution, network access, or package installation.\n\nReview repair: Enforce the catalog-checked invalid fixtures in the compiler\nmelt compile with fixtures/catalog.json must reject fixtures/invalid/registry-mismatch.json with E_REGISTRATION at /actions/analyze-sales/parameters/maximum and fixtures/invalid/artifact-schema-drift.json with E_ARTIFACT at /sources/sales-input/versions/1/schema, per fixtures/invalid/manifest.json (enforcedBy compiler).\nEvidence: fixtures/invalid/manifest.json entries with enforcedBy 'compiler' and ownerTask T005; tests/contract/test_fixtures.py skips these two with reason 'enforced by compiler (T005)' and instead verifies the drift is real against the catalog and the measured Parquet schema.",
+      "depends_on": [
+        "T003",
+        "T004"
+      ],
+      "files": [
+        "README.md",
+        "fixtures/README.md",
+        "fixtures/catalog.json",
+        "fixtures/invalid/README.md",
+        "fixtures/valid/document-hashes.json",
+        "fixtures/valid/hidden-panes.json",
+        "runtime/compiler/__init__.py",
+        "runtime/compiler/catalog.py",
+        "runtime/compiler/compiler.py",
+        "runtime/compiler/plans.py",
+        "tests/contract/test_compiler.py",
+        "tests/contract/test_fixtures.py"
+      ],
+      "tags": [
+        "looper:finding:fixture-compiler-diagnostic-enforcement"
+      ],
+      "updated_at": "2026-10-17T23:30:01Z",
+      "unblock_when": "\"\""
+    },
+    {
+      "id": "T006",
+      "title": "Ship melt validate and melt compile CLI",
+      "priority": 1,
+      "status": "done",
+      "details": "Implement melt validate \u003cfile\u003e and melt compile \u003cfile\u003e --catalog \u003cfile\u003e with --json output (SPEC.md section 11.3). Exit 0 on success, 1 on invalid input, and 2 on operational failure. Validation without catalog and registry fixtures reports its limited coverage. Both commands pass on every valid fixture and fail with the expected code on every invalid fixture.\n\nReview repair: melt validate and melt compile are not implemented\nAcceptance: melt validate \u003cfile\u003e and melt compile \u003cfile\u003e --catalog \u003cfile\u003e with --json, exiting 0 on success, 1 on invalid input, 2 on operational failure, reporting limited coverage without catalog and registry fixtures (SPEC.md section 11.3); both commands pass on every valid fixture and fail with the expected code on every invalid fixture.\nEvidence: uv run python3 -m melt validate fixtures/valid/sales-full.json prints 'melt accepts no commands yet' and exits 2 (python/melt/__main__.py:19-46 stub). The compiler itself works (fixtures/valid/sales-full.json compiles against fixtures/catalog.json through runtime.compiler.compile_document), so the gap is the command-line surface only.",
+      "depends_on": [
+        "T005"
+      ],
+      "files": [
+        "README.md",
+        "fixtures/README.md",
+        "fixtures/invalid/README.md",
+        "pyproject.toml",
+        "python/melt/__main__.py",
+        "python/melt/cli.py",
+        "tests/contract/test_cli.py"
+      ],
+      "tags": [
+        "looper:finding:melt-validate-compile-cli"
+      ],
+      "updated_at": "2026-10-18T05:03:05Z",
+      "unblock_when": "\"\""
+    },
+    {
+      "id": "T007",
+      "title": "Generate JSON Schema and language models",
+      "priority": 2,
+      "status": "todo",
+      "details": "Export JSON Schema and generate TypeScript and Swift models from the single restricted vocabulary (SPEC.md section 17). Document every generated file and provide one repeatable generation command. Continuous integration fails when regeneration changes committed output. Do not author independent duplicate schemas.\n\nReview repair: No JSON Schema export or generated TypeScript and Swift models\nAcceptance: one repeatable generation command exports JSON Schema and generates TypeScript and Swift models from the single restricted vocabulary, documents every generated file, and fails continuous integration when regeneration changes committed output (SPEC.md section 17).\nEvidence: protocol/schema/ and protocol/generated/ each contain only a README deferring to backlog task T007; no generation script exists under scripts/ and no generated model files are committed.\n\nReview repair: Generated TypeScript and Swift models verify canonical hashes against document-hashes.json\nT007 generates TypeScript and Swift models from the single schema vocabulary. Those models should join scripts/verify_canonical_hashes.mjs and the Python implementation in verifying every entry of fixtures/valid/document-hashes.json, per SPEC.md sections 4.2, 17, and 18.1 (\"Shared fixtures detect disagreement\"). The document-hashes.json index and the wire-form rule documented in verify_canonical_hashes.mjs (absent optional bounds, column fields, and rowKey serialize as explicit nulls) are the contract they must reproduce.\nEvidence: SPEC.md section 18.1 requires canonical hashes to agree across supported languages; today the agreement covers Python and JavaScript (scripts/verify_canonical_hashes.mjs, run by make check). protocol/generated/ holds only a README until T007 lands.\n\nReview repair: JSON Schema export and generated TypeScript and Swift models are missing\nOne repeatable generation command exports JSON Schema and generates TypeScript and Swift models from the single restricted vocabulary, documents every generated file, and fails continuous integration when regeneration changes committed output (SPEC.md section 17); generated models verify canonical hashes against fixtures/valid/document-hashes.json.\nEvidence: protocol/schema/ and protocol/generated/ each contain only a README deferring to backlog task T007; scripts/ holds check.sh, build_fixture_artifacts.py, and verify_canonical_hashes.mjs only; scripts/check.sh has no regeneration-drift gate, so SPEC.md section 17 'Continuous integration MUST fail when regeneration changes committed output' has no enforcement point.",
+      "depends_on": [
+        "T003"
+      ],
+      "tags": [
+        "looper:finding:generated-schema-and-language-models",
+        "looper:finding:generated-models-verify-canonical-hashes"
+      ]
+    },
+    {
+      "id": "T008",
+      "title": "Implement workspace storage and ownership",
+      "priority": 1,
+      "status": "done",
+      "details": "Create the workspace directory layout with state.sqlite, owner.lock, artifacts, staging, logs, and backups (SPEC.md section 14). Resolve the data root through a platform adapter: $XDG_DATA_HOME or $HOME/.local/share on Linux. Enforce single-writer ownership with an operating-system lock. Keep artifact bytes outside the database. Tests run against an isolated temporary root.\n\nReview repair: Enforce single-writer ownership over the Pi Durable adapter in T008\nT008 must acquire owner.lock, keep exactly one owning connection per workspace state.sqlite, mint every ID through that one connection, and drive the adapter in a Node helper process behind the framed service boundary (SPEC.md sections 12.1 and 14). The probe found: the adapter fences no second writer; an overlapping writer blocks the Node event loop inside BEGIN IMMEDIATE for the whole busy timeout, so exactly one of two overlapping commits fails with \"database is locked\"; and mintId is per-connection in-memory state whose counters collide across connections.\nEvidence: runtime/storage/pi_adapter/README.md findings F3, F4, F5; probe cases observation/a second connection can write after the first commits and observation/overlapping writers in one process hit the busy timeout (detail {a: \"database is locked\", b: \"ok\"}, busyTimeoutMs 200).",
+      "depends_on": [
+        "T002",
+        "T003"
+      ],
+      "files": [
+        "README.md",
+        "runtime/storage/__init__.py",
+        "runtime/storage/artifacts.py",
+        "runtime/storage/errors.py",
+        "runtime/storage/layout.py",
+        "runtime/storage/ownership.py",
+        "runtime/storage/pi_adapter/README.md",
+        "runtime/storage/pi_adapter/workspace_worker.mjs",
+        "runtime/storage/platform.py",
+        "runtime/storage/worker.py",
+        "runtime/storage/workspace.py",
+        "tests/integration/test_workspace_storage.py"
+      ],
+      "tags": [
+        "looper:finding:pi-storage-single-owner-connection"
+      ],
+      "updated_at": "2026-10-18T00:07:23Z",
+      "unblock_when": "\"\""
+    },
+    {
+      "id": "T009",
+      "title": "Implement command envelope, mutations, and receipts",
+      "priority": 1,
+      "status": "done",
+      "details": "Implement the framed IPC envelope with a four-byte big-endian length prefix and a pre-allocation frame limit (SPEC.md section 12.1). Apply entity.create, entity.replace, entity.delete, parameter.set, and layout.replace against a private candidate, validate once, and commit all or nothing (section 12.2). Enforce expected-revision conflicts, compiler read-set checks, state migrations (section 12.3), request receipts with E_REQUEST_REUSE (section 12.5), one commit sequence per transaction, and ordered epoch-guarded notifications.\n\nReview repair: Enforce the service-checked invalid command fixtures\nThe workspace service must reject fixtures/invalid/commands/invalid-state-migration.json with E_STATE_MIGRATION at /operations/0 and fixtures/invalid/commands/missing-expected-revision.json with E_CONFLICT at /expected (SPEC.md sections 12.2 and 12.3), per fixtures/invalid/manifest.json (enforcedBy service).\nEvidence: fixtures/invalid/manifest.json entries with enforcedBy 'service' and ownerTask T009; both envelopes parse cleanly with melt.schema.commands.parse_command today, and tests/contract/test_fixtures.py skips the semantic assertion with reason 'enforced by service (T009)'.",
+      "depends_on": [
+        "T005",
+        "T008"
+      ],
+      "files": [
+        "README.md",
+        "fixtures/invalid/README.md",
+        "python/melt/schema/records.py",
+        "runtime/compiler/__init__.py",
+        "runtime/compiler/compiler.py",
+        "runtime/workspace/__init__.py",
+        "runtime/workspace/mutations.py",
+        "runtime/workspace/service.py",
+        "runtime/workspace/state.py",
+        "tests/conftest.py",
+        "tests/contract/test_fixtures.py",
+        "tests/integration/test_workspace_service.py"
+      ],
+      "tags": [
+        "looper:finding:fixture-service-diagnostic-enforcement"
+      ],
+      "updated_at": "2026-10-18T00:32:59Z",
+      "unblock_when": "\"\""
+    },
+    {
+      "id": "T010",
+      "title": "Implement service methods, preview, and inspection",
+      "priority": 1,
+      "status": "done",
+      "details": "Implement session.hello, workspace.create, workspace.inspect, workspace.preview, workspace.subscribe, control.activate, run.cancel, and run.inspect (SPEC.md section 12.6). workspace.create accepts only absent workspaces with empty sources and actions collections. Preview reports diagnostics, affected IDs, controller replacements, state resets, invalidated runs, and the candidate hash without writes. Artifact and script tokens are opaque, workspace-scoped, and expire after 15 minutes. Approval-required is a successful admission result, never a grant.",
+      "depends_on": [
+        "T009"
+      ],
+      "files": [
+        "README.md",
+        "python/melt/schema/limits.py",
+        "runtime/workspace/__init__.py",
+        "runtime/workspace/inspection.py",
+        "runtime/workspace/mutations.py",
+        "runtime/workspace/service.py",
+        "runtime/workspace/state.py",
+        "runtime/workspace/tokens.py",
+        "tests/integration/test_service_methods.py",
+        "tests/integration/test_token_store.py",
+        "tests/integration/test_workspace_service.py"
+      ],
+      "updated_at": "2026-10-18T00:52:44Z"
+    },
+    {
+      "id": "T011",
+      "title": "Implement artifact store and source import",
+      "priority": 1,
+      "status": "done",
+      "details": "Capture and verify bytes, size, lowercase sha256 hash, kind, media type, and schema before registration (SPEC.md section 5). Support table Parquet, image PNG, and text sources with their schemas. Imports create immutable append-only versions through service-issued artifact tokens; document commands cannot forge artifact records. Run provenance is attached by the service alone.",
+      "depends_on": [
+        "T008"
+      ],
+      "files": [
+        "README.md",
+        "python/melt/schema/records.py",
+        "runtime/workspace/__init__.py",
+        "runtime/workspace/importer.py",
+        "runtime/workspace/service.py",
+        "runtime/workspace/state.py",
+        "tests/contract/test_artifact_measurement.py",
+        "tests/contract/test_records.py",
+        "tests/integration/test_source_import.py",
+        "tests/integration/test_workspace_service.py"
+      ],
+      "updated_at": "2026-10-18T01:19:50Z",
+      "unblock_when": "\"\""
+    },
+    {
+      "id": "T012",
+      "title": "Implement trusted table reader paging",
+      "priority": 1,
+      "status": "done",
+      "details": "Serve table.page per SPEC.md section 12.7. Validate operators against column types. Combine filters with logical AND. Compare strings by Unicode code point. Sort nulls last with original row position as tie-breaker. Apply filters before sorting and paging. Return the source reference and query hash. Enforce limits of 256 rows, 128 columns, and 1 MiB. Never return an endless empty page with hasMore true.\n\nReview repair: table.page answers 'not implemented' for every request\nAcceptance: serve table.page per SPEC.md section 12.7 with validated operators, AND-combined filters, code-point string comparison, nulls-last sorting with row-position tie-break, filters before sorting and paging, source reference and query hash in the response, 256-row/128-column/1 MiB limits, and never an endless empty page with hasMore true.\nEvidence: runtime/workspace/service.py:287-288 lists table.page in UNANSWERED_METHODS; dispatching a well-formed table.page envelope for sales-input version 1 answers ok=false with E_SCHEMA at /method: \"method 'table.page' is not implemented by this service\" (probe at 81f2bfd).\n\nReview repair: Verify and close T012: the trusted table reader landed inside T018\nT018's acceptance requires table page inspection from the command line through the service handlers, so the SPEC.md section 12.7 reader was implemented in this task rather than waiting for T012. The T012 session should verify the acceptance against commit 6293766 and complete the task instead of rebuilding it; attach any gaps it finds as new evidence.\nEvidence: runtime/workspace/reader.py implements the full section 12.7 contract; service.py routes table.page through it; tests/integration/test_table_reader.py covers operators, AND filters, code-point comparison, nulls-last with tie-break, query hash, limits, and the service route; the stale 'not implemented' branch in tests/integration/test_workspace_service.py was updated to the answered behavior.",
+      "depends_on": [
+        "T011"
+      ],
+      "tags": [
+        "looper:finding:trusted-table-reader-paging"
+      ],
+      "updated_at": "2026-10-18T07:21:38Z"
+    },
+    {
+      "id": "T013",
+      "title": "Implement action registration registry",
+      "priority": 1,
+      "status": "done",
+      "details": "Store service-owned registrations with ID, immutable revision, captured script artifact and hash, project root policy, environment fingerprint, input and parameter contract, declared outputs, required permission, and nonReplaySafe classification (SPEC.md section 7.2). Registration never executes the script. Script edits create new registrations. Action mappings must exactly satisfy the registration contract. Unknown registrations disable actions during restoration while projections stay readable.\n\nReview repair: Compiler accepts parameter mappings that leave a registration-bounded constraint dimension unconstrained\nSPEC.md section 7.2: 'An action's mappings MUST exactly satisfy the registration contract. Parameter constraints MUST fit within the registration's accepted values. Reject ambiguous constraint compatibility; do not silently narrow runtime values.' _constraints_fit in runtime/compiler/compiler.py compares minimum, maximum, and maxLength only when both the workspace parameter and the registration slot constrain that dimension. When the registration bounds a dimension and the workspace parameter leaves it open, compilation succeeds, so a committed parameter value outside the registration's accepted range can enter an admitted run. The enum branch of the same function already rejects an unconstrained parameter feeding an enum slot, which is the correct one-sided rule. Acceptance: compiling a document whose mapped parameter lacks minimum (or maximum, or maxLength) against a registration slot that bounds that dimension must fail with E_REGISTRATION at /actions/\u003cid\u003e/parameters/\u003cname\u003e, with regression tests for each dimension. This is T013's acceptance criterion 'Action mappings must exactly satisfy the registration contract'; the enforcement point is the compiler function delivered under T005.\nEvidence: Executable probe against fixtures/catalog.json (registration summarize-script-v1 declares parameter minimum with constraints {\"minimum\": 0}): a document whose workspace parameter 'minimum' has constraints {} compiles and builds a plan; constraints {\"maximum\": 100} also compiles; only constraints {\"minimum\": -5} is rejected with E_REGISTRATION at /actions/summarize/parameters/minimum (runtime/compiler/compiler.py:413-462, the both-present branches at lines 432-439 and 462). tests/contract/test_compiler.py:321 test_widened_parameter_constraints_are_rejected covers only the widened-minimum case, so the missing-constraint cases are untested. The workspace parameter accepts values below 0 (no document-level constraint), so a parameter.set to a negative value commits and the admitted run captures it, while the registration accepts only values \u003e= 0.\n\nReview repair: Compiler still accepts parameter mappings that leave a registration-bounded dimension unconstrained\nAcceptance per SPEC.md section 7.2 and the T013 repair: compiling a document whose mapped parameter lacks minimum, maximum, or maxLength against a registration slot that bounds that dimension must fail with E_REGISTRATION at /actions/\u003cid\u003e/parameters/\u003cname\u003e, with regression tests for each dimension.\nEvidence: Re-verified at 2f34b8f against fixtures/catalog.json (sales-script-v1 parameter slot 'minimum' carries constraints {minimum: 0, maximum: 1000000000}): sales-full.json with the workspace parameter constraints set to {} compiles ok; constraints {maximum: 1000000000} (no minimum) compiles ok; only constraints {minimum: -5} is rejected with E_REGISTRATION at /actions/analyze-sales/parameters/minimum. Root cause unchanged: runtime/compiler/compiler.py:413-462 _constraints_fit compares minimum, maximum, and maxLength only when both sides constrain the dimension (both-present branches), while the enum branch already applies the one-sided rule. tests/contract/test_compiler.py:321 covers only the widened-minimum case.",
+      "depends_on": [
+        "T010",
+        "T011"
+      ],
+      "files": [
+        "README.md",
+        "runtime/compiler/compiler.py",
+        "runtime/workspace/__init__.py",
+        "runtime/workspace/inspection.py",
+        "runtime/workspace/registry.py",
+        "runtime/workspace/service.py",
+        "runtime/workspace/state.py",
+        "tests/contract/test_compiler.py",
+        "tests/integration/test_action_registration.py",
+        "tests/integration/test_workspace_service.py"
+      ],
+      "tags": [
+        "looper:finding:compiler-registration-constraint-fit"
+      ],
+      "updated_at": "2026-10-18T01:53:52Z",
+      "unblock_when": "\"\""
+    },
+    {
+      "id": "T014",
+      "title": "Implement permissions and service limits",
+      "priority": 1,
+      "status": "done",
+      "details": "Implement specific-run and project execution grants stored outside exported documents (SPEC.md section 15.1). Only host-generated permission controls grant authority. Recheck grants at admission, launch, and publication. Enforce the default limit table with E_LIMIT errors that name the resource and bound (section 15.2). Never pass model credentials to project processes.",
+      "depends_on": [
+        "T010"
+      ],
+      "files": [
+        "README.md",
+        "python/melt/schema/commands.py",
+        "python/melt/schema/diagnostics.py",
+        "python/melt/schema/records.py",
+        "runtime/execution/__init__.py",
+        "runtime/execution/environment.py",
+        "runtime/workspace/__init__.py",
+        "runtime/workspace/permissions.py",
+        "runtime/workspace/service.py",
+        "runtime/workspace/state.py",
+        "tests/contract/test_limits.py",
+        "tests/contract/test_model_credentials.py",
+        "tests/contract/test_permission_records.py",
+        "tests/contract/test_records.py",
+        "tests/integration/test_permissions.py"
+      ],
+      "updated_at": "2026-10-18T02:23:24Z"
+    },
+    {
+      "id": "T015",
+      "title": "Implement Python SDK and runner",
+      "priority": 1,
+      "status": "done",
+      "details": "Build python/melt/sdk and python/melt/runner per SPEC.md section 13.2. The runner reads a versioned manifest with run ID, captured parameters, input artifact paths, declared outputs, and a private staging directory. Expose ui.params, ui.input_path, and ui.output. ui.output materializes Parquet for DataFrames, PNG for figures, and UTF-8 bytes for strings, and rejects duplicate or undeclared names. Each run uses a fresh process without package installation.",
+      "depends_on": [
+        "T011"
+      ],
+      "files": [
+        ".gitignore",
+        "README.md",
+        "python/melt/__init__.py",
+        "python/melt/runner/__init__.py",
+        "python/melt/runner/__main__.py",
+        "python/melt/runner/execute.py",
+        "python/melt/runner/manifest.py",
+        "python/melt/sdk/__init__.py",
+        "python/melt/sdk/context.py",
+        "python/melt/sdk/errors.py",
+        "python/melt/sdk/materialize.py",
+        "python/melt/sdk/ui.py",
+        "runtime/execution/__init__.py",
+        "runtime/execution/launcher.py",
+        "tests/contract/test_run_manifest.py",
+        "tests/contract/test_sdk.py",
+        "tests/integration/test_runner.py"
+      ],
+      "updated_at": "2026-10-18T02:46:19Z",
+      "unblock_when": "\"\""
+    },
+    {
+      "id": "T016",
+      "title": "Implement scheduling, snapshots, and generations",
+      "priority": 1,
+      "status": "done",
+      "details": "Admit intents with the full invocation snapshot of SPEC.md section 7.3. Reserve generations in the admitting transaction and mark older runs ineligible immediately. Coalesce several bindings that target one action into one intent with final parameter values. Keep one pending request per output group and one execution per workspace. Own debounce timers in the service; repeated events replace the pending intent, persist it, and restart marks it interrupted.\n\nReview repair: Complete control.activate admission once grants and scheduling exist\nruntime/workspace/service.py:_control_activate resolves the projection, button control, matching binding, action, and registration, then always answers the successful approvalRequired result because no permission grant store exists yet (SPEC.md sections 12.6, 13.1, 15.1). Once T014 attaches grants and T016 owns admission, the grant check at that point must produce a real admitted intent with an invocation snapshot and generation reservation; run.cancel and run.inspect are currently exercised against seeded run records for the same reason. The comment block at the hook site names this contract.\nEvidence: tests/integration/test_service_methods.py::test_control_activate_admits_to_approval_required asserts ok is True, status approvalRequired, and service.runs == {} (no run admitted or executed); the same file seeds run records through WorkspaceStore.append_records because no admission path exists yet.\n\nReview repair: Recheck registration availability and environment fingerprint immediately before launch\nWhen T016 builds launch, the launching path must recheck registration availability and compare the resolved environment fingerprint against the one recorded on the admission snapshot, not only the permission grant. T013 stores and restores the fingerprint (runtime/workspace/registry.py, RegistrationRecord.environmentFingerprint) and RunRecord carries it (python/melt/schema/records.py:113), but no launch path exists yet to perform the check.\nEvidence: SPEC.md section 13.1: 'At admission and immediately before launch, check permission and registration availability.' The registry now exposes entry.environmentFingerprint indirectly through service.registrations; tests/integration/test_action_registration.py proves restore, and no launch-time consumer exists because scheduling lands with T016.\n\nReview repair: Complete control.activate admission with invocation snapshot and generation reservation\nSPEC.md sections 7.3, 12.6, and 13.1. control.activate now rechecks the grant set and answers status granted with admission pending-scheduler when a live grant covers the activation; no run is admitted, no invocation snapshot is captured on a run record, and no generation is reserved (that machinery is T016's). Once T016 owns admission: mint the run record with the full invocation snapshot from the captured intent block, reserve the generation in the admitting transaction, store permissionDecision = decision.grant_id on the run, pin generation and outputGroupRevision on specificRun grants when they exist, and recheck registration availability plus the environment fingerprint through authority_at_launch immediately before launch.\nEvidence: runtime/workspace/service.py _control_activate returns {status: granted, permissionDecision, intent, admission: pending-scheduler}; tests/integration/test_permissions.py::test_a_project_grant_answers_the_authority_decision asserts service.runs == {} after a granted activation; backlog T016 already carries tags looper:finding:control-activate-admitted-intent and looper:finding:launch-rechecks-registration-and-environment.\n\nReview repair: Launch project processes through the credential-free environment builder\nSPEC.md section 15.1. The launcher that spawns the project runner process must construct the child environment through runtime.execution.project_process_environment and call assert_no_model_credentials on the result before spawn, so no model credential reaches project code by inheritance; T015's runner harness should route through the same builder.\nEvidence: runtime/execution/environment.py delivered with MODEL_CREDENTIAL_VARIABLES, CREDENTIAL_SUFFIXES, project_process_environment, and assert_no_model_credentials; tests/contract/test_model_credentials.py passes (8 tests). No process-spawning path exists in the tree yet, so nothing consumes the builder today.\n\nReview repair: T016 admission wraps launch_run with permission, registration, and environment rechecks\nT016 must wrap runtime.execution.launch_run with the admission and pre-launch rechecks the backlog already records: permission grant, registration availability, and environment-fingerprint comparison against the admission snapshot. launch_run builds the credential-free child environment through project_process_environment + assert_no_model_credentials as required, writes manifest.json and the read-only script.py into the run's staging directory, sets cwd to staging, and returns the exit code plus the runner's staged-outputs.json report (a report the service must revalidate, not trust). The report lives at \u003cstaging\u003e/staged-outputs.json with kind, mediaType, path, byteLength, and sha256 per output.\nEvidence: runtime/execution/launcher.py delivers launch_run, write_run_manifest, materialize_script, and runner_environment; tests/integration/test_runner.py proves the SPEC 13.2 script completes in a fresh credential-free process with the hero numbers, and that the service validates the staged bytes independently through capture_artifact_token plus runtime.workspace.importer.register_artifact. No permission, registration, or fingerprint check sits in the launch path today because admission belongs to T016.",
+      "depends_on": [
+        "T013",
+        "T014"
+      ],
+      "files": [
+        "README.md",
+        "python/melt/schema/records.py",
+        "runtime/compiler/catalog.py",
+        "runtime/execution/__init__.py",
+        "runtime/workspace/__init__.py",
+        "runtime/workspace/registry.py",
+        "runtime/workspace/scheduling.py",
+        "runtime/workspace/service.py",
+        "runtime/workspace/state.py",
+        "tests/contract/test_records.py",
+        "tests/integration/test_permissions.py",
+        "tests/integration/test_scheduling.py",
+        "tests/integration/test_service_methods.py",
+        "tests/integration/test_workspace_service.py"
+      ],
+      "tags": [
+        "looper:finding:control-activate-admitted-intent",
+        "looper:finding:launch-rechecks-registration-and-environment",
+        "looper:finding:project-process-credential-free-environment"
+      ],
+      "updated_at": "2026-10-18T03:28:12Z",
+      "unblock_when": "\"\""
+    },
+    {
+      "id": "T017",
+      "title": "Implement atomic publication and result status",
+      "priority": 1,
+      "status": "done",
+      "details": "Apply the six publication steps of SPEC.md section 13.4 within one owning transaction. Enforce every eligibility condition of section 13.3. A missing or invalid output rejects the entire publication, so the previous table and plot remain together. Obsolete runs stay historical with superseded disposition. Output groups report empty, pending, current, stale, or error status with resultIsStale and captured parameters.\n\nReview repair: Atomic publication attaches run provenance through run_version\nT011 delivers the service-internal run_version(measured, runId, output) hook in runtime/workspace/importer.py; it attaches {kind: run, runId, output} provenance and is unreachable from any document command. T017's atomic publication must call it inside the owning transaction when allocating output source versions (SPEC.md sections 5.1 and 13.4 step 5).\nEvidence: runtime/workspace/importer.py run_version; tests/contract/test_artifact_measurement.py::test_run_provenance_is_attached_by_the_service_alone proves entity.create on a sources collection is rejected; no caller exists yet because publication lands with T017.\n\nReview repair: Call the publication permission gate inside the atomic publication transaction\nSPEC.md sections 13.3 (eligibility: execution permission has not been revoked) and 13.5. The atomic publication transaction of T017 must recheck every candidate run through authority_at_publication or service.execution_authority_for_run(run_id, at=\"publication\"), reject the publication when the decision denies, and request cancellation of the owning run when revocation_blocks(decision) is true.\nEvidence: runtime/workspace/permissions.py authority_at_publication and revocation_blocks delivered; WorkspaceService.execution_authority_for_run(run_id, at=\"publication\") proven against seeded run records in tests/integration/test_permissions.py::test_launch_and_publication_recheck_the_captured_grant; the publication path itself lands with T017.",
+      "depends_on": [
+        "T015",
+        "T016"
+      ],
+      "files": [
+        "README.md",
+        "python/melt/schema/records.py",
+        "runtime/workspace/__init__.py",
+        "runtime/workspace/importer.py",
+        "runtime/workspace/inspection.py",
+        "runtime/workspace/publication.py",
+        "runtime/workspace/service.py",
+        "runtime/workspace/state.py",
+        "tests/contract/test_records.py",
+        "tests/integration/test_publication.py"
+      ],
+      "tags": [
+        "looper:finding:publication-attaches-run-provenance",
+        "looper:finding:publication-permission-recheck"
+      ],
+      "updated_at": "2026-10-18T03:58:37Z",
+      "unblock_when": "\"\""
+    },
+    {
+      "id": "T018",
+      "title": "Build the Linux command-line harness",
+      "priority": 1,
+      "status": "done",
+      "details": "Drive the full loop from the command line as a local user (SPEC.md section 2.2): create the workspace, import sources, register the sales script, apply definitions, edit parameters, invoke actions, and inspect plans, state, table pages, and PNG artifacts. Route through the same service handlers the later native host will use. Record user versus programmatic event origin.\n\nReview repair: Admission commands record every caller as a user event\nAcceptance: an agent or programmatic caller that invokes action.invoke or control.activate through dispatch_as(origin=\"programmatic\") must produce an admitted intent whose recorded origin is programmatic (SPEC.md sections 2.2 and 9.1: origin derives from the authenticated caller and command type), with a regression test through the same service handlers the native host will use.\nEvidence: Probe at 81f2bfd: service.dispatch_as(envelope(action.invoke), origin=\"programmatic\") returns ok with the admitted intent recording origin \"user\" (service.pending_intents[...].origin == \"user\"); control.activate under programmatic origin likewise answers result origin \"user\". runtime/workspace/service.py:1855 (_control_activate) and service.py:1917 (_action_invoke) hardcode origin=\"user\" and ignore the origin parameter that dispatch (service.py:677-678) threads only into workspace.apply. T018 owns recording user versus programmatic event origin.\n\nReview repair: No command-line harness drives the full loop\nAcceptance: a local user drives workspace creation, source import, script registration, definition apply, parameter edits, action invocation, and inspection of plans, state, table pages, and PNG artifacts from the command line, routed through the same service handlers the native host will use, recording user versus programmatic event origin (SPEC.md sections 2.2 and 18.2).\nEvidence: No harness module exists: scripts/ holds only check.sh and build_fixture_artifacts.py; python/melt/__main__.py is the T006 stub; the only full-loop driver is test code (tests/integration/test_scheduling.py seed_workspace) and my review probe, both using the Python API directly rather than a command-line surface.",
+      "depends_on": [
+        "T010",
+        "T017"
+      ],
+      "files": [
+        "README.md",
+        "fixtures/sales/README.md",
+        "fixtures/sales/contract.json",
+        "fixtures/sales/definitions.json",
+        "fixtures/sales/sales-script.py",
+        "fixtures/sales/workspace.json",
+        "pyproject.toml",
+        "runtime/harness/__init__.py",
+        "runtime/harness/__main__.py",
+        "runtime/harness/cli.py",
+        "runtime/workspace/__init__.py",
+        "runtime/workspace/reader.py",
+        "runtime/workspace/service.py",
+        "tests/integration/test_event_origin.py",
+        "tests/integration/test_harness.py",
+        "tests/integration/test_table_reader.py",
+        "tests/integration/test_workspace_service.py"
+      ],
+      "tags": [
+        "looper:finding:admission-preserves-caller-event-origin",
+        "looper:finding:linux-cli-harness-drives-full-loop"
+      ],
+      "updated_at": "2026-10-18T04:45:17Z"
+    },
+    {
+      "id": "T019",
+      "title": "Prove the hero workflow end to end",
+      "priority": 1,
+      "status": "done",
+      "details": "Execute the six hero steps of SPEC.md section 18.2 on rows (2026-01, 100), (2026-01, 300), and (2026-02, 200). Import and create the document without executing. Approve, run, and publish both outputs together. Set minimum to 200 with zero model calls. Move a pane during execution and keep that layout after publication. Restart offline and restore values, bindings, sources, and layout without execution. Invoke again and verify captured inputs. Minimum zero yields three rows, minimum 200 yields two rows, and monthly totals are 300 and 200.\n\nReview repair: Hero workflow not yet proven through the harness\nAcceptance: execute the six hero steps of SPEC.md section 18.2 through the Linux command-line harness on rows (2026-01, 100), (2026-01, 300), (2026-02, 200) with zero model calls, verifying three rows at minimum zero, two rows at minimum 200, monthly totals 300 and 200, layout preserved after publication, offline restart restoration, and captured re-invocation inputs.\nEvidence: The underlying loop is proven: my probe drove all six steps through the public service handlers at 81f2bfd with the exact hero numbers (3 rows at minimum 0; 2 rows and totals [300.0, 200.0] at minimum 200; superseded disposition on the older run; vertical layout preserved through publication; state, bindings, sources, and layout restored after close/reopen; re-invocation captured minimum=0 and sales-input v1). The harness-level proof that T019 requires is still pending T018.",
+      "depends_on": [
+        "T018"
+      ],
+      "files": [
+        "README.md",
+        "fixtures/sales/README.md",
+        "fixtures/sales/layout-move.json",
+        "tests/integration/test_hero_workflow.py"
+      ],
+      "tags": [
+        "looper:finding:hero-workflow-proven-through-harness"
+      ],
+      "updated_at": "2026-10-18T05:18:31Z",
+      "unblock_when": "\"\""
+    },
+    {
+      "id": "T020",
+      "title": "Pass the contract fixture suite",
+      "priority": 1,
+      "status": "done",
+      "details": "Run the full contract suite (SPEC.md section 18.1). Every invalid fixture fails with its expected diagnostic code and JSON Pointer. Every valid fixture compiles, including the full sales example. Canonical hashes agree across supported languages. The suite is part of the standard check command and blocks merges on failure.\n\nReview repair: Drive melt validate and melt compile over the fixture manifest\nThe contract suite of T020 should iterate fixtures/invalid/manifest.json and fixtures/valid/ so every invalid fixture fails with its recorded code and pointer and every valid fixture compiles; 17 of 21 invalid entries are already enforced by the schema layer.\nEvidence: tests/contract/test_fixtures.py enforces the schema-layer subset (35 passed, 21 skipped) and fixtures/invalid/README.md documents the manifest format for tooling.\n\nReview repair: Contract fixture suite does not yet drive every manifest entry to its expected diagnostic\nAcceptance: iterate fixtures/invalid/manifest.json and fixtures/valid/ so every invalid fixture fails with its recorded code and JSON Pointer and every valid fixture compiles, as part of the standard check command (SPEC.md section 18.1).\nEvidence: make check reports 'SKIPPED [17] tests/contract/test_fixtures.py:495: enforced by the schema layer today'; the compiler-enforced (registry-mismatch, artifact-schema-drift) and service-enforced (invalid-state-migration, missing-expected-revision) entries are now covered in tests, but the manifest-wide pass over melt validate and melt compile awaits T006.",
+      "depends_on": [
+        "T006",
+        "T011",
+        "T013"
+      ],
+      "files": [
+        "README.md",
+        "fixtures/valid/README.md",
+        "fixtures/valid/commands/state-migration.json",
+        "scripts/check.sh",
+        "scripts/verify_canonical_hashes.mjs",
+        "tests/contract/test_fixtures.py"
+      ],
+      "tags": [
+        "looper:finding:fixture-suite-end-to-end-pass"
+      ],
+      "updated_at": "2026-10-18T05:36:18Z",
+      "unblock_when": "\"\""
+    },
+    {
+      "id": "T021",
+      "title": "Pass the race test suite",
+      "priority": 1,
+      "status": "done",
+      "details": "Cover all eleven race scenarios of SPEC.md section 18.3. Include a run finishing before debounce fires, three parameter changes during a run, a newer failed run, definition changes during execution, hidden and deleted target panes, layout and title changes, parameter round trips, programmatic updates, duplicate activation, and permission revocation during execution.\n\nReview repair: Race test suite of the eleven scenarios is absent\nAcceptance: cover all eleven race scenarios of SPEC.md section 18.3, including definition changes and permission revocation during execution, duplicate activation, and parameter round trips.\nEvidence: No race test module exists under tests/. Existing scheduling tests cover adjacent pieces (generation reservation, coalescing, debounce replacement, duplicate invocation, revoked-grant launch refusal) but every 'during execution' case mutates the workspace between dispatch and launch because launch_admitted_run blocks the service thread (see finding run-cancellation-signals-owned-process-group).",
+      "depends_on": [
+        "T017",
+        "T018"
+      ],
+      "files": [
+        "tests/integration/test_race_suite.py"
+      ],
+      "tags": [
+        "looper:finding:race-suite-eleven-scenarios"
+      ],
+      "updated_at": "2026-10-18T05:58:58Z",
+      "unblock_when": "\"\""
+    },
+    {
+      "id": "T022",
+      "title": "Pass fault injection and recovery tests",
+      "priority": 1,
+      "status": "done",
+      "details": "Kill the service before and after artifact finalization, database commit, and acknowledgement (SPEC.md section 18.4). Acknowledged references always point to complete files and retries reconcile unacknowledged work. Test disk-full, missing artifacts, missing environments, lost notifications, changed epochs, reused request IDs, corrupt descriptors, cancelled runs, and incompatible saved versions. Startup follows the seven recovery steps of section 14 and never reruns uncertain Python effects.\n\nReview repair: Fill tests/recovery with the fault-injection suite\ntests/recovery currently holds one explicitly skipped placeholder. T022 must replace it with the SPEC.md section 18.4 fault-injection suite: kills before and after artifact finalization, database commit, and acknowledgement, plus disk-full, missing artifacts, missing environments, lost notifications, changed epochs, reused request IDs, corrupt descriptors, cancelled runs, and incompatible saved versions.\nEvidence: make check reports: SKIPPED [1] tests/recovery/test_restart_recovery.py: recovery fault-injection tests land with backlog task T022 (SPEC.md section 18.4)\n\nReview repair: Reconcile leftover staging directories against publication receipts on startup\nT017 loads committed publication receipts on restart (SPEC.md section 14, startup step 6) and recovery may remove abandoned staging files, but no startup pass yet walks staging/\u003crun-id\u003e trees to reconcile them against receipts (offer rerun or cleanup). That behavior and its fault-injection proof (kill before/after finalization, commit, and acknowledgement) land with the T022 gate.\nEvidence: runtime/workspace/service.py _load_state restores PUBLICATION_KIND records into service.publications; no caller walks store.layout.staging yet. tests/recovery/test_restart_recovery.py is skipped pending backlog task T022.\n\nReview repair: Recovery fault-injection suite is a skipped placeholder\nAcceptance: kill the service before and after artifact finalization, database commit, and acknowledgement; test disk-full, missing artifacts, missing environments, lost notifications, changed epochs, reused request IDs, corrupt descriptors, cancelled runs, and incompatible saved versions; startup follows the seven recovery steps of SPEC.md section 14 and reconciles staging directories against publication receipts, never rerunning uncertain Python effects.\nEvidence: make check reports 'SKIPPED [1] tests/recovery/test_restart_recovery.py: recovery fault-injection tests land with backlog task T022'; runtime/workspace/service.py _load_state restores publication receipts but no startup pass walks store.layout.staging trees (tracked repair note on T022).\n\nReview repair: Recovery fault-injection suite absent; startup recovery steps 4 and 6 unproved\nKill the service before and after artifact finalization, database commit, and acknowledgement; test disk-full, missing artifacts, missing environments, lost notifications, changed epochs, reused request IDs, corrupt descriptors, cancelled runs, and incompatible saved versions; startup follows the seven recovery steps of SPEC.md section 14, including reporting missing artifacts individually (step 4) and reconciling staging directories against publication receipts (step 6), never rerunning uncertain Python effects.\nEvidence: make check reports 'SKIPPED [1] tests/recovery/test_restart_recovery.py: recovery fault-injection tests land with backlog task T022 (SPEC.md section 18.4)'; tests/recovery holds one skipped placeholder claiming no behavior. runtime/workspace/service.py _load_state restores PUBLICATION_KIND records into service.publications but no startup pass walks store staging trees. New probe this session: after removing one artifacts/\u003csha256\u003e file under the data root, reopening and workspace.inspect answered ok with an empty diagnostics list while the source stayed listed, so SPEC.md section 14 step 4 (report missing artifacts individually) has no implementation; only table.page names an unreadable artifact at read time (service.py E_ARTIFACT path).",
+      "depends_on": [
+        "T017"
+      ],
+      "files": [
+        "README.md",
+        "runtime/workspace/__init__.py",
+        "runtime/workspace/publication.py",
+        "runtime/workspace/recovery.py",
+        "runtime/workspace/service.py",
+        "tests/recovery/service_child.py",
+        "tests/recovery/test_restart_recovery.py"
+      ],
+      "tags": [
+        "looper:finding:recovery-fault-injection-suite",
+        "looper:finding:startup-reconciles-staging-with-publication-receipts"
+      ],
+      "updated_at": "2026-10-18T07:05:24Z",
+      "unblock_when": "\"\""
+    },
+    {
+      "id": "T023",
+      "title": "Record round 1 performance measurements",
+      "priority": 2,
+      "status": "doing",
+      "details": "Measure compilation, service commits, artifact publication, and table paging on a declared 16 GiB Linux machine (SPEC.md section 19). Record hardware, dependency versions, build mode, fixture sizes, and warm and cold conditions. Compare p95 results against the targets. A missed target triggers investigation without weakening persistence or correctness.\n\nReview repair: Round 1 performance measurements are not recorded\nAcceptance: measure compilation, service commits, artifact publication, and table paging on a declared 16 GiB Linux machine with hardware, dependency versions, build mode, fixture sizes, and warm and cold conditions recorded, and compare p95 results against the SPEC.md section 19 targets.\nEvidence: No benchmark or measurement artifact exists in the tree (search for benchmark/performance/measurement files finds only third-party files under runtime/storage/pi_adapter/node_modules and an unrelated contract test); README.md and docs/ carry no recorded numbers.\n\nReview repair: Round 1 performance measurements are not recorded\nMeasure compilation, service commits, artifact publication, and table paging on a declared 16 GiB Linux machine with hardware, dependency versions, build mode, fixture sizes, and warm and cold conditions recorded, and compare p95 results against the SPEC.md section 19 targets.\nEvidence: No benchmark or measurement artifact exists in the tree (search outside .venv and node_modules finds none); scripts/check.sh runs no measurement step; README.md and docs/ record no numbers against the section 19 targets (compile p95 below 50 ms, control feedback below 50 ms, committed patch below 100 ms, five-pane restore below 2 s, warm first page for 1 million rows below 300 ms).",
+      "depends_on": [
+        "T019"
+      ],
+      "tags": [
+        "looper:finding:round1-performance-measurements"
+      ]
+    },
+    {
+      "id": "T024",
+      "title": "Close the Linux recovery gate",
+      "priority": 1,
+      "status": "todo",
+      "details": "Close round 1 per SPEC.md section 20 step 5. Confirm passing hero workflow, contract suite, race suite, and publication fault tests, with compiler and reader measurements recorded. Confirm no macOS tools are required. A valid JSON document alone does not pass.",
+      "depends_on": [
+        "T019",
+        "T020",
+        "T021",
+        "T022",
+        "T023"
+      ]
+    },
+    {
+      "id": "T025",
+      "title": "Add semantic collections and reference state",
+      "priority": 2,
+      "status": "todo",
+      "details": "Under the provisional identifier melt/semantic-draft-1, add semantic collections as typed identity indexes over table sources and nullable reference state with workspace scope (RFC 001 sections 3 and 4). Verify unique non-null string keys at admission. Issue opaque incarnations on collection creation. Preserve unresolved references as missing. Reject these fields in any v0.1 document.",
+      "depends_on": [
+        "T024"
+      ]
+    },
+    {
+      "id": "T026",
+      "title": "Add pure events, observers, and test renderer",
+      "priority": 2,
+      "status": "todo",
+      "details": "Add object.select and selection.clear events with typed state.set bindings and no expressions (RFC 001 sections 5 and 6). Add highlight and record observers to the dependency plan. Build the Linux test renderer. Pass the supplier fixture with S-42 and S-73: one state commit, inspector resolution, graph highlighting, zero model calls, zero Python launches, restart restoration, missing-key reporting, and stale revision rejection. Apply a stored agent-shaped patch that adds a second inspector without touching existing components or state revisions.",
+      "depends_on": [
+        "T025"
+      ]
+    },
+    {
+      "id": "T027",
+      "title": "Add pane-independent outputs and v0.1 migration",
+      "priority": 2,
+      "status": "todo",
+      "details": "Let actions declare outputs with names, kinds, and a publication group, without projection targets (RFC 001 section 8). Support following and pinned subscriptions by stable output incarnation. Publication stays atomic and eligibility no longer depends on pane existence. Provide the explicit v0.1 migration with quiesced runs, backup, and atomic language change; a failed migration leaves v0.1 current. The v0.1 baseline suite passes unchanged before and after.",
+      "depends_on": [
+        "T025"
+      ]
+    },
+    {
+      "id": "T028",
+      "title": "Probe Pele rendering and identity mapping",
+      "priority": 2,
+      "status": "todo",
+      "details": "External prerequisite for the extension. Pin a Pele version and establish its actual Linux interface (RFC 001 section 7.3). Prove rendered-element to node-ID mapping through a verified renderer mapping or host-owned hit regions. Sanitize labels and disable external resources in rendered output. Report limitations instead of claiming interaction from SVG generation alone.",
+      "depends_on": [
+        "T026"
+      ]
+    },
+    {
+      "id": "T029",
+      "title": "Verify extension conflicts and recovery",
+      "priority": 2,
+      "status": "todo",
+      "details": "Test duplicate events, reused IDs with changed payloads, stale state revisions, recreated collection IDs, failed commits, lost acknowledgements, and unavailable renderer versions (RFC 001 section 10.5). An optimistic selection is never reported durable before commit. An unavailable graph renderer never blocks inspection of saved sources or semantic state.",
+      "depends_on": [
+        "T026",
+        "T027"
+      ]
+    },
+    {
+      "id": "T030",
+      "title": "Integrate the native macOS host",
+      "priority": 5,
+      "status": "blocked",
+      "details": "Render table, plot, document, and controls with stable controllers beside a Ghostty terminal on macOS (SPEC.md section 20 step 6 and section 18.5). Verify controller identity while moving and updating panes. Test focus, keyboard navigation, clipboard, input methods, accessibility labels, pane hiding, and small-window overflow. Table paging and Python computation never block native input.\n\nReview repair: Fill tests/native with the round-2 macOS suite\ntests/native currently holds one explicitly skipped placeholder. T030 owns the round-2 macOS checks of SPEC.md section 18.5 (controller identity, focus, keyboard navigation, clipboard, input methods, accessibility, pane hiding, small-window overflow). The Linux gate must keep passing without a macOS machine.\nEvidence: make check reports: SKIPPED [1] tests/native/test_native_round2.py: native integration belongs to round 2, backlog task T030 (SPEC.md sections 2.2 and 18.5)\n\nMaintenance decision: Preserve all native acceptance requirements. This task is postponed from the autonomous Linux run; it does not block T024 or T025-T029.",
+      "depends_on": [
+        "T024",
+        "T028",
+        "T029",
+        "T032"
+      ],
+      "blockers": [
+        "Deferred from the Linux run: requires an available macOS Apple Silicon host for native validation."
+      ],
+      "tags": [
+        "looper:finding:native-round2-macos-suite",
+        "looper:operator",
+        "deferred:native-round"
+      ],
+      "updated_at": "2026-10-17T23:35:10.554076Z",
+      "unblock_when": "Resume in the native round after Linux and semantic-extension gates pass and a macOS Apple Silicon host is available. Remove looper:operator and set todo only when coding workers can access that host. Mark done only after the required checks pass."
+    },
+    {
+      "id": "T031",
+      "title": "Close the application release gate",
+      "priority": 5,
+      "status": "blocked",
+      "details": "Close the release gate per SPEC.md section 20 step 7. Repeat the hero workflow through native controls. Pass native regressions, recovery tests, the Apple Silicon performance targets, and clean-machine packaging checks.\n\nMaintenance decision: Preserve all native acceptance requirements. This task is postponed from the autonomous Linux run; it does not block T024 or T025-T029.",
+      "depends_on": [
+        "T030"
+      ],
+      "blockers": [
+        "Deferred from the Linux run: requires an available macOS Apple Silicon host for native validation."
+      ],
+      "tags": [
+        "looper:operator",
+        "deferred:native-round"
+      ],
+      "updated_at": "2026-10-17T23:35:10.554085Z",
+      "unblock_when": "Resume in the native round after Linux and semantic-extension gates pass and a macOS Apple Silicon host is available. Remove looper:operator and set todo only when coding workers can access that host. Mark done only after the required checks pass."
+    },
+    {
+      "id": "T032",
+      "title": "Verify macOS full-sync behavior of the pinned Pi Durable adapter",
+      "priority": 5,
+      "status": "blocked",
+      "details": "SPEC.md section 14 also requires configuring and verifying supported full-sync behavior on macOS in the native round, and Linux validation must not depend on macOS-specific settings. The probe is deliberately Linux-only. This verification needs a macOS machine and belongs to the native round.\nEvidence: runtime/storage/pi_adapter/README.md records the tested environment as Linux 6.8.0-147-generic, ext4 on /dev/sda1, with the crash model scoped to SIGKILL process death; SPEC.md section 14: \"On macOS, also configure and verify supported full-sync behavior.\"\n\nMaintenance decision: Preserve all native acceptance requirements. This task is postponed from the autonomous Linux run; it does not block T024 or T025-T029.",
+      "depends_on": [
+        "T024",
+        "T028",
+        "T029"
+      ],
+      "blockers": [
+        "Deferred from the Linux run: requires an available macOS Apple Silicon host for native validation."
+      ],
+      "tags": [
+        "looper:finding:pi-durable-macos-fullsync-verification",
+        "looper:operator",
+        "deferred:native-round"
+      ],
+      "updated_at": "2026-10-17T23:35:10.554087Z",
+      "unblock_when": "Resume in the native round after Linux and semantic-extension gates pass and a macOS Apple Silicon host is available. Remove looper:operator and set todo only when coding workers can access that host. Mark done only after the required checks pass."
+    },
+    {
+      "id": "T033",
+      "title": "Prepare a local Pi Durable synchronous-option proposal",
+      "priority": 3,
+      "status": "done",
+      "details": "Prepare a local proposal at docs/upstream/pi-durable-synchronous-option.md using the pinned adapter and existing probe evidence. Record the hard-coded NORMAL default, the current Melt FULL override, the owning-connection requirement, and a proposed synchronous option with compatibility and test cases. Acceptance: the draft identifies the pinned version, includes a reproducible local example, and explains why Melt retains its tested FULL override until any upstream change is pinned and verified. Do not file an issue, contact maintainers, or push upstream changes. Publication is optional future work and does not gate Linux or native releases.",
+      "depends_on": [
+        "T002"
+      ],
+      "files": [
+        "docs/upstream/pi-durable-synchronous-option.md"
+      ],
+      "tags": [
+        "looper:finding:pi-durable-upstream-synchronous-option",
+        "looper:operator"
+      ],
+      "updated_at": "2026-10-17T23:53:38Z",
+      "unblock_when": "\"\""
+    },
+    {
+      "id": "T034",
+      "title": "WorkspaceService.process_frame crashes on every well-formed frame",
+      "priority": 2,
+      "status": "todo",
+      "details": "Acceptance: process_frame must answer any decodable frame with one framed response per its contract (SPEC.md section 12.1 buffer form of the private IPC channel), rejecting only over-limit or truncated frames, with a test that exercises a valid frame through this entry point.\nEvidence: runtime/workspace/service.py:1506-1520: payload = decode_frame(data, limit=...) keeps decode_frame's (payload, end) tuple (python/melt/schema/commands.py:563-598 returns a tuple) and passes it unchanged to handle_request. parse_command then rejects the tuple, and _salvage_request_id (service.py:1669-1681) calls parse_json on the tuple, raising AttributeError: 'tuple' object has no attribute 'startswith' (python/melt/schema/canonical.py:95). Reproduced at 2f34b8f: after WorkspaceService.open, service.process_frame(encode_frame(\u003cvalid session.hello JSON\u003e)) raises AttributeError instead of returning a frame. Only the over-limit path is tested (tests/integration/test_workspace_service.py:1145-1159) because the limit error is raised inside decode_frame before the tuple escapes; the serve()/_read_frame_or_none socket path is unaffected and covered.\n\nReview repair: WorkspaceService.process_frame crashes on every well-formed frame\nAcceptance: process_frame must answer any decodable frame with one framed response per its contract (SPEC.md section 12.1), rejecting only over-limit or truncated frames, with a test that exercises a valid frame through this entry point.\nEvidence: Re-verified at 81f2bfd: after WorkspaceService.open, service.process_frame(encode_frame(\u003cvalid session.hello JSON\u003e)) raises AttributeError: 'tuple' object has no attribute 'startswith'. Root cause unchanged: runtime/workspace/service.py:3672-3686 passes decode_frame's (payload, end) tuple (python/melt/schema/commands.py:563-598) straight to handle_request, so parse_command rejects the tuple and _salvage_request_id calls parse_json on it. The serve() socket path is unaffected; only the over-limit path is tested (tests/integration/test_workspace_service.py:1145-1159).\n\nReview repair: Verify and close T034: the process_frame tuple fix landed inside T018\nThe one-line repair (unwrap decode_frame's tuple before handle_request) landed with T018 because the harness drives the framed channel. The T034 session should verify its acceptance against commit 6293766 and complete the task.\nEvidence: runtime/workspace/service.py process_frame now unwraps the (payload, end) tuple before handle_request; tests/integration/test_workspace_service.py::test_process_frame_answers_a_valid_frame sends a valid session.hello frame and reads the framed answer; the over-limit test still passes.",
+      "tags": [
+        "looper:finding:service-process-frame-answers-valid-frames"
+      ]
+    },
+    {
+      "id": "T035",
+      "title": "run.cancel never signals the owned process; a launching run blocks the entire service",
+      "priority": 2,
+      "status": "todo",
+      "details": "Acceptance: a cancellation request must stop scheduling and signal the owned process group, with escalation when necessary (SPEC.md section 13.5), and the framed service channel must keep answering requests while a project process executes, so race scenarios that mutate the workspace during execution (SPEC.md sections 18.3 and 20 step 5) can run for real rather than only between dispatch and launch.\nEvidence: runtime/workspace/service.py:3294-3346 _run_cancel only rewrites the run record to cancelled; no terminate, kill, or signal call exists anywhere under runtime/ (grep over runtime/workspace and runtime/execution finds none). runtime/execution/launcher.py:327 spawns the runner with subprocess.Popen without a process group (no start_new_session) and retains no handle. launch_admitted_run (service.py:2543-2743) blocks the calling thread until process.wait() returns, so while a run executes no framed request (run.cancel, workspace.inspect, workspace.apply, table.page) can be processed. Existing scheduling tests simulate 'during a run' by mutating between dispatch and launch (tests/integration/test_scheduling.py test_launch_refuses_a_registration_that_drifted and similar). No backlog task names this capability.\n\nReview repair: Hero step 4 pane move runs in the staged window until T035 lands the non-blocking execution slot\nT019 proves step 4 ('move a pane while execution runs') in the only window today's service offers: launch_admitted_run blocks the owning session for the whole process, owner.lock fences a second harness process, and a restart marks queued work interrupted, so the pane move lands after the run's process completed and staged its outputs but before its publication — same execution, results in flight, publication preserved. The literal concurrent-during-process mutation requires the non-blocking execution slot T035 already owns, and belongs to the T021 race suite.\nEvidence: tests/integration/test_hero_workflow.py step 4 (run launched without --publish, layout-move applied, then publish --run-id); runtime/workspace/service.py ACTIVE_RUN_STATES = (\"queued\", \"running\") plus _mark_restart_interrupted at open; runtime/storage/ownership.py exclusive flock per process.\n\nReview repair: Serve the framed channel and signal the owned process group while a run executes\nT035 already owns this outcome. New evidence from T021: the race suite now proves every during-execution scenario through the Python service handlers by driving the blocking launch_admitted_run from a helper thread, so the interleaving is real at the service level, but the framed serve loop still cannot answer any request while a project process executes and run.cancel still rewrites only the run record. Once the non-blocking execution slot and the process-group cancellation signal land, the race suite's assertions hold unchanged and can additionally assert channel liveness during execution and signal-driven cancellation of a gated run.\nEvidence: tests/integration/test_race_suite.py (ExecutingRun drives launch_admitted_run on a helper thread with a staging-directory start/release gate); runtime/workspace/service.py launch_admitted_run blocks through launch_run/process.wait; runtime/execution/launcher.py spawns subprocess.Popen without a process group and retains no handle; no terminate/kill signal call exists under runtime/.\n\nReview repair: run.cancel never signals the owned process group and the framed channel is blocked during execution\nA cancellation request must stop scheduling and signal the owned process group with escalation when necessary (SPEC.md section 13.5), and the framed service channel must keep answering requests while a project process executes, so during-execution race scenarios (SPEC.md sections 18.3 and 20 step 5) run for real.\nEvidence: runtime/workspace/service.py _run_cancel only rewrites the run record to cancelled; no terminate, kill, or signal call exists anywhere under runtime/ (grep). runtime/execution/launcher.py spawns subprocess.Popen without a process group and retains no handle. launch_admitted_run blocks the owning thread through process.wait, so no framed request is answered while a run executes; tests/integration/test_race_suite.py works around this by driving the blocking launch from a helper thread with a staging-directory gate.",
+      "tags": [
+        "looper:finding:run-cancellation-signals-owned-process-group"
+      ]
+    },
+    {
+      "id": "T036",
+      "title": "README hero step 3 command omits --debounce-wait, so the documented rerun silently never executes",
+      "priority": 3,
+      "status": "todo",
+      "details": "A user following the README 'Hero workflow' step 3 verbatim must get the rerun the section describes; either the command must include --debounce-wait (matching the 250 ms binding debounce) or the harness must fire the just-admitted debounce when asked to dispatch.\nEvidence: README.md hero step 3 documents 'set --value 200 --dispatch --launch --publish'. Running exactly that shape this session (set --parameter minimum --value 0 --dispatch --launch --publish, binding debounceMs 250 per fixtures/sales/definitions.json): _drive calls dispatch_due_intents with no wait, the intent is not yet due, scheduling.launch answers {launched: false, reason: 'no queued run'}, and the next harness command's reopen marks the pending intent interrupted (status reason 'service-restart'), so no run executes and the published table stays at the old version. tests/integration/test_hero_workflow.py:373 passes '--debounce-wait 400' for this step, which the README text omits; the flag exists (runtime/harness/cli.py --debounce-wait).",
+      "tags": [
+        "looper:finding:readme-hero-step3-debounce-wait"
+      ]
+    }
+  ]
+}

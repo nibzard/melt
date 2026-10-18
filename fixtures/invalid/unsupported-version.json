@@ -1,0 +1,11 @@
+{
+  "language": "melt/v0.2",
+  "workspaceId": "invalid-demo",
+  "title": "Invalid fixture",
+  "sources": {},
+  "parameters": {},
+  "actions": {},
+  "projections": {},
+  "bindings": {},
+  "layout": {"root": null, "hidden": []}
+}

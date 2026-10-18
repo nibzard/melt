@@ -1,0 +1,20 @@
+{
+  "protocolVersion": 1,
+  "workspaceId": "sales-demo",
+  "requestId": "01-t004-invalid-state-migration",
+  "method": "workspace.apply",
+  "expected": {"parameters/minimum": 2},
+  "operations": [
+    {
+      "op": "entity.replace",
+      "collection": "parameters",
+      "id": "minimum",
+      "value": {
+        "type": "number",
+        "default": 0,
+        "nullable": false,
+        "constraints": {"minimum": 200, "maximum": 1000000000}
+      }
+    }
+  ]
+}

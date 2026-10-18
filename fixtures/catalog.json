@@ -1,0 +1,57 @@
+{
+  "artifacts": {
+    "sha256:42cb3135d0370d5d9b0712adc0835b30c3d48843aa36d0df333851a42afa4598": {
+      "path": "sales/sales.parquet",
+      "kind": "table",
+      "mediaType": "application/vnd.apache.parquet",
+      "byteLength": 748,
+      "schema": {
+        "columns": [
+          {"id": "month", "type": "string", "nullable": false},
+          {"id": "revenue", "type": "float64", "nullable": false}
+        ],
+        "rowKey": null
+      }
+    },
+    "sha256:a00604c75ee5bb2b29d883b8017bc117f914aab937130fc0d9270d4fddae41fd": {
+      "path": "sales/revenue.png",
+      "kind": "image",
+      "mediaType": "image/png",
+      "byteLength": 124,
+      "schema": {"width": 64, "height": 48}
+    },
+    "sha256:c0418ced26872a83a21ae599f576ab90eeb319c07bf4e75cba4d807ad5888554": {
+      "path": "sales/notes.md",
+      "kind": "text",
+      "mediaType": "text/markdown",
+      "byteLength": 241,
+      "schema": {"encoding": "utf-8"}
+    }
+  },
+  "registrations": {
+    "sales-script-v1": {
+      "revision": 1,
+      "parameters": {
+        "minimum": {
+          "type": "number",
+          "nullable": false,
+          "constraints": {"minimum": 0, "maximum": 1000000000}
+        }
+      },
+      "inputs": {"sales": "table"},
+      "outputs": {"filtered": "table", "monthly": "image"}
+    },
+    "summarize-script-v1": {
+      "revision": 1,
+      "parameters": {
+        "minimum": {
+          "type": "number",
+          "nullable": false,
+          "constraints": {"minimum": 0}
+        }
+      },
+      "inputs": {"sales": "table"},
+      "outputs": {"summary": "table"}
+    }
+  }
+}

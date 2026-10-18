@@ -1,0 +1,38 @@
+# Python bytecode and build output
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+
+# Node modules for the pinned Pi Durable storage adapter probe.
+# The committed package-lock.json is the pin (SPEC.md section 14).
+node_modules/
+
+# Test and coverage output
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Tool caches
+.mypy_cache/
+.ruff_cache/
+
+# Local harness state. Durable workspace data lives under the platform
+# data root, never inside the repository (SPEC.md section 14).
+var/
+logs/
+
+# Runner output of a run staged inside the repository by hand. Every
+# real run stages under the workspace data root instead (SPEC.md
+# section 13.2).
+staging/
+staged-outputs.json
+
+# Editor and operating-system noise
+.DS_Store

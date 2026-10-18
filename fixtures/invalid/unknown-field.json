@@ -1,0 +1,12 @@
+{
+  "language": "melt/v0.1",
+  "workspaceId": "invalid-demo",
+  "title": "Invalid fixture",
+  "metadata": {"owner": "agent"},
+  "sources": {},
+  "parameters": {},
+  "actions": {},
+  "projections": {},
+  "bindings": {},
+  "layout": {"root": null, "hidden": []}
+}

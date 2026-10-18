@@ -1,0 +1,25 @@
+{
+  "language": "melt/v0.1",
+  "workspaceId": "invalid-demo",
+  "title": "Invalid fixture",
+  "sources": {
+    "leads": {
+      "kind": "text",
+      "currentVersion": 1,
+      "versions": {
+        "1": {
+          "artifact": "sha256:f3677d3af884a14ec917c0d102a52b4b8d6df02c3fa96bd4554cc1ca3bdcfa37",
+          "mediaType": "text/plain",
+          "byteLength": 9007199254740992,
+          "schema": {"encoding": "utf-8"},
+          "origin": {"kind": "import", "label": "leads.txt"}
+        }
+      }
+    }
+  },
+  "parameters": {},
+  "actions": {},
+  "projections": {},
+  "bindings": {},
+  "layout": {"root": null, "hidden": []}
+}

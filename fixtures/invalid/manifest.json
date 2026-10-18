@@ -1,0 +1,202 @@
+{
+  "schemaVersion": 1,
+  "description": "Expected diagnostics for every invalid fixture (SPEC.md section 18.1). Each entry names one fixture, the diagnostic code and JSON Pointer it must fail with, and the layer that enforces the check. enforcedBy 'schema' is enforced today by python/melt/schema. 'compiler' entries need the catalog fixture (fixtures/catalog.json) and the compiler stages of backlog task T005; the documents themselves are structurally valid. 'service' entries are well-formed command envelopes whose semantic rejection lands with backlog task T009.",
+  "fixtures": [
+    {
+      "file": "unknown-field.json",
+      "kind": "document",
+      "category": "unknown-fields",
+      "code": "E_SCHEMA",
+      "path": "/metadata",
+      "enforcedBy": "schema",
+      "description": "The document model accepts no unknown fields (SPEC.md section 4.1)."
+    },
+    {
+      "file": "duplicate-key.json",
+      "kind": "document",
+      "category": "duplicate-keys",
+      "code": "E_PARSE",
+      "path": "/title",
+      "enforcedBy": "schema",
+      "description": "UTF-8 JSON without duplicate object keys (SPEC.md section 4.2)."
+    },
+    {
+      "file": "invalid-id.json",
+      "kind": "document",
+      "category": "invalid-ids",
+      "code": "E_SCHEMA",
+      "path": "/workspaceId",
+      "enforcedBy": "schema",
+      "description": "Entity identifiers match [a-z][a-z0-9_-]{0,63}."
+    },
+    {
+      "file": "unsupported-version.json",
+      "kind": "document",
+      "category": "unsupported-versions",
+      "code": "E_VERSION",
+      "path": "/language",
+      "enforcedBy": "schema",
+      "description": "melt/v0.1 is the only supported language identifier."
+    },
+    {
+      "file": "non-finite-number.json",
+      "kind": "document",
+      "category": "non-finite-numbers",
+      "code": "E_PARSE",
+      "path": "/parameters/ceiling/default",
+      "enforcedBy": "schema",
+      "description": "1e999 overflows to infinity; every boundary rejects non-finite numbers."
+    },
+    {
+      "file": "unsafe-integer.json",
+      "kind": "document",
+      "category": "unsafe-integers",
+      "code": "E_TYPE",
+      "path": "/sources/leads/versions/1/byteLength",
+      "enforcedBy": "schema",
+      "description": "2^53 exceeds the safe integer range of the wire format. The artifact hash is a format-valid placeholder, because no real file carries an unsafe length."
+    },
+    {
+      "file": "invalid-default.json",
+      "kind": "document",
+      "category": "invalid-defaults",
+      "code": "E_TYPE",
+      "path": "/parameters/minimum/default",
+      "enforcedBy": "schema",
+      "description": "The default must satisfy the declared constraints."
+    },
+    {
+      "file": "wrong-parameter-type.json",
+      "kind": "document",
+      "category": "wrong-parameter-types",
+      "code": "E_TYPE",
+      "path": "/parameters/minimum/default",
+      "enforcedBy": "schema",
+      "description": "A string default never coerces into a number parameter."
+    },
+    {
+      "file": "missing-source-version.json",
+      "kind": "document",
+      "category": "missing-source-versions",
+      "code": "E_REFERENCE",
+      "path": "/actions/analyze-sales/inputs/sales/version",
+      "enforcedBy": "schema",
+      "description": "Action inputs point at existing source versions."
+    },
+    {
+      "file": "missing-control.json",
+      "kind": "document",
+      "category": "missing-controls",
+      "code": "E_REFERENCE",
+      "path": "/bindings/manual-run/event/control",
+      "enforcedBy": "schema",
+      "description": "The binding addresses a control that the projection does not define."
+    },
+    {
+      "file": "renderer-mismatch.json",
+      "kind": "document",
+      "category": "renderer-mismatches",
+      "code": "E_TYPE",
+      "path": "/projections/revenue/source",
+      "enforcedBy": "schema",
+      "description": "A plot projection requires an image source, not a table source."
+    },
+    {
+      "file": "layout-duplicate-placement.json",
+      "kind": "document",
+      "category": "layout-errors",
+      "code": "E_LAYOUT",
+      "path": "/layout/hidden/0",
+      "enforcedBy": "schema",
+      "description": "A projection appears in the tree and in hidden."
+    },
+    {
+      "file": "layout-excessive-depth.json",
+      "kind": "document",
+      "category": "layout-errors",
+      "code": "E_LAYOUT",
+      "path": "/layout/root/first/first/first/first/first/first/first/first",
+      "enforcedBy": "schema",
+      "exclusive": false,
+      "description": "The deepest panes sit at depth nine, one beyond the bound of eight. Both depth-nine panes are reported; this fixture intentionally yields a second E_LAYOUT at /layout/root/first/first/first/first/first/first/first/second."
+    },
+    {
+      "file": "layout-invalid-ratio.json",
+      "kind": "document",
+      "category": "layout-errors",
+      "code": "E_LAYOUT",
+      "path": "/layout/root/ratio",
+      "enforcedBy": "schema",
+      "description": "Split ratios range from 0.1 through 0.9."
+    },
+    {
+      "file": "layout-missing-pane.json",
+      "kind": "document",
+      "category": "layout-errors",
+      "code": "E_LAYOUT",
+      "path": "/projections/notes",
+      "enforcedBy": "schema",
+      "description": "Every projection appears in the tree or in hidden."
+    },
+    {
+      "file": "competing-writers.json",
+      "kind": "document",
+      "category": "competing-writers",
+      "code": "E_OUTPUT_OWNER",
+      "path": "/actions/refresh-sales/outputGroup",
+      "enforcedBy": "schema",
+      "description": "One action owns each output group (SPEC.md section 7.1)."
+    },
+    {
+      "file": "incomplete-mapping.json",
+      "kind": "document",
+      "category": "incomplete-mappings",
+      "code": "E_OUTPUT_OWNER",
+      "path": "/actions/analyze-sales/targets/monthly",
+      "enforcedBy": "schema",
+      "description": "Every declared output has exactly one target projection."
+    },
+    {
+      "file": "commands/invalid-state-migration.json",
+      "kind": "command",
+      "category": "invalid-migrations",
+      "code": "E_STATE_MIGRATION",
+      "path": "/operations/0",
+      "enforcedBy": "service",
+      "ownerTask": "T009",
+      "description": "Narrowing a parameter below its stored value requires parameter.set with the expected state revision in the same transaction (SPEC.md section 12.3). The envelope itself is well formed; the workspace service rejects it."
+    },
+    {
+      "file": "commands/missing-expected-revision.json",
+      "kind": "command",
+      "category": "missing-expected-revisions",
+      "code": "E_CONFLICT",
+      "path": "/expected",
+      "enforcedBy": "service",
+      "ownerTask": "T009",
+      "description": "A parameter.set touches state/minimum, so expected must carry that record path (SPEC.md section 12.2). The pointer addresses the expectation map that lacks the key; the service message names state/minimum."
+    },
+    {
+      "file": "registry-mismatch.json",
+      "kind": "document",
+      "category": "registry-mismatches",
+      "code": "E_REGISTRATION",
+      "path": "/actions/analyze-sales/parameters/maximum",
+      "enforcedBy": "compiler",
+      "ownerTask": "T005",
+      "requires": ["catalog"],
+      "description": "The action maps a parameter the registration sales-script-v1 does not declare (SPEC.md section 7.2). The document is structurally valid; the compiler rejects it against fixtures/catalog.json."
+    },
+    {
+      "file": "artifact-schema-drift.json",
+      "kind": "document",
+      "category": "artifact-schema-drift",
+      "code": "E_ARTIFACT",
+      "path": "/sources/sales-input/versions/1/schema",
+      "enforcedBy": "compiler",
+      "ownerTask": "T005",
+      "requires": ["catalog"],
+      "description": "The declared schema calls revenue int64, while the catalog measures float64 for the referenced artifact bytes. The document is structurally valid; compilation with the catalog rejects the drift."
+    }
+  ]
+}
