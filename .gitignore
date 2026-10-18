@@ -28,5 +28,11 @@ htmlcov/
 var/
 logs/
 
+# Runner output of a run staged inside the repository by hand. Every
+# real run stages under the workspace data root instead (SPEC.md
+# section 13.2).
+staging/
+staged-outputs.json
+
 # Editor and operating-system noise
 .DS_Store

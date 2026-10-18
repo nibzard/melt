@@ -157,8 +157,7 @@ idempotently. Artifact and script tokens are minted by the host capture
 operation: opaque, workspace-scoped handles that expire after
 15 minutes (`service.capture_artifact_token` and
 `service.redeem_artifact_token`). Manual invocation and table paging
-arrive with their owning backlog tasks (T016 and T012). The SDK and
-runner stay scaffolded boundaries until backlog task T015.
+arrive with their owning backlog tasks (T016 and T012).
 
 `runtime/workspace` also implements the artifact store registration and
 source import of backlog task T011 (SPEC.md sections 5 and 12.6).
@@ -218,8 +217,34 @@ sites build child environments through
 `assert_no_model_credentials`. The default limit table of section 15.2
 is enforced with `E_LIMIT` diagnostics that name the resource and the
 allowed bound across the schema, command, frame, and import layers;
-the table page, run log, and staged output bounds land with their
-owning subsystems (T012, T015, and T017).
+the table page bound lands with its owning subsystem (T012).
+
+`python/melt/sdk` and `python/melt/runner` implement the Python SDK and
+runner of backlog task T015 (SPEC.md section 13.2). A run receives one
+versioned manifest: the run identifier, the captured parameter values,
+the absolute path of every captured input artifact, the declared output
+names with their kinds, and the private staging directory. The runner
+binds `ui` from that manifest, executes the materialized script once in
+a fresh process, and stages each declared output: `ui.output` writes
+Parquet for a pandas DataFrame, PNG for a matplotlib Figure, and UTF-8
+bytes for a `str`, and refuses duplicate and undeclared names. The
+staged bytes of one run stay inside the 1 GiB service limit, and the
+process exits with one of four codes: complete, script failure,
+operational failure, or incomplete outputs. The service-side launch
+harness lives in `runtime.execution.launcher`: it writes the manifest
+and a read-only script copy into the staging directory, builds the
+credential-free child environment through
+`runtime.execution.project_process_environment`, pins the
+non-interactive render backend, sets the staging directory as the
+working directory, and bounds each run log stream with an explicit
+truncation marker. The launcher installs no packages, and the service
+validates the staged files independently before anything publishes.
+Entry points:
+
+- `from melt import ui` inside a project script
+- `python -m melt.runner <manifest-file>` inside the spawned process
+- `runtime.execution.launch_run(manifest, log_directory=...)`
+- `runtime.execution.write_run_manifest` and `materialize_script`
 
 ## Contract fixtures
 
