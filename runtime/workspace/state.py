@@ -39,11 +39,28 @@ NOTIFICATION_KIND = "melt.changeNotification"
 RUN_KIND = "melt.run"
 """The committed record that holds one run record update (section 7.3)."""
 
+ARTIFACT_KIND = "melt.artifact"
+"""The committed record that holds one verified artifact (section 5.1)."""
+
+SOURCE_COLLECTION = "sources"
+"""The source collection: service-owned, not a mutation target (12.2)."""
+
 
 def entity_path(collection: str, entity_id: str) -> str:
     """Return the record path of one entity."""
 
     return f"{collection}/{entity_id}"
+
+
+def source_path(source_id: str) -> str:
+    """Return the record path of one logical source (SPEC.md 5.2).
+
+    Sources enter the document only through ``source.import`` or
+    publication, so their record paths appear in ``expected`` maps and
+    change notifications but never in a mutation operation.
+    """
+
+    return f"{SOURCE_COLLECTION}/{source_id}"
 
 
 def state_path(parameter_id: str) -> str:
@@ -152,6 +169,7 @@ class WorkspaceState:
 
 
 __all__ = [
+    "ARTIFACT_KIND",
     "ENTITY_COLLECTIONS",
     "LAYOUT_PATH",
     "NOTIFICATION_KIND",
@@ -159,10 +177,12 @@ __all__ = [
     "RECEIPT_KIND",
     "RUN_KIND",
     "SNAPSHOT_KIND",
+    "SOURCE_COLLECTION",
     "WorkspaceState",
     "entity_path",
     "pointer_key",
     "run_path",
+    "source_path",
     "state_path",
     "values_equal",
 ]

@@ -53,6 +53,7 @@ from melt.schema.document import (
     OpaqueId,
     PositiveSafeInt,
     SourceReference,
+    SourceSchema,
     Timestamp,
 )
 from melt.schema.limits import DEFAULT_LIMITS
@@ -151,13 +152,28 @@ class RegistrationRecord(RecordBase):
 
 
 class ArtifactRecord(RecordBase):
-    """One immutable artifact addressed by its content hash."""
+    """One immutable artifact as the service verified it (section 5.1).
+
+    The record carries every verified fact of the registration: content
+    hash, byte length, kind, media type, and the schema measured from
+    the bytes. The service rebuilds its trusted source catalog from
+    these records, so a reopened workspace keeps every imported
+    artifact without rereading or re-executing anything.
+    """
 
     recordType: Literal["artifact"]
     artifact: ArtifactHash
-    byteLength: NonNegativeSafeInt
+    kind: Literal["table", "image", "text"]
     mediaType: NonEmptyStr
+    byteLength: NonNegativeSafeInt
+    schema_: SourceSchema = Field(alias="schema")
     createdAt: Timestamp
+
+    @property
+    def schema(self) -> SourceSchema:
+        """The measured schema, under its wire name."""
+
+        return self.schema_
 
 
 class ParameterState(RecordBase):
