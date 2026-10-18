@@ -277,6 +277,38 @@ generations, and never executes anything on its own. Entry points:
 - `service.dispatch_as(envelope, origin="programmatic")` for the agent
   event origin, which commits changes without firing bindings
 
+`runtime/workspace/publication.py` implements atomic publication and
+result status (backlog task T017, SPEC.md sections 13.3 to 13.5).
+`service.publish_run(run_id)` applies the six publication steps of
+section 13.4 inside one owning transaction: it rereads and measures
+every staged file independently of the runner's report, rejects
+non-finite table floats, finalizes the immutable content-addressed
+artifact paths, rechecks every eligibility condition of section 13.3
+inside the transaction, allocates the output source versions through
+the service-only `run_version` provenance hook, updates all target
+references together, and stores the run disposition with a publication
+receipt in one commit. A missing or invalid output rejects the entire
+publication, so the previous table and plot remain together. A denial
+of the publication permission gate rejects the publication, and
+revocation additionally requests cancellation of the owning run. A
+verified but obsolete run archives as `superseded` historical output
+that no current reference points at, while the previous current run of
+the group flips to superseded when a newer publication lands. Output
+source identifiers are service-owned mappings from `(action id, output
+name)` rebuilt from committed run provenance, never derived from
+titles. Every output group reports `empty`, `pending`, `current`,
+`stale`, or `error` status with `resultIsStale` and the captured
+parameters of the retained result, through
+`service.output_group_status()` and the `outputGroups` view of
+`workspace.inspect`. Entry points:
+
+- `service.publish_run(run_id)` to publish one completed run
+- `service.output_group_status()` and
+  `workspace.inspect`'s `outputGroups` for result status
+- `service.publications` for the committed publication receipts
+- `runtime.workspace.publication.verify_staged_outputs` for the
+  independent staged-file verification
+
 ## Contract fixtures
 
 `fixtures/` holds the shared contract suite of SPEC.md section 18.1

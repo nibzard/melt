@@ -102,6 +102,7 @@ def snapshot_result(
     *,
     collection: "str | None" = None,
     ids: "Iterable[str] | None" = None,
+    output_groups: "Mapping[str, Mapping] | None" = None,
 ) -> dict:
     """Build the inspection snapshot of one committed state.
 
@@ -110,7 +111,9 @@ def snapshot_result(
     bounds the document to that one collection; ``ids`` bounds the
     entity collections to the listed identifiers. Sources and the
     layout tree belong to the unfiltered view only, because no entity
-    collection addresses them.
+    collection addresses them. ``output_groups`` carries the finished
+    result-status map of SPEC.md section 13.5 into the unfiltered view;
+    the service computes it from its scheduling records.
     """
 
     document = state.document or {}
@@ -171,7 +174,7 @@ def snapshot_result(
                 continue
             incarnations[parameter_id] = incarnation
 
-    return {
+    result = {
         "workspaceId": state.workspace_id,
         "epoch": state.epoch,
         "present": state.document is not None,
@@ -182,6 +185,11 @@ def snapshot_result(
         "activeRuns": [record_to_wire(run) for run in active_run_records(runs)],
         "diagnostics": list(diagnostics),
     }
+    if output_groups is not None and collection is None:
+        result["outputGroups"] = {
+            group_id: dict(entry) for group_id, entry in sorted(output_groups.items())
+        }
+    return result
 
 
 def _controller_replacements(

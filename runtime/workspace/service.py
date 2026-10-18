@@ -70,6 +70,23 @@ availability, and the resolved environment fingerprint immediately
 before the fresh process starts, and a restart marks pending work
 interrupted rather than executing it.
 
+The service owns atomic publication too (SPEC.md sections 13.3 to
+13.5). :meth:`WorkspaceService.publish_run` verifies the staged outputs
+of one completed run independently of the runner's report, finalizes
+the immutable artifact paths, rechecks every eligibility condition of
+section 13.3 inside the owning transaction — including the publication
+permission gate, where a denial rejects the publication and revocation
+additionally requests cancellation — allocates the output source
+versions through the service-only run-provenance hook, updates every
+target reference together, and stores the run disposition with a
+publication receipt in one commit. A missing or invalid output rejects
+the entire publication, so the previous results remain together; a
+verified but obsolete run archives as superseded historical output that
+no current reference points at. Every output group reports its result
+status with ``resultIsStale`` and the captured parameters of the
+retained result through :meth:`output_group_status` and
+``workspace.inspect``.
+
 The service is the sole writer: it holds the workspace ``owner.lock``
 through a :class:`~runtime.storage.WorkspaceStore` and commits each
 transaction as one atomic append on the owning connection. Because the
@@ -119,6 +136,7 @@ from melt.schema.records import (
     OutputGroupRecord,
     PendingIntentRecord,
     PermissionGrantRecord,
+    PublicationRecord,
     RegistrationRecord,
     RunRecord,
     parse_record,
@@ -167,6 +185,22 @@ from runtime.workspace.permissions import (
     permission_error,
     revocation_blocks,
 )
+from runtime.workspace.publication import (
+    CURRENT,
+    NOT_PUBLISHABLE,
+    REJECTED,
+    SUPERSEDED,
+    PublicationOutcome,
+    VerifiedOutput,
+    allocate_output_sources,
+    append_output_versions,
+    mint_publication_id,
+    obsolescence_error,
+    result_statuses,
+    retarget_projections,
+    target_ineligibility,
+    verify_staged_outputs,
+)
 from runtime.workspace.registry import (
     EnvironmentCatalog,
     KnownEnvironment,
@@ -207,6 +241,7 @@ from runtime.workspace.state import (
     OUTPUT_GROUP_KIND,
     PENDING_INTENT_KIND,
     PERMISSION_KIND,
+    PUBLICATION_KIND,
     RECEIPT_KIND,
     REGISTRATION_KIND,
     RUN_KIND,
@@ -216,6 +251,7 @@ from runtime.workspace.state import (
     entity_path,
     permission_path,
     pointer_key,
+    publication_path,
     registration_path,
     run_path,
     source_path,
@@ -322,6 +358,7 @@ class WorkspaceService:
         grants: "Mapping[str, PermissionGrantRecord] | None" = None,
         output_groups: "Mapping[str, OutputGroupRecord] | None" = None,
         pending_intents: "Mapping[str, PendingIntentRecord] | None" = None,
+        publications: "Mapping[str, PublicationRecord] | None" = None,
         frame_limit: int | None = None,
         limits: ServiceLimits = DEFAULT_LIMITS,
         clock: "Callable[[], float] | None" = None,
@@ -349,6 +386,9 @@ class WorkspaceService:
         # section 13.1).
         self._pending_intents: dict[str, PendingIntentRecord] = dict(
             pending_intents or {}
+        )
+        self._publications: dict[str, PublicationRecord] = dict(
+            publications or {}
         )
         self._limits = limits
         self._frame_limit = (
@@ -390,6 +430,7 @@ class WorkspaceService:
                 grants,
                 output_groups,
                 pending_intents,
+                publications,
             ) = _load_state(store)
         except BaseException:
             store.close()
@@ -408,6 +449,7 @@ class WorkspaceService:
             grants=grants,
             output_groups=output_groups,
             pending_intents=pending_intents,
+            publications=publications,
             frame_limit=frame_limit,
             limits=limits,
             clock=clock,
@@ -543,6 +585,40 @@ class WorkspaceService:
         """
 
         return dict(self._pending_intents)
+
+    @property
+    def publications(self) -> dict[str, PublicationRecord]:
+        """Every committed publication receipt, keyed by receipt ID.
+
+        A receipt concludes one publication attempt: the run it
+        published, the outcome, and the source references it allocated.
+        Recovery reconciles staging directories against these receipts
+        (SPEC.md sections 13.4 and 14, startup step 6).
+        """
+
+        return dict(self._publications)
+
+    def output_group_status(self) -> dict[str, dict]:
+        """The result status of every output group (SPEC.md 13.5).
+
+        Each group reports ``empty``, ``pending``, ``current``,
+        ``stale``, or ``error`` with a separate ``resultIsStale``
+        boolean and the captured parameters of the retained result, so
+        a host shows the parameter values that produced the visible
+        result whenever they differ from the current controls.
+        """
+
+        return result_statuses(
+            self._state.document,
+            self._runs,
+            self._output_groups,
+            self._pending_intents,
+            self._state.parameter_states,
+            action_revision_of=lambda action_id: self._state.current_revision(
+                entity_path("actions", action_id)
+            ),
+            registry_entry_of=self._action_registry.entry,
+        )
 
     def run_is_newest_generation(self, run_id: str) -> bool:
         """Report whether one run holds its group's newest generation."""
@@ -955,7 +1031,10 @@ class WorkspaceService:
             payload_hash,
             plan,
             result_of=lambda new_state: snapshot_result(
-                new_state, self._runs, []
+                new_state,
+                self._runs,
+                [],
+                output_groups=self.output_group_status(),
             ),
         )
 
@@ -1365,6 +1444,7 @@ class WorkspaceService:
             diagnostics,
             collection=parsed.collection,
             ids=parsed.ids,
+            output_groups=self.output_group_status(),
         )
         return OkResponse(
             requestId=envelope.requestId,
@@ -2748,6 +2828,469 @@ class WorkspaceService:
             return None
         return self.launch_admitted_run(queued[0])
 
+    # ------------------------------------------------------------------
+    # Atomic publication (SPEC.md sections 13.3, 13.4, 13.5)
+    # ------------------------------------------------------------------
+
+    def publish_run(self, run_id: str) -> PublicationOutcome:
+        """Publish one completed run inside one owning transaction.
+
+        The six steps of SPEC.md section 13.4 run in order: verify the
+        declared staged files independently, finalize the immutable
+        artifact paths, recheck every eligibility condition of section
+        13.3 — including the publication permission gate — inside the
+        transaction, allocate the output source versions through the
+        service-only run-provenance hook, update every target reference
+        together, and store the run disposition with the publication
+        receipt before the single commit acknowledges anything.
+
+        A missing or invalid output rejects the entire publication, so
+        the previous table and plot remain together. A verified but
+        obsolete run archives as historical output with a superseded
+        disposition; it never overwrites the current sources (section
+        13.3).
+        """
+
+        run = self._runs.get(run_id)
+        if run is None:
+            raise permission_error(
+                f"run {run_id!r} does not exist",
+                "/runId",
+                code=DiagnosticCode.REFERENCE,
+            )
+        if run.disposition != "none":
+            # The publication of this run already concluded; report the
+            # stored outcome without committing anything new.
+            return PublicationOutcome(
+                run_id=run_id,
+                outcome=run.disposition,
+                reason="the publication of this run already concluded",
+                outputs={
+                    name: {"sourceId": ref.sourceId, "version": ref.version}
+                    for name, ref in sorted(run.outputs.items())
+                },
+                commit_sequence=self._state.commit_sequence,
+            )
+        if run.state != "succeeded":
+            return PublicationOutcome(
+                run_id=run_id,
+                outcome=NOT_PUBLISHABLE,
+                refusal=(
+                    _diagnostic(
+                        DiagnosticCode.CONFLICT,
+                        "/runId",
+                        f"run {run_id!r} is {run.state!r}; only a"
+                        " successful process with valid, complete outputs"
+                        " can publish (SPEC.md sections 7.3 and 13.3)",
+                    ),
+                ),
+                commit_sequence=self._state.commit_sequence,
+            )
+        registration = self._registrations.get(run.registrationId)
+        if registration is None:
+            return PublicationOutcome(
+                run_id=run_id,
+                outcome=NOT_PUBLISHABLE,
+                refusal=(
+                    _diagnostic(
+                        DiagnosticCode.REGISTRATION,
+                        "/registrationId",
+                        f"registration {run.registrationId!r} holds no"
+                        " captured script in this workspace, so its"
+                        " declared outputs cannot be verified",
+                    ),
+                ),
+                commit_sequence=self._state.commit_sequence,
+            )
+
+        # Step 1: verify every declared output against the actual files.
+        staging = self._store.layout.staging_directory(run_id)
+        verified, errors = verify_staged_outputs(
+            staging,
+            registration.outputs,
+            staged_byte_limit=self._limits.staged_output_bytes_per_run,
+        )
+        if errors:
+            return self._conclude_publication(
+                run,
+                outcome=REJECTED,
+                reason=errors[0].message,
+                refusal=errors,
+            )
+
+        # Step 2: synchronize the staged files into their immutable
+        # content-addressed paths. A crash from here on can leave
+        # unreferenced files, never referenced missing ones (SPEC.md
+        # sections 13.4 and 14).
+        for name in sorted(verified):
+            self._store.artifacts.write(verified[name].payload)
+
+        # Step 3: recheck every eligibility condition inside the owning
+        # transaction (SPEC.md sections 13.3 and 13.5).
+        document = self._state.document
+        action = document["actions"].get(run.actionId)
+        entry = self._action_registry.entry(run.registrationId)
+        group = self._output_groups.get(run.outputGroup)
+        decision = self.execution_authority_for_run(run_id, at="publication")
+        if not decision.granted:
+            blocked = revocation_blocks(decision)
+            concluded = run
+            if blocked:
+                # Revocation requests cancellation of the owning run;
+                # an active run moves to cancelled inside the same
+                # publication transaction (SPEC.md sections 13.3 and
+                # 13.5).
+                concluded = self._run_with_cancellation(run)
+            refusal = _diagnostic(
+                DiagnosticCode.PERMISSION,
+                "/permissionDecision",
+                f"the publication of run {run_id!r} was blocked:"
+                f" {decision.reason}"
+                + (
+                    "; revocation requested cancellation of the run"
+                    if blocked
+                    else ""
+                ),
+                hint="A host permission control can grant execution"
+                " authority again; a blocked publication never claims"
+                " the run never executed (SPEC.md sections 13.5 and"
+                " 15.1).",
+            )
+            return self._conclude_publication(
+                concluded,
+                outcome=REJECTED,
+                reason=refusal.message,
+                refusal=(refusal,),
+                cancellation_requested=blocked,
+            )
+        targets_broken = (
+            None
+            if action is None
+            else target_ineligibility(document, run.actionId, action)
+        )
+        if targets_broken is not None:
+            return self._conclude_publication(
+                run,
+                outcome=REJECTED,
+                reason=targets_broken.message,
+                refusal=(targets_broken,),
+            )
+        obsolete = obsolescence_error(
+            document=document,
+            run=run,
+            action=action,
+            registration_entry=entry,
+            group=group,
+            parameter_states=self._state.parameter_states,
+            action_revision_of=lambda action_id: self._state.current_revision(
+                entity_path("actions", action_id)
+            ),
+        )
+        become_current = obsolete is None
+
+        # Step 4: allocate the source versions, attach run provenance,
+        # and update every target reference together.
+        sources = allocate_output_sources(
+            document, self._runs, run.actionId, verified
+        )
+        candidate, references = append_output_versions(
+            document,
+            run_id,
+            sources,
+            verified,
+            become_current=become_current,
+        )
+        superseded_currents: list[RunRecord] = []
+        if become_current:
+            candidate = retarget_projections(candidate, action, references)
+            now = _utc_now()
+            superseded_currents = [
+                self._runs[run_id].model_copy(
+                    update={"disposition": SUPERSEDED, "updatedAt": now}
+                )
+                for run_id in sorted(self._runs)
+                if run_id != run.runId
+                and self._runs[run_id].outputGroup == run.outputGroup
+                and self._runs[run_id].disposition == CURRENT
+            ]
+        compile_result = compile_document(
+            CompileRequest(
+                document=candidate,
+                source_catalog=self._publication_catalog(verified),
+                action_registry=self._action_registry,
+                parameter_states={
+                    parameter_id: {
+                        "value": stored.value,
+                        "revision": stored.revision,
+                    }
+                    for parameter_id, stored in self._state.parameter_states.items()
+                },
+            )
+        )
+        if not compile_result.ok:
+            # The candidate with the new references does not compile:
+            # nothing commits, and the finalized files stay
+            # unreferenced until recovery reconciles them (SPEC.md
+            # section 13.4).
+            return self._conclude_publication(
+                run,
+                outcome=REJECTED,
+                reason=compile_result.diagnostics[0].message,
+                refusal=tuple(compile_result.diagnostics),
+            )
+        return self._conclude_publication(
+            run,
+            outcome=CURRENT if become_current else SUPERSEDED,
+            reason="" if become_current else obsolete.message,
+            candidate=candidate,
+            outputs=references,
+            verified=verified,
+            superseded_currents=superseded_currents,
+        )
+
+    def _run_with_cancellation(self, run: RunRecord) -> RunRecord:
+        """Return one run record with cancellation requested.
+
+        Cancellation stops scheduling and signals the owned process
+        group; a run that already reached a terminal state keeps it,
+        because a finished process is reported honestly (SPEC.md
+        section 13.5).
+        """
+
+        if run.state not in ACTIVE_RUN_STATES:
+            return run
+        return run.model_copy(
+            update={"state": "cancelled", "updatedAt": _utc_now()}
+        )
+
+    def _publication_catalog(
+        self, verified: "Mapping[str, VerifiedOutput]"
+    ) -> SourceCatalog:
+        """Return the compile catalog with the verified outputs merged."""
+
+        return SourceCatalog(
+            {
+                **self._source_catalog.artifacts,
+                **{
+                    item.measured.artifact: self._catalog_entry_of(
+                        item.measured
+                    )
+                    for item in verified.values()
+                },
+            }
+        )
+
+    def _conclude_publication(
+        self,
+        run: RunRecord,
+        *,
+        outcome: str,
+        reason: str,
+        refusal: "Sequence[Diagnostic]" = (),
+        candidate: "dict | None" = None,
+        outputs: "Mapping[str, Mapping]" = None,
+        verified: "Mapping[str, VerifiedOutput]" = None,
+        superseded_currents: "Sequence[RunRecord]" = (),
+        cancellation_requested: bool = False,
+    ) -> PublicationOutcome:
+        """Commit one publication conclusion in one atomic transaction.
+
+        Steps 5 and 6 of SPEC.md section 13.4: the run record stores its
+        disposition and output references, the publication receipt lands
+        beside it, the candidate document (when the publication
+        allocated source versions) commits with the snapshot, and one
+        commit sequence acknowledges everything. The artifacts the
+        publication verified ride along as trailing records so a
+        reopened workspace rebuilds its catalog without rereading bytes.
+        """
+
+        now = _utc_now()
+        outputs = dict(outputs or {})
+        verified = verified or {}
+        references = {
+            name: {"sourceId": ref["sourceId"], "version": ref["version"]}
+            for name, ref in outputs.items()
+        }
+        concluded_wire = record_to_wire(run)
+        concluded_wire.update(
+            {
+                "disposition": outcome,
+                "outputs": dict(references),
+                "updatedAt": now,
+            }
+        )
+        concluded = parse_record(concluded_wire)
+        publication = PublicationRecord.model_validate(
+            {
+                "recordType": "publication",
+                "schemaVersion": RECORD_SCHEMA_VERSION,
+                "publicationId": mint_publication_id(),
+                "workspaceId": self._state.workspace_id,
+                "runId": concluded.runId,
+                "actionId": concluded.actionId,
+                "outputGroup": concluded.outputGroup,
+                "generation": concluded.generation,
+                "outcome": outcome,
+                "reason": reason,
+                "outputs": {
+                    name: {
+                        "sourceId": ref["sourceId"],
+                        "version": ref["version"],
+                    }
+                    for name, ref in outputs.items()
+                },
+                "cancellationRequested": cancellation_requested,
+                "publishedAt": now,
+            }
+        )
+
+        entity_revisions = dict(self._state.entity_revisions)
+        changed = [run_path(concluded.runId), publication_path(publication.publicationId)]
+        for other in superseded_currents:
+            changed.append(run_path(other.runId))
+        document = self._state.document
+        if candidate is not None:
+            normalized = model_to_wire(Document.model_validate(candidate))
+            for name, ref in sorted(references.items()):
+                record = source_path(ref["sourceId"])
+                entity_revisions[record] = (
+                    entity_revisions.get(record, 0) + 1
+                )
+                changed.append(record)
+            if outcome == CURRENT:
+                for name, target in sorted(
+                    (candidate.get("actions", {}).get(concluded.actionId) or {})
+                    .get("targets", {})
+                    .items()
+                ):
+                    if name not in references:
+                        continue
+                    record = entity_path("projections", target)
+                    entity_revisions[record] = (
+                        entity_revisions.get(record, 0) + 1
+                    )
+                    changed.append(record)
+            document = normalized
+        new_state = WorkspaceState(
+            workspace_id=self._state.workspace_id,
+            epoch=self._state.epoch,
+            commit_sequence=self._state.commit_sequence + 1,
+            document=document,
+            entity_revisions=entity_revisions,
+            parameter_states=dict(self._state.parameter_states),
+            incarnations=dict(self._state.incarnations),
+        )
+
+        runs_view = dict(self._runs)
+        runs_view[concluded.runId] = concluded
+        for other in superseded_currents:
+            runs_view[other.runId] = other
+        active = tuple(
+            record_to_wire(item) for item in active_run_records(runs_view)
+        )
+        trailing: list[tuple[str, dict]] = []
+        for name in sorted(verified):
+            measured = verified[name].measured
+            if measured.artifact not in self._imports.artifacts:
+                trailing.append(
+                    (
+                        ARTIFACT_KIND,
+                        {
+                            "recordType": "artifact",
+                            "schemaVersion": RECORD_SCHEMA_VERSION,
+                            "artifact": measured.artifact,
+                            "kind": measured.kind,
+                            "mediaType": measured.mediaType,
+                            "byteLength": measured.byteLength,
+                            "schema": measured.schema,
+                            "createdAt": now,
+                        },
+                    )
+                )
+        trailing.append((RUN_KIND, record_to_wire(concluded)))
+        for other in superseded_currents:
+            trailing.append((RUN_KIND, record_to_wire(other)))
+        trailing.append(
+            (PUBLICATION_KIND, record_to_wire(publication))
+        )
+        self._append_publication(new_state, sorted(set(changed)), active, trailing)
+
+        adopted_catalog = self._imports
+        for name in sorted(verified):
+            measured = verified[name].measured
+            if measured.artifact not in adopted_catalog.artifacts:
+                adopted_catalog = SourceCatalog(
+                    {
+                        **adopted_catalog.artifacts,
+                        measured.artifact: self._catalog_entry_of(measured),
+                    }
+                )
+        if adopted_catalog is not self._imports:
+            self._imports = adopted_catalog
+            self._source_catalog = self._merge_catalog()
+        return PublicationOutcome(
+            run_id=concluded.runId,
+            outcome=outcome,
+            reason=reason,
+            refusal=tuple(refusal),
+            outputs=references,
+            cancellation_requested=cancellation_requested,
+            commit_sequence=new_state.commit_sequence,
+        )
+
+    def _append_publication(
+        self,
+        new_state: WorkspaceState,
+        changed: "Sequence[str]",
+        active_runs: "Sequence[dict]",
+        trailing_records: "Sequence[tuple[str, dict]]",
+    ) -> None:
+        """Append one publication transaction atomically (section 13.4).
+
+        No command envelope drives a publication, so no request receipt
+        exists: the snapshot leads, the run, artifact, and publication
+        records trail, and the notification lands last. The transaction
+        advances the commit sequence exactly once.
+        """
+
+        notification = {
+            "recordType": "changeNotification",
+            "schemaVersion": RECORD_SCHEMA_VERSION,
+            "workspaceId": new_state.workspace_id,
+            "epoch": new_state.epoch,
+            "commitSequence": new_state.commit_sequence,
+            "changedRecords": list(changed),
+        }
+        parse_record(notification)
+        records: list[tuple[str, dict]] = [
+            (
+                SNAPSHOT_KIND,
+                _snapshot_wire(
+                    new_state, self._state.commit_sequence, active_runs
+                ),
+            )
+        ]
+        records.extend(trailing_records)
+        records.append((NOTIFICATION_KIND, notification))
+        for kind, data in records:
+            parse_record(data)  # refuse to commit a record we would reject
+        sequence, _ = self._store.append_records(records)
+        if sequence != new_state.commit_sequence:
+            raise RuntimeError(
+                f"publication commit landed at sequence {sequence} instead"
+                f" of the predicted {new_state.commit_sequence}; the"
+                " single-writer sequence prediction is broken"
+            )
+        self._state = new_state
+        self._notifications.append(notification)
+        for kind, data in trailing_records:
+            if kind == RUN_KIND:
+                run = parse_record(data)
+                self._runs[run.runId] = run
+            elif kind == PUBLICATION_KIND:
+                publication = parse_record(data)
+                self._publications[publication.publicationId] = publication
+
     def _run_cancel(self, envelope: CommandEnvelope) -> CommandResponse:
         """Cancel one run (SPEC.md sections 12.6 and 13.5).
 
@@ -3189,6 +3732,7 @@ def _load_state(
     dict[str, PermissionGrantRecord],
     dict[str, OutputGroupRecord],
     dict[str, PendingIntentRecord],
+    dict[str, PublicationRecord],
 ]:
     """Rebuild the current state from the committed record stream.
 
@@ -3202,9 +3746,11 @@ def _load_state(
     section 14, startup steps 2 and 3).
 
     The committed output group records rebuild the reserved generations
-    and the group revisions, and the newest pending intent record of
-    each group rebuilds its pending request, so a reopened workspace
-    restores its scheduling state without executing anything either.
+    and the group revisions, the newest pending intent record of each
+    group rebuilds its pending request, and the publication receipts
+    rebuild the publication history a recovery reconciles staging trees
+    against (section 14, startup step 6), all without executing
+    anything.
     """
 
     latest_snapshot = None
@@ -3216,6 +3762,7 @@ def _load_state(
     grants: dict[str, PermissionGrantRecord] = {}
     output_groups: dict[str, OutputGroupRecord] = {}
     pending_intents: dict[str, PendingIntentRecord] = {}
+    publications: dict[str, PublicationRecord] = {}
     for record in store.records():
         if record.kind == SNAPSHOT_KIND:
             latest_snapshot = record
@@ -3251,6 +3798,9 @@ def _load_state(
         elif record.kind == PENDING_INTENT_KIND:
             intent = parse_record(record.data)
             pending_intents[intent.outputGroup] = intent
+        elif record.kind == PUBLICATION_KIND:
+            publication = parse_record(record.data)
+            publications[publication.publicationId] = publication
     imports = SourceCatalog(artifacts)
     if latest_snapshot is None:
         state = WorkspaceState(
@@ -3268,6 +3818,7 @@ def _load_state(
             grants,
             output_groups,
             pending_intents,
+            publications,
         )
     snapshot = parse_record(latest_snapshot.data)
     state = WorkspaceState(
@@ -3294,6 +3845,7 @@ def _load_state(
         grants,
         output_groups,
         pending_intents,
+        publications,
     )
 
 

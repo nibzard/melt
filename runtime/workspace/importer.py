@@ -368,6 +368,8 @@ def append_source_version(
     source_id: str,
     measured: MeasuredArtifact,
     version: Mapping[str, Any],
+    *,
+    advance_current: bool = True,
 ) -> "tuple[dict, int]":
     """Return the document with one new immutable version appended.
 
@@ -376,6 +378,15 @@ def append_source_version(
     earlier version byte for byte and advances ``currentVersion`` to the
     appended version. An existing source also refuses a version of
     another kind: the kind of a logical source is fixed at creation.
+
+    ``advance_current=False`` appends one historical version: the
+    appended version stays inspectable through its number while
+    ``currentVersion`` keeps naming the version the last current
+    publication produced. Publication uses this for a run that verified
+    but may not become current, so an obsolete result never overwrites
+    the current reference of its source (SPEC.md section 13.3). A new
+    source still starts at ``currentVersion`` 1, because the field must
+    refer to an included version.
     """
 
     import copy
@@ -401,7 +412,11 @@ def append_source_version(
         versions[str(number)] = dict(version)
         sources[source_id] = {
             "kind": existing["kind"],
-            "currentVersion": number,
+            "currentVersion": (
+                existing.get("currentVersion", number)
+                if not advance_current
+                else number
+            ),
             "versions": versions,
         }
     candidate = copy.deepcopy(dict(document))
