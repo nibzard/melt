@@ -38,6 +38,7 @@ packages = [
     "runtime.workspace",
     "runtime.execution",
     "runtime.storage",
+    "runtime.harness",
 ]
 
 [tool.pytest.ini_options]

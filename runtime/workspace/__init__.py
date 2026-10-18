@@ -166,6 +166,12 @@ from runtime.workspace.scheduling import (
     reserve_generation,
     triggered_actions,
 )
+from runtime.workspace.reader import (
+    MeltReaderError,
+    PageQuery,
+    read_table_page,
+    validate_query,
+)
 from runtime.workspace.service import (
     LANGUAGE_VERSION,
     REVISION_PRECONDITION_METHODS,
@@ -173,7 +179,6 @@ from runtime.workspace.service import (
     SERVICE_VERSION,
     SNAPSHOT_REQUIRED,
     SUPPORTED_PROTOCOL_VERSIONS,
-    UNANSWERED_METHODS,
     NotificationWindow,
     WorkspaceService,
 )
@@ -238,6 +243,7 @@ __all__ = [
     "NOT_PUBLISHABLE",
     "NOTIFICATION_KIND",
     "NotificationWindow",
+    "PageQuery",
     "OUTPUT_GROUP_COLLECTION",
     "OUTPUT_GROUP_KIND",
     "PENDING_INTENT_KIND",
@@ -278,12 +284,12 @@ __all__ = [
     "MeasuredArtifact",
     "MeasuredScript",
     "MeltImportError",
+    "MeltReaderError",
     "MeltPermissionError",
     "MeltRegistrationError",
     "MeltTokenError",
     "RunLaunchOutcome",
     "TokenStore",
-    "UNANSWERED_METHODS",
     "VerifiedOutput",
     "WorkspaceService",
     "WorkspaceState",
@@ -324,6 +330,7 @@ __all__ = [
     "preview_effects",
     "publication_path",
     "register_artifact",
+    "read_table_page",
     "register_script",
     "registration_entry_of",
     "registration_identity",
@@ -342,5 +349,6 @@ __all__ = [
     "triggered_actions",
     "validate_contract",
     "values_equal",
+    "validate_query",
     "verify_staged_outputs",
 ]
