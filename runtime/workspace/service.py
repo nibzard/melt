@@ -18,6 +18,14 @@ SPEC.md section 12 defines the command contract this service serves:
   every transaction that changed records appends one ordered
   notification guarded by the service epoch.
 
+The service methods of section 12.6 ride the same envelope. Methods
+other than ``workspace.apply`` and ``workspace.preview`` carry a
+``payload``; only the methods with revision preconditions carry
+``expected``. Reads answer with the sequence they observed. Admission
+answers ``approvalRequired`` as a successful result when the permission
+grant is missing: it never grants permission and never reports an
+execution that did not happen.
+
 The service is the sole writer: it holds the workspace ``owner.lock``
 through a :class:`~runtime.storage.WorkspaceStore` and commits each
 transaction as one atomic append on the owning connection. Because the
@@ -26,9 +34,8 @@ exists, the sequence of the next commit is predicted and verified after
 the append.
 
 State restoration on open loads the last committed snapshot, receipts,
-and notifications from the record stream without importing or executing
-project code (SPEC.md section 14, steps 2 and 3). Backlog task T010
-adds the remaining service methods on top of this core.
+notifications, and run records from the record stream without importing
+or executing project code (SPEC.md section 14, steps 2 and 3).
 """
 
 from __future__ import annotations
@@ -36,7 +43,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Mapping, Sequence
 
 from pydantic import ValidationError
 
@@ -50,6 +57,7 @@ from melt.schema.commands import (
     decode_frame,
     encode_frame,
     parse_command,
+    parse_payload,
     parse_response,
 )
 from melt.schema.diagnostics import (
@@ -60,8 +68,13 @@ from melt.schema.diagnostics import (
     sorted_diagnostics,
 )
 from melt.schema.document import Document, document_semantic_diagnostics
-from melt.schema.limits import DEFAULT_LIMITS
-from melt.schema.records import RECORD_SCHEMA_VERSION, parse_record
+from melt.schema.limits import DEFAULT_LIMITS, ServiceLimits, limits_wire
+from melt.schema.records import (
+    RECORD_SCHEMA_VERSION,
+    RunRecord,
+    parse_record,
+    record_to_wire,
+)
 from runtime.compiler.catalog import (
     EMPTY_ACTION_REGISTRY,
     EMPTY_SOURCE_CATALOG,
@@ -70,9 +83,16 @@ from runtime.compiler.catalog import (
 )
 from runtime.compiler.compiler import CompileRequest, compile_document
 from runtime.storage import PlatformAdapter, WorkspaceStore
+from runtime.workspace.inspection import (
+    active_run_records,
+    current_diagnostics,
+    preview_effects,
+    snapshot_result,
+)
 from runtime.workspace.mutations import (
     EntityTouch,
     MutationPlan,
+    expectation_diagnostics,
     initial_state_from_document,
     plan_mutation,
 )
@@ -80,16 +100,46 @@ from runtime.workspace.state import (
     LAYOUT_PATH,
     NOTIFICATION_KIND,
     RECEIPT_KIND,
+    RUN_KIND,
     SNAPSHOT_KIND,
     ParameterStateValue,
     WorkspaceState,
     entity_path,
     pointer_key,
+    run_path,
     state_path,
 )
+from runtime.workspace.tokens import CapturedArtifact, TokenStore
 
 SNAPSHOT_REQUIRED = "snapshot-required"
 """The status a subscription returns when ordered changes cannot be sent."""
+
+SERVICE_VERSION = "0.1.0"
+SERVICE_IDENTIFIER = f"melt-service/{SERVICE_VERSION}"
+"""The service version a handshake reports (SPEC.md section 12.6)."""
+
+SUPPORTED_PROTOCOL_VERSIONS = (1,)
+"""The protocol framing versions this service speaks."""
+
+LANGUAGE_VERSION = "melt/v0.1"
+"""The only language version this service compiles."""
+
+REVISION_PRECONDITION_METHODS = frozenset(
+    ("workspace.apply", "workspace.preview", "action.invoke", "control.activate")
+)
+"""The methods whose envelope may carry an expected map (section 12.6)."""
+
+UNANSWERED_METHODS = frozenset(
+    ("source.import", "action.register", "action.invoke", "table.page")
+)
+"""Methods this service does not answer yet.
+
+Each arrives with the subsystem that owns it: artifact import, the
+registration registry, invocation scheduling, and the trusted table
+reader. Until then the methods are refused, never silently accepted.
+"""
+
+ACTIVE_RUN_STATES = ("queued", "running")
 
 
 def _utc_now() -> str:
@@ -126,6 +176,15 @@ def _wire_of(value: Any) -> dict:
     return model_to_wire(value) if hasattr(value, "model_dump") else value
 
 
+def _parsed_payload(envelope: CommandEnvelope) -> "Any | MeltCommandError":
+    """Parse one method payload, or return the error to answer with."""
+
+    try:
+        return parse_payload(envelope.method, envelope.payload)
+    except MeltCommandError as error:
+        return error
+
+
 class WorkspaceService:
     """One open workspace under single-writer ownership."""
 
@@ -136,19 +195,25 @@ class WorkspaceService:
         receipts: dict[str, dict],
         notifications: list[dict],
         *,
+        runs: "Mapping[str, RunRecord] | None" = None,
         source_catalog: "SourceCatalog | None" = None,
         action_registry: "ActionRegistry | None" = None,
         frame_limit: int | None = None,
+        limits: ServiceLimits = DEFAULT_LIMITS,
     ):
         self._store = store
         self._state = state
         self._receipts = receipts
         self._notifications = notifications
+        self._runs: dict[str, RunRecord] = dict(runs or {})
         self._source_catalog = source_catalog or EMPTY_SOURCE_CATALOG
         self._action_registry = action_registry or EMPTY_ACTION_REGISTRY
+        self._limits = limits
         self._frame_limit = (
             DEFAULT_LIMITS.control_frame_bytes if frame_limit is None else frame_limit
         )
+        self._tokens = TokenStore(state.workspace_id, store.artifacts)
+        self._client: "dict | None" = None
 
     # ------------------------------------------------------------------
     # Opening and teardown
@@ -163,13 +228,14 @@ class WorkspaceService:
         source_catalog: "SourceCatalog | None" = None,
         action_registry: "ActionRegistry | None" = None,
         frame_limit: int | None = None,
+        limits: ServiceLimits = DEFAULT_LIMITS,
         node: str | None = None,
     ) -> "WorkspaceService":
         """Take ownership of one workspace and restore its state."""
 
         store = WorkspaceStore.open(platform, workspace_id, node=node)
         try:
-            state, receipts, notifications = _load_state(store)
+            state, receipts, notifications, runs = _load_state(store)
         except BaseException:
             store.close()
             raise
@@ -178,9 +244,11 @@ class WorkspaceService:
             state,
             receipts,
             notifications,
+            runs=runs,
             source_catalog=source_catalog,
             action_registry=action_registry,
             frame_limit=frame_limit,
+            limits=limits,
         )
 
     def close(self) -> None:
@@ -231,6 +299,18 @@ class WorkspaceService:
         return dict(self._state.entity_revisions)
 
     @property
+    def runs(self) -> dict[str, RunRecord]:
+        """Every known run record, keyed by run identifier."""
+
+        return dict(self._runs)
+
+    @property
+    def client(self) -> "dict | None":
+        """The negotiated session of the last ``session.hello``."""
+
+        return None if self._client is None else dict(self._client)
+
+    @property
     def store(self) -> WorkspaceStore:
         """The owning storage, for recovery and crash tests."""
 
@@ -239,6 +319,78 @@ class WorkspaceService:
     def receipt(self, request_id: str) -> "dict | None":
         stored = self._receipts.get(request_id)
         return None if stored is None else dict(stored)
+
+    # ------------------------------------------------------------------
+    # Method dispatch (SPEC.md section 12.6)
+    # ------------------------------------------------------------------
+
+    def dispatch(self, envelope: CommandEnvelope) -> CommandResponse:
+        """Route one parsed envelope to the handler of its method.
+
+        Every method except the session handshake addresses the
+        workspace this service owns. Only methods with revision
+        preconditions may carry ``expected``; the envelope model keeps
+        operation methods and payload methods apart.
+        """
+
+        if envelope.method == "session.hello":
+            return self._session_hello(envelope)
+        if envelope.workspaceId != self._state.workspace_id:
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.REFERENCE,
+                    "/workspaceId",
+                    f"envelope addresses workspace"
+                    f" {envelope.workspaceId!r}, but this service owns"
+                    f" {self._state.workspace_id!r}",
+                ),
+            )
+        if (
+            envelope.method not in REVISION_PRECONDITION_METHODS
+            and envelope.expected is not None
+        ):
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.SCHEMA,
+                    "/expected",
+                    f"method {envelope.method!r} has no revision"
+                    " precondition and carries no expected map",
+                ),
+            )
+        if envelope.method in UNANSWERED_METHODS:
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.SCHEMA,
+                    "/method",
+                    f"method {envelope.method!r} is not implemented by"
+                    " this service",
+                ),
+            )
+        handlers: dict[str, Callable[[CommandEnvelope], CommandResponse]] = {
+            "workspace.apply": self.apply,
+            "workspace.preview": self.preview,
+            "workspace.create": self._workspace_create,
+            "workspace.inspect": self._workspace_inspect,
+            "workspace.subscribe": self._workspace_subscribe,
+            "control.activate": self._control_activate,
+            "run.cancel": self._run_cancel,
+            "run.inspect": self._run_inspect,
+        }
+        handler = handlers.get(envelope.method)
+        if handler is None:  # pragma: no cover - the method set is closed
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.SCHEMA,
+                    "/method",
+                    f"method {envelope.method!r} is not implemented by"
+                    " this service",
+                ),
+            )
+        return handler(envelope)
 
     # ------------------------------------------------------------------
     # Mutations (SPEC.md sections 12.2, 12.3, 12.5)
@@ -284,6 +436,55 @@ class WorkspaceService:
             envelope.requestId, envelope.method, payload_hash, plan
         )
 
+    def preview(self, envelope: CommandEnvelope) -> CommandResponse:
+        """Answer one ``workspace.preview`` dry run without writing.
+
+        The preview plans the same transaction an apply would and
+        reports its effects: diagnostics, affected record paths,
+        controller replacements, state resets, invalidated runs, and the
+        candidate document hash. It reserves no revision, stores no
+        receipt, and grants no permission, so applying after a preview
+        still requires a fresh, successful concurrency check (SPEC.md
+        section 12.4).
+        """
+
+        if envelope.workspaceId != self._state.workspace_id:
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.REFERENCE,
+                    "/workspaceId",
+                    f"envelope addresses workspace"
+                    f" {envelope.workspaceId!r}, but this service owns"
+                    f" {self._state.workspace_id!r}",
+                ),
+            )
+        if envelope.method != "workspace.preview":
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.SCHEMA,
+                    "/method",
+                    f"method {envelope.method!r} is not implemented by"
+                    " this service",
+                ),
+            )
+        plan = plan_mutation(
+            self._state,
+            envelope,
+            source_catalog=self._source_catalog,
+            action_registry=self._action_registry,
+        )
+        if not plan.ok:
+            return _rejected(envelope.requestId, *plan.diagnostics)
+        result = preview_effects(self._state, plan, self._runs)
+        return OkResponse(
+            requestId=envelope.requestId,
+            ok=True,
+            commitSequence=self._state.commit_sequence,
+            result=result,
+        )
+
     def create_workspace(
         self, document: "dict | Document", request_id: str
     ) -> CommandResponse:
@@ -293,7 +494,8 @@ class WorkspaceService:
         carries empty ``sources`` and ``actions`` collections, so
         creation stays separate from artifact import and execution
         registration. Every entity starts at revision 1 and every
-        parameter stores its default at state revision 1.
+        parameter stores its default at state revision 1. The result is
+        the initial snapshot an inspection would return.
         """
 
         wire = _wire_of(document)
@@ -412,7 +614,15 @@ class WorkspaceService:
             },
             observed_revisions={},
         )
-        return self._commit(request_id, "workspace.create", payload_hash, plan)
+        return self._commit(
+            request_id,
+            "workspace.create",
+            payload_hash,
+            plan,
+            result_of=lambda new_state: snapshot_result(
+                new_state, self._runs, []
+            ),
+        )
 
     def _replay_or_reject(
         self, request_id: str, payload_hash: str
@@ -442,6 +652,8 @@ class WorkspaceService:
         method: str,
         payload_hash: str,
         plan: MutationPlan,
+        *,
+        result_of: "Callable[[WorkspaceState], dict] | None" = None,
     ) -> CommandResponse:
         """Commit one planned transaction atomically or not at all."""
 
@@ -467,15 +679,6 @@ class WorkspaceService:
         new_revisions = plan.new_revisions(self._state)
         for parameter_id, state_value in plan.new_states.items():
             new_revisions[state_path(parameter_id)] = state_value.revision
-        response = OkResponse(
-            requestId=request_id,
-            ok=True,
-            commitSequence=predicted,
-            result={
-                "changedRecords": changed,
-                "revisions": dict(sorted(new_revisions.items())),
-            },
-        )
 
         entity_revisions = dict(self._state.entity_revisions)
         for path in plan.entity_touches:
@@ -503,9 +706,23 @@ class WorkspaceService:
             parameter_states=parameter_states,
             incarnations=incarnations,
         )
+        if result_of is None:
+            result = {
+                "changedRecords": changed,
+                "revisions": dict(sorted(new_revisions.items())),
+            }
+        else:
+            result = result_of(new_state)
+        response = OkResponse(
+            requestId=request_id,
+            ok=True,
+            commitSequence=predicted,
+            result=result,
+        )
 
+        active = tuple(record_to_wire(run) for run in active_run_records(self._runs))
         records: list[tuple[str, dict]] = [
-            (SNAPSHOT_KIND, _snapshot_wire(new_state, self._state.commit_sequence)),
+            (SNAPSHOT_KIND, _snapshot_wire(new_state, self._state.commit_sequence, active)),
             (
                 RECEIPT_KIND,
                 {
@@ -549,6 +766,470 @@ class WorkspaceService:
         if changed:
             self._notifications.append(dict(records[-1][1]))
         return response
+
+    def _commit_receipted(
+        self,
+        request_id: str,
+        method: str,
+        payload_hash: str,
+        result: dict,
+        *,
+        changed: "Sequence[str]" = (),
+        run_records: "Sequence[RunRecord]" = (),
+    ) -> OkResponse:
+        """Commit one processed request with its receipt.
+
+        Admission and cancellation store durable receipts so a retry
+        replays the stored answer and reuse with different content fails
+        (SPEC.md sections 12.5 and 12.6). The transaction advances the
+        commit sequence once even when it changed no record; it appends
+        one notification only when records changed.
+        """
+
+        predicted = self._state.commit_sequence + 1
+        response = OkResponse(
+            requestId=request_id,
+            ok=True,
+            commitSequence=predicted,
+            result=result,
+        )
+        records: list[tuple[str, dict]] = [
+            (
+                RECEIPT_KIND,
+                {
+                    "recordType": "commandReceipt",
+                    "schemaVersion": RECORD_SCHEMA_VERSION,
+                    "requestId": request_id,
+                    "method": method,
+                    "requestPayloadHash": payload_hash,
+                    "response": model_to_wire(response),
+                    "commitSequence": predicted,
+                    "receivedAt": _utc_now(),
+                },
+            )
+        ]
+        for run in run_records:
+            records.append((RUN_KIND, record_to_wire(run)))
+        if changed:
+            records.append(
+                (
+                    NOTIFICATION_KIND,
+                    {
+                        "recordType": "changeNotification",
+                        "schemaVersion": RECORD_SCHEMA_VERSION,
+                        "workspaceId": self._state.workspace_id,
+                        "epoch": self._state.epoch,
+                        "commitSequence": predicted,
+                        "changedRecords": list(changed),
+                    },
+                )
+            )
+        for kind, data in records:
+            parse_record(data)  # refuse to commit a record we would reject
+
+        sequence, _ = self._store.append_records(records)
+        if sequence != predicted:
+            raise RuntimeError(
+                f"commit landed at sequence {sequence} instead of the"
+                f" predicted {predicted}; the single-writer sequence"
+                " prediction is broken"
+            )
+        self._state = self._state.with_commit(predicted)
+        self._receipts[request_id] = dict(records[0][1])
+        for run in run_records:
+            self._runs[run.runId] = run
+        if changed:
+            self._notifications.append(dict(records[-1][1]))
+        return response
+
+    # ------------------------------------------------------------------
+    # Session, inspection, and subscription (SPEC.md sections 12.4, 12.6)
+    # ------------------------------------------------------------------
+
+    def _session_hello(self, envelope: CommandEnvelope) -> CommandResponse:
+        """Negotiate versions and report the epoch and the limits.
+
+        The handshake precedes workspace routing: it answers for this
+        service process, touches no workspace state, and stores no
+        receipt. The epoch it reports belongs to the workspace this
+        service owns.
+        """
+
+        parsed = _parsed_payload(envelope)
+        if isinstance(parsed, MeltCommandError):
+            return _rejected(envelope.requestId, *parsed.diagnostics)
+        common = sorted(
+            set(parsed.protocolVersions) & set(SUPPORTED_PROTOCOL_VERSIONS)
+        )
+        if not common:
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.VERSION,
+                    "/payload/protocolVersions",
+                    "no common protocol version; this service speaks"
+                    f" {list(SUPPORTED_PROTOCOL_VERSIONS)}",
+                ),
+            )
+        if LANGUAGE_VERSION not in parsed.languageVersions:
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.VERSION,
+                    "/payload/languageVersions",
+                    "no common language version; this service compiles"
+                    f" {LANGUAGE_VERSION!r}",
+                ),
+            )
+        selected = common[-1]
+        self._client = {
+            "clientVersion": parsed.clientVersion,
+            "protocolVersion": selected,
+            "language": LANGUAGE_VERSION,
+        }
+        result = {
+            "protocolVersion": selected,
+            "language": LANGUAGE_VERSION,
+            "serverVersion": SERVICE_IDENTIFIER,
+            "clientVersion": parsed.clientVersion,
+            "epoch": self._state.epoch,
+            "limits": limits_wire(self._limits),
+        }
+        return OkResponse(
+            requestId=envelope.requestId,
+            ok=True,
+            commitSequence=self._state.commit_sequence,
+            result=result,
+        )
+
+    def _workspace_create(self, envelope: CommandEnvelope) -> CommandResponse:
+        parsed = _parsed_payload(envelope)
+        if isinstance(parsed, MeltCommandError):
+            return _rejected(envelope.requestId, *parsed.diagnostics)
+        return self.create_workspace(parsed.document, envelope.requestId)
+
+    def _workspace_inspect(self, envelope: CommandEnvelope) -> CommandResponse:
+        """Return the bounded snapshot of the committed workspace.
+
+        Reads answer with the sequence they observed and store no
+        receipt. The diagnostics recompile the committed document
+        against the current trusted inputs, so a registration or
+        artifact that drifted is named while the saved definitions stay
+        readable (SPEC.md sections 7.2 and 12.4).
+        """
+
+        parsed = _parsed_payload(envelope)
+        if isinstance(parsed, MeltCommandError):
+            return _rejected(envelope.requestId, *parsed.diagnostics)
+        if not self._state.present:
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.REFERENCE,
+                    "/workspaceId",
+                    f"workspace {self._state.workspace_id!r} holds no"
+                    " document; create the workspace before inspecting"
+                    " it",
+                ),
+            )
+        diagnostics = current_diagnostics(
+            self._state, self._source_catalog, self._action_registry
+        )
+        result = snapshot_result(
+            self._state,
+            self._runs,
+            diagnostics,
+            collection=parsed.collection,
+            ids=parsed.ids,
+        )
+        return OkResponse(
+            requestId=envelope.requestId,
+            ok=True,
+            commitSequence=self._state.commit_sequence,
+            result=result,
+        )
+
+    def _workspace_subscribe(
+        self, envelope: CommandEnvelope
+    ) -> CommandResponse:
+        """Answer one subscription query (SPEC.md section 12.5).
+
+        Ordered changes answer with the observed sequence. A changed
+        epoch or a gap in the notification log answers the successful
+        ``snapshot-required`` status instead, so the host takes a full
+        snapshot rather than replaying a broken order.
+        """
+
+        parsed = _parsed_payload(envelope)
+        if isinstance(parsed, MeltCommandError):
+            return _rejected(envelope.requestId, *parsed.diagnostics)
+        window = self.changes_after(parsed.afterSequence, parsed.epoch)
+        result: dict = {"status": window.status}
+        if window.status == "changes":
+            result["changes"] = [dict(item) for item in window.changes]
+        else:
+            result["reason"] = window.reason
+        return OkResponse(
+            requestId=envelope.requestId,
+            ok=True,
+            commitSequence=self._state.commit_sequence,
+            result=result,
+        )
+
+    # ------------------------------------------------------------------
+    # Control activation and runs (SPEC.md sections 12.6, 13.1)
+    # ------------------------------------------------------------------
+
+    def _control_activate(self, envelope: CommandEnvelope) -> CommandResponse:
+        """Route one button activation through its binding.
+
+        The activation needs the projection revision and the revision of
+        every binding that connects the control to an action (SPEC.md
+        section 12.6). A control without a binding is a reported no-op.
+        A bound activation is admitted: with the permission grant
+        missing it answers the successful ``approvalRequired`` result,
+        which is an admission state, never a permission grant and never
+        a claimed execution (SPEC.md sections 12.6 and 13.1).
+        """
+
+        payload_hash = canonical_hash(model_to_wire(envelope))
+        replay = self._replay_or_reject(envelope.requestId, payload_hash)
+        if replay is not None:
+            return replay
+        parsed = _parsed_payload(envelope)
+        if isinstance(parsed, MeltCommandError):
+            return _rejected(envelope.requestId, *parsed.diagnostics)
+        if not self._state.present:
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.REFERENCE,
+                    "/workspaceId",
+                    f"workspace {self._state.workspace_id!r} holds no"
+                    " document; create the workspace before activating a"
+                    " control",
+                ),
+            )
+        document = self._state.document
+        projection = document["projections"].get(parsed.projectionId)
+        if projection is None:
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.REFERENCE,
+                    "/payload/projectionId",
+                    f"projection {parsed.projectionId!r} does not exist",
+                ),
+            )
+        control = next(
+            (
+                item
+                for item in projection["controls"]
+                if item["id"] == parsed.controlId
+            ),
+            None,
+        )
+        if control is None:
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.REFERENCE,
+                    "/payload/controlId",
+                    f"projection {parsed.projectionId!r} carries no"
+                    f" control {parsed.controlId!r}",
+                ),
+            )
+        if control["kind"] != "button":
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.TYPE,
+                    "/payload/controlId",
+                    f"control {parsed.controlId!r} has kind"
+                    f" {control['kind']!r}; only button controls emit"
+                    " control.activate",
+                ),
+            )
+        matching = sorted(
+            (
+                binding_id,
+                binding,
+            )
+            for binding_id, binding in document["bindings"].items()
+            if binding["event"]["kind"] == "control.activate"
+            and binding["event"]["projection"] == parsed.projectionId
+            and binding["event"]["control"] == parsed.controlId
+        )
+        required = [entity_path("projections", parsed.projectionId)]
+        required.extend(entity_path("bindings", binding_id) for binding_id, _ in matching)
+        diagnostics = expectation_diagnostics(
+            self._state, dict(envelope.expected or {}), required
+        )
+        if diagnostics:
+            return _rejected(envelope.requestId, *sorted_diagnostics(diagnostics))
+
+        # A button activation is a user event: the host routes a press
+        # through the same handler an agent adapter would call with a
+        # programmatic origin (SPEC.md sections 2.2 and 9.1).
+        origin = "user"
+        if not matching:
+            result = {
+                "status": "no-op",
+                "origin": origin,
+                "projection": parsed.projectionId,
+                "control": parsed.controlId,
+                "reason": "no binding connects this control to an action",
+            }
+            return self._commit_receipted(
+                envelope.requestId, envelope.method, payload_hash, result
+            )
+
+        binding_id, binding = matching[0]
+        action_id = binding["effect"]["action"]
+        action = document["actions"].get(action_id)
+        if action is None:
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.REFERENCE,
+                    f"/bindings/{binding_id}/effect/action",
+                    f"binding {binding_id!r} targets action"
+                    f" {action_id!r}, which does not exist",
+                ),
+            )
+        registration = self._action_registry.entry(
+            action["implementation"]["registrationId"]
+        )
+        if registration is None:
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.REGISTRATION,
+                    f"/actions/{action_id}/implementation/registrationId",
+                    f"registration"
+                    f" {action['implementation']['registrationId']!r} is"
+                    " not in the trusted registry; the action is"
+                    " disabled",
+                    hint="Register the script again, or restore the"
+                    " registration the action cites.",
+                ),
+            )
+        # Admission checks permission before anything runs (SPEC.md
+        # section 13.1). No grant store is attached to this service yet,
+        # and grants are host generated outside exported documents
+        # (section 15.1), so the required grant is missing here: the
+        # successful approvalRequired result follows. It records the
+        # admission state only; it grants no permission, reserves no
+        # generation, and reports no execution.
+        result = {
+            "status": "approvalRequired",
+            "origin": origin,
+            "action": action_id,
+            "binding": binding_id,
+            "requiredPermission": registration.required_permission,
+        }
+        return self._commit_receipted(
+            envelope.requestId, envelope.method, payload_hash, result
+        )
+
+    def _run_cancel(self, envelope: CommandEnvelope) -> CommandResponse:
+        """Cancel one run (SPEC.md sections 12.6 and 13.5).
+
+        Cancellation is idempotent and needs no expected revision. A
+        queued or running run moves to ``cancelled`` in one durable
+        transaction with its receipt; a run that already reached a
+        terminal state answers its current state with a matching
+        cancellation status and changes nothing.
+        """
+
+        payload_hash = canonical_hash(model_to_wire(envelope))
+        replay = self._replay_or_reject(envelope.requestId, payload_hash)
+        if replay is not None:
+            return replay
+        parsed = _parsed_payload(envelope)
+        if isinstance(parsed, MeltCommandError):
+            return _rejected(envelope.requestId, *parsed.diagnostics)
+        run = self._runs.get(parsed.runId)
+        if run is None:
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.REFERENCE,
+                    "/payload/runId",
+                    f"run {parsed.runId!r} does not exist",
+                ),
+            )
+        if run.state in ACTIVE_RUN_STATES:
+            cancelled = run.model_copy(
+                update={"state": "cancelled", "updatedAt": _utc_now()}
+            )
+            result = {
+                "runId": run.runId,
+                "state": cancelled.state,
+                "cancellation": {"status": "cancelled"},
+            }
+            return self._commit_receipted(
+                envelope.requestId,
+                envelope.method,
+                payload_hash,
+                result,
+                changed=[run_path(run.runId)],
+                run_records=[cancelled],
+            )
+        status = "alreadyCancelled" if run.state == "cancelled" else "notActive"
+        result = {
+            "runId": run.runId,
+            "state": run.state,
+            "cancellation": {"status": status},
+        }
+        return self._commit_receipted(
+            envelope.requestId, envelope.method, payload_hash, result
+        )
+
+    def _run_inspect(self, envelope: CommandEnvelope) -> CommandResponse:
+        """Return one run record and its output references."""
+
+        parsed = _parsed_payload(envelope)
+        if isinstance(parsed, MeltCommandError):
+            return _rejected(envelope.requestId, *parsed.diagnostics)
+        run = self._runs.get(parsed.runId)
+        if run is None:
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.REFERENCE,
+                    "/payload/runId",
+                    f"run {parsed.runId!r} does not exist",
+                ),
+            )
+        wire = record_to_wire(run)
+        return OkResponse(
+            requestId=envelope.requestId,
+            ok=True,
+            commitSequence=self._state.commit_sequence,
+            result={"run": wire, "outputs": dict(wire.get("outputs", {}))},
+        )
+
+    # ------------------------------------------------------------------
+    # Host capture operations (SPEC.md section 12.6)
+    # ------------------------------------------------------------------
+
+    def capture_artifact_token(self, data: bytes, media_type: str) -> CapturedArtifact:
+        """Capture import bytes and mint one opaque token.
+
+        This is the host import operation behind ``source.import`` and
+        ``action.register``: the host hands over bytes it read with user
+        consent, and the service answers a workspace-scoped handle that
+        expires after 15 minutes. Document commands carry the token,
+        never a filesystem path.
+        """
+
+        return self._tokens.capture(data, media_type)
+
+    def redeem_artifact_token(self, token: str) -> "CapturedArtifact | None":
+        """Return the capture of one token, or None when unusable."""
+
+        return self._tokens.redeem(token)
 
     # ------------------------------------------------------------------
     # Notifications (SPEC.md section 12.5)
@@ -619,7 +1300,7 @@ class WorkspaceService:
             if request_id is None:
                 return {"ok": False, "errors": model_to_wire_diagnostics(error)}
             return _rejected(request_id, *error.diagnostics)
-        return self.apply(envelope)
+        return self.dispatch(envelope)
 
     def process_frame(self, data: bytes) -> bytes:
         """Answer one framed request with one framed response."""
@@ -674,12 +1355,15 @@ class WorkspaceService:
 
 def _load_state(
     store: WorkspaceStore,
-) -> tuple[WorkspaceState, dict[str, dict], list[dict]]:
+) -> tuple[
+    WorkspaceState, dict[str, dict], list[dict], dict[str, RunRecord]
+]:
     """Rebuild the current state from the committed record stream."""
 
     latest_snapshot = None
     receipts: dict[str, dict] = {}
     notifications: list[dict] = []
+    runs: dict[str, RunRecord] = {}
     for record in store.records():
         if record.kind == SNAPSHOT_KIND:
             latest_snapshot = record
@@ -689,13 +1373,16 @@ def _load_state(
         elif record.kind == NOTIFICATION_KIND:
             parse_record(record.data)
             notifications.append(dict(record.data))
+        elif record.kind == RUN_KIND:
+            run = parse_record(record.data)
+            runs[run.runId] = run
     if latest_snapshot is None:
         state = WorkspaceState(
             workspace_id=store.workspace_id,
             epoch=store.epoch,
             commit_sequence=store.commit_sequence,
         )
-        return state, receipts, notifications
+        return state, receipts, notifications, runs
     snapshot = parse_record(latest_snapshot.data)
     state = WorkspaceState(
         workspace_id=store.workspace_id,
@@ -711,10 +1398,14 @@ def _load_state(
         },
         incarnations=dict(snapshot.incarnations),
     )
-    return state, receipts, notifications
+    return state, receipts, notifications, runs
 
 
-def _snapshot_wire(state: WorkspaceState, observed_sequence: int) -> dict:
+def _snapshot_wire(
+    state: WorkspaceState,
+    observed_sequence: int,
+    active_runs: "Sequence[dict]" = (),
+) -> dict:
     """Build the committed snapshot record of one transaction.
 
     ``commitSequence`` is the sequence the snapshot observed, matching
@@ -742,7 +1433,7 @@ def _snapshot_wire(state: WorkspaceState, observed_sequence: int) -> dict:
             for parameter_id, stored in state.parameter_states.items()
         },
         "incarnations": dict(state.incarnations),
-        "activeRuns": [],
+        "activeRuns": list(active_runs),
         "diagnostics": [],
     }
 

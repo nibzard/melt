@@ -1207,12 +1207,12 @@ def test_invalid_envelopes_answer_with_salvaged_request_ids(
         {
             "protocolVersion": 1,
             "workspaceId": WORKSPACE,
-            "requestId": "01-hello",
-            "method": "session.hello",
+            "requestId": "01-import",
+            "method": "source.import",
             "payload": {
-                "protocolVersions": [1],
-                "languageVersions": ["melt/v0.1"],
-                "clientVersion": "harness",
+                "sourceId": "sales-input",
+                "artifactToken": "melttok_example",
+                "originLabel": "sales.csv",
             },
         }
     ).encode("utf-8")

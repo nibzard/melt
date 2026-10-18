@@ -36,6 +36,9 @@ RECEIPT_KIND = "melt.commandReceipt"
 NOTIFICATION_KIND = "melt.changeNotification"
 """The committed record that holds one change notification."""
 
+RUN_KIND = "melt.run"
+"""The committed record that holds one run record update (section 7.3)."""
+
 
 def entity_path(collection: str, entity_id: str) -> str:
     """Return the record path of one entity."""
@@ -47,6 +50,18 @@ def state_path(parameter_id: str) -> str:
     """Return the record path of one stored parameter value."""
 
     return f"state/{parameter_id}"
+
+
+def run_path(run_id: str) -> str:
+    """Return the record path of one run record.
+
+    Runs carry no revision precondition: ``run.cancel`` is idempotent
+    and requires no expectation (SPEC.md section 12.6). The path still
+    appears in change notifications so a subscriber learns that the run
+    changed.
+    """
+
+    return f"runs/{run_id}"
 
 
 def pointer_key(path: str) -> str:
@@ -142,10 +157,12 @@ __all__ = [
     "NOTIFICATION_KIND",
     "ParameterStateValue",
     "RECEIPT_KIND",
+    "RUN_KIND",
     "SNAPSHOT_KIND",
     "WorkspaceState",
     "entity_path",
     "pointer_key",
+    "run_path",
     "state_path",
     "values_equal",
 ]

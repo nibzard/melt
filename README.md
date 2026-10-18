@@ -116,26 +116,50 @@ Artifact bytes stay outside the database. Entry point:
 
 - `runtime.storage.WorkspaceStore.open(platform, workspace_id)`
 
-`runtime/workspace` implements the service core of backlog task T009
-(SPEC.md sections 12.1 through 12.5). `workspace.apply` plans each
-mutation against a private candidate, checks the `expected` revision
-map, validates state migrations, and validates the final candidate once
-through the compiler stages. A successful transaction commits the new
-snapshot, its request receipt, and its change notification in one
-atomic append, so the commit sequence advances once and a retry with
-the same request identifier replays the stored response while reuse
-with different content fails with `E_REQUEST_REUSE`. Requests arrive
-framed: a four-byte big-endian length prefix followed by UTF-8 JSON,
-rejected above the frame limit before any payload is read. Reopening a
-workspace restores the last committed document, state, receipts, and
-notifications without executing project code. Entry points:
+`runtime/workspace` implements the service core of backlog tasks T009
+and T010 (SPEC.md sections 12.1 through 12.6). `workspace.apply` plans
+each mutation against a private candidate, checks the `expected`
+revision map, validates state migrations, and validates the final
+candidate once through the compiler stages. A successful transaction
+commits the new snapshot, its request receipt, and its change
+notification in one atomic append, so the commit sequence advances once
+and a retry with the same request identifier replays the stored
+response while reuse with different content fails with
+`E_REQUEST_REUSE`. Requests arrive framed: a four-byte big-endian
+length prefix followed by UTF-8 JSON, rejected above the frame limit
+before any payload is read. Reopening a workspace restores the last
+committed document, state, receipts, notifications, and run records
+without executing project code. Entry points:
 
 - `runtime.workspace.WorkspaceService.open(platform, workspace_id)`
-- `service.apply(envelope)` and `service.serve(read, write)`
+- `service.dispatch(envelope)` for any section 12.6 method
+- `service.apply(envelope)`, `service.preview(envelope)`, and
+  `service.serve(read, write)`
 
-The remaining service methods of section 12.6 arrive with backlog task
-T010. The SDK and runner stay scaffolded boundaries until backlog tasks
-T011 and T015.
+The service methods of section 12.6 ride the same envelope.
+`session.hello` negotiates protocol and language versions and reports
+the epoch and the limit table. `workspace.create` answers the initial
+snapshot of an absent workspace whose `sources` and `actions`
+collections are empty. `workspace.inspect` returns the bounded
+document, entity revisions, parameter state, active runs, and the
+diagnostics of recompiling the committed definitions, so drifted
+registrations are named while saved projections stay readable.
+`workspace.preview` plans the same transaction an apply would and
+reports diagnostics, affected records, controller replacements, state
+resets, invalidated runs, and the candidate document hash without
+writing. `workspace.subscribe` answers ordered changes or the
+successful snapshot-required status. `control.activate` routes a button
+press through its binding under projection and binding revisions; with
+the permission grant missing it answers the successful
+approval-required admission result, which grants nothing and reports no
+execution. `run.cancel` and `run.inspect` answer and update run records
+idempotently. Artifact and script tokens are minted by the host capture
+operation: opaque, workspace-scoped handles that expire after
+15 minutes (`service.capture_artifact_token` and
+`service.redeem_artifact_token`). Source import, registration, manual
+invocation, and table paging arrive with their owning backlog tasks
+(T011, T013, T016, and T012). The SDK and runner stay scaffolded
+boundaries until backlog tasks T011 and T015.
 
 ## Contract fixtures
 
