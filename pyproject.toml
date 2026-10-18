@@ -11,6 +11,11 @@ dependencies = [
     "matplotlib==3.11.2",
 ]
 
+[project.scripts]
+# The command-line compiler of SPEC.md section 11.3. `python -m melt`
+# drives the same entry point.
+melt = "melt.cli:main"
+
 [dependency-groups]
 dev = [
     "pytest==9.1.1",

@@ -17,8 +17,8 @@ the compiler, and later native checks (SPEC.md section 18.1).
   and the registration contracts of `sales-script-v1` and
   `summarize-script-v1` (SPEC.md sections 7.2 and 16). The compiler of
   backlog task T005 consumes it through
-  `runtime.compiler.load_catalog`, `melt compile --catalog` (backlog
-  task T006) will consume it from the command line, and the
+  `runtime.compiler.load_catalog`, `melt compile <file> --catalog <file>`
+  consumes it from the command line (SPEC.md section 11.3), and the
   `registry-mismatches` and `artifact-schema-drift` invalid fixtures
   are checked against it.
 

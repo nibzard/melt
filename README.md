@@ -101,9 +101,7 @@ dependency, identity, and layout plans. Parsing entry point:
 
 Compilation performs no project execution, network access, or package
 installation. Equivalent canonical inputs with equal registry versions
-produce equivalent plans. `melt validate` and `melt compile` arrive with
-backlog task T006. Until then `uv run python3 -m melt --version` reports
-the pinned versions.
+produce equivalent plans.
 
 `runtime/storage` implements workspace storage and ownership (backlog
 task T008, SPEC.md section 14). Each workspace resolves its directory
@@ -331,6 +329,35 @@ parameters of the retained result, through
 - `service.publications` for the committed publication receipts
 - `runtime.workspace.publication.verify_staged_outputs` for the
   independent staged-file verification
+
+## Command-line compiler
+
+`melt validate` and `melt compile` are the fixture and diagnostics
+command line of SPEC.md section 11.3 (backlog task T006). Both accept
+`--json` for one structured result object and share the exit code
+convention: 0 on success, 1 for invalid input, and 2 for operational
+failure.
+
+```bash
+uv run --locked python3 -m melt validate fixtures/valid/sales-full.json
+# valid: fixtures/valid/sales-full.json (structural validation only)
+# coverage: Structural validation only. No catalog or registry was supplied, ...
+
+uv run --locked python3 -m melt compile fixtures/valid/sales-full.json \
+    --catalog fixtures/catalog.json --json
+```
+
+`melt validate <file>` performs structural validation alone and always
+reports that limited coverage: the artifact, registration, and mapping
+checks need the trusted catalog and registry. `--catalog` upgrades it
+to the full compiler stages. `melt compile <file> --catalog <file>` is
+full compilation: the catalog file carries the measured artifact
+schemas and the action registry together (`fixtures/catalog.json`), and
+`--json` includes the complete compiled plan with its `planKey`. A
+compile without `--catalog` is an operational failure, because full
+compilation requires the catalog and registry fixtures. An unreadable
+document or a malformed catalog is an operational failure too, never a
+diagnostic against the document.
 
 ## Command-line harness
 
