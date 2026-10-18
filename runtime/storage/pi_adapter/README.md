@@ -139,14 +139,31 @@ IDs produce collisions. The owning service mints through one connection.
 - The adapter is a Node library over `node:sqlite`, while the Melt service
   runtime is Python. The service therefore drives the owning connection in
   a Node helper process behind its own framed channel, the same boundary
-  SPEC.md section 12.1 defines for host communication. The probe worker
-  already demonstrates the pattern: a child process owning the connection,
-  acknowledging only resolved commits.
+  SPEC.md section 12.1 defines for host communication.
 - One workspace database has exactly one owning connection, guarded by the
   operating-system `owner.lock`. No competing persistence path is being
   implemented before this boundary lands (SPEC.md section 14).
 - The JSONL and in-memory storage backends in the adapter are not the Melt
   workspace path; this probe covers the SQLite backend only.
+
+This decision is implemented by backlog task T008:
+
+- `workspace_worker.mjs` is the Node helper. It opens at most one
+  connection per process, refuses a second `open` while one is held, mints
+  every identifier on that connection, and commits record batches
+  atomically. It exits when stdin ends, so a service that dies leaves no
+  orphan holding the database.
+- `runtime/storage` in Python resolves the data root through the platform
+  adapter, creates the section 14 directory tree, takes `owner.lock` with
+  `flock`, and drives the helper over the framed channel. Findings F3
+  through F5 are closed by construction: the fence is the lock, the event
+  loop is never contended by a second writer, and IDs never collide
+  because only one connection mints them.
+- `tests/integration/test_workspace_storage.py` covers the layout, the
+  platform adapter, ownership (including release after `SIGKILL`), the
+  single owning connection, ID minting, restart and crash recovery, the
+  frame limit on both sides, artifact bytes outside the database, and
+  stored-format negotiation.
 
 ## Tested environment and crash model
 

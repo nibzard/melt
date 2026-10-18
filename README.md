@@ -101,10 +101,23 @@ dependency, identity, and layout plans. Parsing entry point:
 
 Compilation performs no project execution, network access, or package
 installation. Equivalent canonical inputs with equal registry versions
-produce equivalent plans. The service, SDK, and runner stay scaffolded
-boundaries. `melt validate` and `melt compile` arrive with backlog task
-T006. Until then `uv run python3 -m melt --version` reports the pinned
-versions.
+produce equivalent plans. `melt validate` and `melt compile` arrive with
+backlog task T006. Until then `uv run python3 -m melt --version` reports
+the pinned versions.
+
+`runtime/storage` implements workspace storage and ownership (backlog
+task T008, SPEC.md section 14). Each workspace resolves its directory
+through a platform adapter (`$XDG_DATA_HOME` or `$HOME/.local/share` on
+Linux), creates the `state.sqlite`, `owner.lock`, `artifacts/`,
+`staging/`, `logs/`, and `backups/` tree, takes the exclusive
+operating-system lock, and drives exactly one owning connection inside
+a Node helper process over the framed channel of section 12.1.
+Artifact bytes stay outside the database. Entry point:
+
+- `runtime.storage.WorkspaceStore.open(platform, workspace_id)`
+
+The SDK and runner stay scaffolded boundaries until backlog tasks T011
+and T015.
 
 ## Contract fixtures
 
