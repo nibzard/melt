@@ -565,8 +565,13 @@ def stage_types(
 # ---------------------------------------------------------------------------
 
 
-def _value_error(parameter, value: Any) -> "str | None":
-    """Return a message when a value violates a parameter definition."""
+def parameter_value_error(parameter, value: Any) -> "str | None":
+    """Return a message when a value violates a parameter definition.
+
+    The workspace service reuses this check when it validates candidate
+    parameter state, so a committed value and a compiled plan agree on
+    one definition of validity (SPEC.md sections 6.1 and 12.3).
+    """
 
     if value is None:
         if not parameter.nullable:
@@ -620,7 +625,7 @@ def stage_state(
                 )
             )
             continue
-        message = _value_error(parameter, state.value)
+        message = parameter_value_error(parameter, state.value)
         if message is not None:
             diagnostics.append(
                 _diagnostic(
@@ -1000,6 +1005,7 @@ __all__ = [
     "build_plan",
     "compile_document",
     "compile_json",
+    "parameter_value_error",
     "stage_decode",
     "stage_references",
     "stage_state",

@@ -116,8 +116,26 @@ Artifact bytes stay outside the database. Entry point:
 
 - `runtime.storage.WorkspaceStore.open(platform, workspace_id)`
 
-The SDK and runner stay scaffolded boundaries until backlog tasks T011
-and T015.
+`runtime/workspace` implements the service core of backlog task T009
+(SPEC.md sections 12.1 through 12.5). `workspace.apply` plans each
+mutation against a private candidate, checks the `expected` revision
+map, validates state migrations, and validates the final candidate once
+through the compiler stages. A successful transaction commits the new
+snapshot, its request receipt, and its change notification in one
+atomic append, so the commit sequence advances once and a retry with
+the same request identifier replays the stored response while reuse
+with different content fails with `E_REQUEST_REUSE`. Requests arrive
+framed: a four-byte big-endian length prefix followed by UTF-8 JSON,
+rejected above the frame limit before any payload is read. Reopening a
+workspace restores the last committed document, state, receipts, and
+notifications without executing project code. Entry points:
+
+- `runtime.workspace.WorkspaceService.open(platform, workspace_id)`
+- `service.apply(envelope)` and `service.serve(read, write)`
+
+The remaining service methods of section 12.6 arrive with backlog task
+T010. The SDK and runner stay scaffolded boundaries until backlog tasks
+T011 and T015.
 
 ## Contract fixtures
 
@@ -134,5 +152,6 @@ and T015.
   schemas and the `sales-script-v1` registration) for full compilation.
 
 `tests/contract/test_fixtures.py` runs the set. Entries enforced by
-the compiler (T005) or the service (T009) are recorded as pending with
-their owning task in the manifest.
+the compiler (T005) or the service (T009) name their owning task in
+the manifest; the suite drives them through full compilation and a
+seeded workspace service respectively.

@@ -193,7 +193,14 @@ class Snapshot(RecordBase):
     """A full workspace snapshot (section 12.4).
 
     The snapshot separates the document from runtime records: entity
-    revisions, parameter state, and active runs.
+    revisions, parameter state, and active runs. The service commits one
+    snapshot with every successful mutation, so reopening a workspace
+    restores the last committed definitions and state without executing
+    project code (SPEC.md section 14).
+
+    `incarnations` counts how often each parameter identifier was
+    created. Deleting and recreating a parameter starts a new identity
+    incarnation, so old events cannot target the new one (section 12.3).
     """
 
     recordType: Literal["snapshot"]
@@ -204,6 +211,9 @@ class Snapshot(RecordBase):
     document: Document
     entityRevisions: dict[NonEmptyStr, PositiveSafeInt]
     parameterStates: dict[EntityId, ParameterState] = Field(
+        default_factory=dict
+    )
+    incarnations: dict[EntityId, PositiveSafeInt] = Field(
         default_factory=dict
     )
     activeRuns: tuple[RunRecord, ...] = ()

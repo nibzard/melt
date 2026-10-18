@@ -52,6 +52,7 @@ from runtime.compiler.compiler import (
     build_plan,
     compile_document,
     compile_json,
+    parameter_value_error,
     stage_decode,
     stage_references,
     stage_state,

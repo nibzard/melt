@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import copy
+import os
+import shlex
+import tempfile
+import uuid
 from pathlib import Path
 
 import pytest
@@ -11,11 +15,70 @@ import pytest
 # substitutes the hash of real bytes (SPEC.md section 16).
 FIXTURE_HASH = "sha256:" + "1a" * 32
 
+WORKSPACE_SERVICE_ROOT_SUFFIX = "-workspace-service"
+
 
 @pytest.fixture(scope="session")
 def repo_root() -> Path:
     """Return the repository root that contains pyproject.toml."""
     return Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(scope="session")
+def service_root() -> Path:
+    """A private root for workspace service tests, outside the repository.
+
+    The directory name carries the Looper resource prefix, and its
+    removal is registered with the Looper cleanup file before anything
+    is created. The registered guard removes the directory only when its
+    path still carries this run's prefix, so cleanup never removes a
+    directory it does not own. Entries already registered by setup are
+    preserved: registration is skipped when the marker is present.
+    """
+
+    prefix = os.environ.get("LOOPER_RESOURCE_PREFIX", "melt")
+    root = Path(tempfile.gettempdir()) / f"{prefix}{WORKSPACE_SERVICE_ROOT_SUFFIX}"
+    _register_root_cleanup(root, prefix)
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _register_root_cleanup(root: Path, prefix: str) -> None:
+    cleanup_file = os.environ.get("LOOPER_RESOURCE_CLEANUP_FILE")
+    if not cleanup_file:
+        return
+    path = Path(cleanup_file)
+    marker = f"# workspace-service-root: {root}"
+    existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+    if marker in existing:
+        return
+    header = existing or (
+        "#!/usr/bin/env bash\n"
+        "# Looper resource cleanup. Registered resources only; idempotent.\n"
+        "set -u\n"
+    )
+    quoted = shlex.quote(str(root))
+    path.write_text(
+        header
+        + f"\n{marker}\n"
+        + f"if [ -d {quoted} ]; then\n"
+        + f"  case {quoted} in\n"
+        + f"    *{shlex.quote(prefix)}{WORKSPACE_SERVICE_ROOT_SUFFIX}) rm -rf -- {quoted} ;;\n"
+        + "  esac\n"
+        + "fi\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.fixture
+def service_adapter(service_root: Path):
+    """One isolated data root per test."""
+
+    from runtime.storage import PlatformAdapter
+
+    return PlatformAdapter.with_root(
+        service_root / f"case-{uuid.uuid4().hex[:12]}"
+    )
 
 
 @pytest.fixture(scope="session")

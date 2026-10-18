@@ -20,7 +20,10 @@ Manifest entry fields:
     task T005 enforces these entries; `tests/contract/test_fixtures.py`
     runs them through `runtime.compiler.compile_document`.
   - `service`: the command envelope is well formed. The workspace
-    service rejects its semantics. This lands with backlog task T009.
+    service rejects its semantics against the state the envelope's
+    `expected` map addresses. The service of backlog task T009 enforces
+    these entries; `tests/contract/test_fixtures.py` applies each
+    envelope to a seeded `runtime.workspace.WorkspaceService`.
 - `ownerTask`: the backlog task that owns a pending check.
 - `requires`: extra inputs the check needs, such as the catalog.
 
