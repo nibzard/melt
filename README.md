@@ -19,8 +19,8 @@ Melt keeps the inputs, parameters, views, and published results together in a sa
 
 Melt is for developers building data tools and agent interfaces with durable state.
 The repository implements the language, compiler, workspace service, and Python execution loop on Linux.
-**The desktop application is still planned.** Today, you use a command-line harness and exported images.
-The [first native host source](native/README.md) is available for macOS build and integration checks.
+**The native host is an early development prototype.** Build it on macOS to operate saved workspaces.
+The command-line harness and exported images work on Linux.
 
 ## One possible interface
 
@@ -32,6 +32,12 @@ An agent could add the risk inspector without resetting the selected supplier.
 *Interface concept, not a screenshot of a shipped application.*
 [Example 3](examples/03-linked-views/README.md) demonstrates the state changes through terminal commands and a static graph export.
 The window, clickable panes, and agent panel illustrate a future host.
+
+The [native prototype](native/README.md) already operates the café workspace through real AppKit controls:
+
+![Native café prototype after reopening: saved controls, profit plot, daily table, and break-even view.](docs/assets/native-cafe.png)
+
+*Actual window content captured in macOS CI with synthetic data. The development host has no live agent prompt yet.*
 
 ## Try it
 
@@ -154,7 +160,7 @@ Its [view definitions](examples/02-sales-analysis/views.json) connect the action
 | Persistence | Saved artifacts, revision checks, retry receipts, and restart recovery. |
 | Shared selection and output subscriptions | Implemented under experimental `melt/semantic-draft-1`, with explicit migration from v0.1. |
 | Rendering | Terminal inspection, PNG plots, and static SVG graph exports through the Pele adapter. |
-| Native desktop host | First AppKit host source and Linux service-boundary tests. macOS build and interaction checks remain unverified. |
+| Native desktop host | Prototype verified in macOS CI for controls, linked views, saving, closing, and reopening. Full native release acceptance remains open. |
 
 The semantic draft adds shared object references and views that follow an action's saved output.
 It is an experimental language version. Existing v0.1 workspaces keep their behavior until you explicitly migrate them.

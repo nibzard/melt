@@ -4,8 +4,8 @@ This directory contains the first AppKit host source for macOS 13 or later.
 It uses the existing Python compiler, workspace service, runner, and artifact store.
 It does not create a second source of workspace state.
 
-**Status:** Source and Linux service-boundary tests exist. The AppKit sources have not been compiled or exercised on this Linux machine.
-The native release gate remains open.
+**Status:** The prototype compiles and passes native workflow checks on macOS 15 ARM in [CI](https://github.com/nibzard/melt/actions/runs/39244987090/job/118034632407).
+The build targets macOS 13 or later; macOS 13 itself has not been tested. The full native release gate remains open.
 
 ## Build on macOS
 
@@ -24,7 +24,10 @@ open -a "$PWD/build/native/Melt.app" "/tmp/little-hours/Little Hours.meltapp"
 It also compiles checks for launcher validation, controller continuity during table updates, and recovery after a missing result.
 The checks then create a café workspace, change its controls through the native host, run the calculation,
 save a launcher, close the window, and reopen it with matching state, plans, and displayed results.
-A separate run-history check verifies that reopening did not execute the calculation again.
+The checks also select a supplier through the native control and verify both inspectors.
+A LaunchServices check opens the built application, quits it, and opens the saved file through its default handler.
+Run-history checks verify that reopening and selection do not execute project code.
+Window captures are written to `build/native/artifacts/`.
 The resulting bundle references this checkout and its Python environment. Keep both in place.
 This is a development bundle, not a standalone distribution.
 
@@ -61,16 +64,15 @@ It does not contain a copy, grant new authority, install code, or implement port
 
 ## Checks still required
 
-Run the native checks on macOS before claiming this host works there.
-Then verify the café workflow manually:
+The automated checks cover the café workflow and default file handler.
+Complete the remaining native acceptance work before claiming a release:
 
-1. Open the launcher and inspect all four views without a new run.
-2. Change both parameters and run the calculation; verify consistent outputs.
-3. Save a reference on the desktop and close the window during idle and active work.
-4. Open the reference again; verify state restoration and no automatic execution.
-5. Add or move a pane through **Apply change**; verify focus and controller continuity.
-6. Open a linked-views workspace and verify shared selection and both inspectors.
-7. Check keyboard input, input methods, accessibility, small-window behavior, and missing artifacts.
+1. Verify keyboard input, input methods, clipboard, and accessibility with the native controls.
+2. Add, move, and hide panes; verify focus, controller continuity, and small-window behavior.
+3. Exercise missing environments, unavailable artifacts, and conflicts through the native interface.
+4. Add paging, sorting, filtering, plot navigation, Markdown rendering, and split-position persistence.
+5. Integrate Ghostty and the live agent prompt through tested host adapters.
+6. Record native performance measurements and test packaging on a clean Mac.
 
 The host currently displays Markdown as source text and only the first 64 rows of each table.
 Table paging controls, sorting, filtering, plot zoom/export, graph edges and Pele hit regions, split-position persistence,

@@ -44,8 +44,9 @@ Use the parameter fields and **Run scenario** control to calculate another scena
 Use **Save to Desktop** to save another reference to the same workspace.
 Closing and opening the host must restore results without running the calculation.
 
-The native host source has not been compiled or exercised in the Linux development environment.
 The example and its service boundary run on Linux.
+The [native checks](https://github.com/nibzard/melt/actions/runs/39244987090/job/118034632407) pass on macOS 15 ARM.
+They cover the visible controls, saved state, linked inspectors, and default desktop file handler.
 
 ## Calculation assumptions
 

@@ -20,7 +20,8 @@ scripts/        developer commands
 ```
 
 The Linux runtime stays independent of `native/`.
-The [first native host source](../native/README.md) now lives there, with macOS compilation and interaction checks still pending.
+The [native prototype](../native/README.md) now lives there, with compilation and workflow checks on macOS 15 ARM.
+Full native release acceptance remains open.
 The Linux gate does not require Apple tools (SPEC.md sections 2.2 and 20).
 
 ## Toolchain

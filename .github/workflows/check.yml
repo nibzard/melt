@@ -2,7 +2,7 @@ name: Melt checks
 
 on:
   push:
-    branches: [main, codex/rfc001-native-cafe]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
