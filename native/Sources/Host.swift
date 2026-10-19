@@ -32,7 +32,9 @@ final class Workspace: NSWindowController, NSWindowDelegate {
     private let bridge: Bridge
     private var timer: Timer?
     private var busy = false
-    var isReady: Bool { !busy && !closing }
+    private var pendingRequests: [() -> Void] = []
+    private var shutdownStarted = false
+    var isReady: Bool { !busy && pendingRequests.isEmpty && !closing }
     private(set) var closing = false, serviceClosed = false
     var afterClose: (() -> Void)?
     private var snapshot: Object = [:], planned: Object = [:]
@@ -78,14 +80,34 @@ final class Workspace: NSWindowController, NSWindowDelegate {
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 
     func send(_ message: Object, quiet: Bool = false, completion: ((Object) -> Void)? = nil) {
+        sendWhenReady({ message }, quiet: quiet, completion: completion)
+    }
+    private func sendWhenReady(_ message: @escaping () -> Object, quiet: Bool = false,
+                               completion: ((Object) -> Void)? = nil) {
         guard !closing else { return }
-        guard !busy else {
-            if !quiet { showError("Wait for the current change to finish, then try again.") }; return
+        pendingRequests.append { [weak self] in
+            self?.performSend(message(), quiet: quiet, completion: completion)
         }
+        sendNext()
+    }
+    private func sendNext() {
+        guard !busy else { return }
+        if !pendingRequests.isEmpty {
+            pendingRequests.removeFirst()()
+        } else if closing, !shutdownStarted {
+            shutdownStarted = true
+            bridge.close { [weak self] in
+                self?.serviceClosed = true
+                self?.afterClose?()
+                self?.afterClose = nil
+            }
+        }
+    }
+    private func performSend(_ message: Object, quiet: Bool, completion: ((Object) -> Void)?) {
         busy = true
         if !quiet { status.textColor = .secondaryLabelColor; status.stringValue = "Working… Changes are not yet acknowledged." }
         bridge.request(message) { [weak self] result in
-            guard let self = self, !self.closing else { return }
+            guard let self = self else { return }
             self.busy = false
             switch result {
             case .failure(let error): self.showError(error.localizedDescription)
@@ -94,11 +116,17 @@ final class Workspace: NSWindowController, NSWindowDelegate {
                 if response["ok"] as? Bool != true { self.showError(String(describing: response["errors"] ?? "The change failed.")) }
                 completion?(response)
             }
+            self.sendNext()
         }
     }
     func sendCommand(_ command: Object) {
-        var message = command; message["operation"] = "command"; message["requestId"] = UUID().uuidString
-        send(message) { [weak self] response in
+        sendCommandWhenReady { command }
+    }
+    private func sendCommandWhenReady(_ command: @escaping () -> Object) {
+        sendWhenReady({
+            var message = command(); message["operation"] = "command"; message["requestId"] = UUID().uuidString
+            return message
+        }) { [weak self] response in
             if response["ok"] as? Bool == true { self?.send(["operation": "drive"]) }
         }
     }
@@ -150,9 +178,11 @@ final class Workspace: NSWindowController, NSWindowDelegate {
         return split
     }
     func setParameter(_ id: String, value: Any) {
-        let revision = object(object(snapshot["parameterStates"])[id])["revision"] as? Int ?? 0
-        sendCommand(["method": "workspace.apply", "expected": ["state/\(id)": revision],
-                     "operations": [["op": "parameter.set", "id": id, "value": value]]])
+        sendCommandWhenReady { [self] in
+            let revision = object(object(snapshot["parameterStates"])[id])["revision"] as? Int ?? 0
+            return ["method": "workspace.apply", "expected": ["state/\(id)": revision],
+                    "operations": [["op": "parameter.set", "id": id, "value": value]]]
+        }
     }
     func activate(projection: String, control: String) {
         let revisions = object(snapshot["entityRevisions"])
@@ -231,11 +261,7 @@ final class Workspace: NSWindowController, NSWindowDelegate {
     func showError(_ message: String) { status.stringValue = message; status.textColor = .systemRed }
     func windowWillClose(_ notification: Notification) {
         closing = true; timer?.invalidate()
-        bridge.close { [weak self] in
-            self?.serviceClosed = true
-            self?.afterClose?()
-            self?.afterClose = nil
-        }
+        sendNext()
     }
 }
 

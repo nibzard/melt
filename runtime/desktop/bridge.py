@@ -164,6 +164,53 @@ class DesktopBridge:
         return {"ok": True, "result": result, "view": self.view()}
 
 
+def _json_bytes(value) -> bytes:
+    return json.dumps(value, allow_nan=False, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def _fit_pane(pane: dict, budget: int) -> dict:
+    """Limit a preview by its encoded size, preserving saved artifact bytes."""
+    if len(_json_bytes(pane)) <= budget:
+        return pane
+    if "text" in pane or "table" in pane:
+        def preview(count):
+            if "text" in pane:
+                return {**pane, "text": pane["text"][:count], "truncated": True}
+            return {**pane, "table": {**pane["table"],
+                "rows": pane["table"]["rows"][:count], "hasMore": True}}
+
+        low, high = 0, len(pane["text"] if "text" in pane else pane["table"]["rows"])
+        while low < high:
+            middle = (low + high + 1) // 2
+            if len(_json_bytes(preview(middle))) <= budget:
+                low = middle
+            else:
+                high = middle - 1
+        result = preview(low)
+        if len(_json_bytes(result)) <= budget:
+            return result
+    return {"status": "unavailable", "message": "This pane preview exceeds the host frame limit. Inspect its saved source with the harness."}
+
+
+def _encode_answer(answer: dict) -> bytes:
+    payload = _json_bytes(answer)
+    if len(payload) > FRAME_LIMIT and "view" in answer:
+        # Reserve space for the snapshot and plan, then share the remaining
+        # bytes across previews. Never truncate the durable workspace state.
+        view = answer["view"]
+        panes = view["panes"]
+        bounded = {**answer, "view": {**view, "panes": {}}}
+        remaining = FRAME_LIMIT - len(_json_bytes(bounded))
+        for index, (identity, pane) in enumerate(panes.items()):
+            overhead = len(_json_bytes(identity)) + 2  # Key, colon, and comma.
+            budget = remaining // (len(panes) - index) - overhead
+            preview = _fit_pane(pane, budget)
+            bounded["view"]["panes"][identity] = preview
+            remaining -= len(_json_bytes(preview)) + overhead
+        payload = _json_bytes(bounded)
+    return encode_frame(payload, limit=FRAME_LIMIT)
+
+
 def serve(bridge: DesktopBridge, reader, writer):
     while True:
         first = reader.read(1)
@@ -180,7 +227,7 @@ def serve(bridge: DesktopBridge, reader, writer):
         payload = read_frame(read, limit=FRAME_LIMIT)
         try:
             answer = bridge.handle(parse_json(payload.decode("utf-8")))
-            encoded = encode_frame(json.dumps(answer, allow_nan=False).encode(), limit=FRAME_LIMIT)
+            encoded = _encode_answer(answer)
         except Exception as error:
             encoded = encode_frame(json.dumps({"ok": False, "errors": [{"message": str(error)}]}).encode())
         writer.write(encoded)

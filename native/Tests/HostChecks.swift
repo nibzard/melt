@@ -47,6 +47,21 @@ import AppKit
             state: ["currency": ["value": "eur", "revision": 2]], data: ["status": "ready", "text": ""])
         precondition(popup === control("currency", in: selectPane.view))
         precondition(popup.titleOfSelectedItem == "Euros")
+        func matchingControls(_ id: String, in view: NSView) -> [NSControl] {
+            let match = (view as? NSControl).flatMap { $0.identifier?.rawValue == id ? $0 : nil }
+            return (match.map { [$0] } ?? []) + view.subviews.flatMap { matchingControls(id, in: $0) }
+        }
+        let duplicatePane = Pane(identity: "duplicates", host: nil)
+        let duplicatePlan: Object = ["renderer": ["id": "melt.document", "contractVersion": 1],
+            "controls": [["id": "first", "kind": "toggle", "label": "First", "parameter": "shared"],
+                         ["id": "second", "kind": "toggle", "label": "Second", "parameter": "shared"]]]
+        duplicatePane.update(definition: selectDefinition, plan: duplicatePlan,
+            state: ["shared": ["value": true, "revision": 1]], data: ["status": "ready", "text": ""])
+        let toggles = matchingControls("shared", in: duplicatePane.view).compactMap { $0 as? NSButton }
+        precondition(toggles.count == 2 && toggles.allSatisfy { $0.state == .on })
+        duplicatePane.update(definition: selectDefinition, plan: duplicatePlan,
+            state: ["shared": ["value": false, "revision": 2]], data: ["status": "ready", "text": ""])
+        precondition(toggles.allSatisfy { $0.state == .off })
         print("Native launcher and pane continuity checks passed.")
         guard CommandLine.arguments.count == 5 else {
             throw HostError.message("Pass the café launcher, runtime configuration, artifact directory, and linked-views launcher.")
@@ -88,11 +103,34 @@ import AppKit
               let run = control("summary/run", in: content) as? NSButton else {
             throw HostError.message("The visible café controls are missing.")
         }
+        let sharedPane = Pane(identity: "shared-controls", host: firstHost)
+        let sharedPlan: Object = ["renderer": ["id": "melt.document", "contractVersion": 1],
+            "controls": [["id": "first", "kind": "toggle", "label": "First", "parameter": "open_mondays"],
+                         ["id": "second", "kind": "toggle", "label": "Second", "parameter": "open_mondays"]]]
+        sharedPane.update(definition: selectDefinition, plan: sharedPlan,
+            state: parameters(firstHost), data: ["status": "ready", "text": ""])
+        let sharedToggles = matchingControls("open_mondays", in: sharedPane.view).compactMap { $0 as? NSButton }
+        precondition(sharedToggles.count == 2)
+        // The saved value is false. The first toggle must send its own
+        // new value while the second toggle still has the old value.
+        sharedToggles[0].performClick(nil)
+        try wait("first shared toggle acknowledgement") {
+            firstHost.isReady && object(parameters(firstHost)["open_mondays"])["value"] as? Bool == true
+        }
+        firstHost.setParameter("open_mondays", value: false)
+        try wait("restore Monday value") {
+            firstHost.isReady && object(parameters(firstHost)["open_mondays"])["value"] as? Bool == false
+        }
         cost.stringValue = "0"
         cost.delegate?.controlTextDidEndEditing?(Notification(name: NSControl.textDidEndEditingNotification, object: cost))
         try wait("bean cost acknowledgement") { firstHost.isReady && object(parameters(firstHost)["bean_increase"])["value"] as? Int == 0 }
         mondays.performClick(nil)
         try wait("Monday acknowledgement") { firstHost.isReady && object(parameters(firstHost)["open_mondays"])["value"] as? Bool == true }
+        // Queue two edits during a poll. Capture each revision only when
+        // its command reaches the service, then run with the final values.
+        firstHost.send(["operation": "poll"])
+        firstHost.setParameter("bean_increase", value: 10)
+        firstHost.setParameter("bean_increase", value: 0)
         run.performClick(nil)
         try wait("native scenario publication") { firstHost.isReady && summary(firstHost).contains("€3,280.00") }
         let savedView = firstHost.currentView
@@ -115,8 +153,19 @@ import AppKit
         precondition(jsonSignature(savedView["plan"] ?? [:]) == jsonSignature(reopenedView["plan"] ?? [:]))
         precondition(jsonSignature(savedView["panes"] ?? [:]) == jsonSignature(reopenedView["panes"] ?? [:]))
         try capture(secondHost, name: "after-reopen")
+        let previousRevision = object(parameters(secondHost)["bean_increase"])["revision"] as? Int ?? 0
+        secondHost.send(["operation": "poll"])
+        secondHost.setParameter("bean_increase", value: 10)
+        secondHost.setParameter("bean_increase", value: 0)
         secondHost.close()
         try wait("reopened host shutdown") { secondHost.serviceClosed }
+        let drainedHost = try Workspace(app: savedApp, configuration: configuration)
+        try wait("queued edits survive window close") {
+            let state = object(parameters(drainedHost)["bean_increase"])
+            return drainedHost.isReady && state["value"] as? Int == 0 && state["revision"] as? Int == previousRevision + 2
+        }
+        drainedHost.close()
+        try wait("drained host shutdown") { drainedHost.serviceClosed }
         print("Native café edit, run, save, close, and reopen checks passed.")
 
         let linkedApp = try LocalApp(Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[4])))

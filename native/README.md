@@ -49,6 +49,10 @@ Programmatic proposals use the same service validation as user commands and cann
 
 The host starts one owned `python3 -m runtime.desktop` process per workspace.
 Requests and responses use private pipes with four-byte length prefixes and a 1 MiB frame limit.
+Pane previews share the remaining response space after the snapshot and plan.
+Large text and table previews show a partial result; saved artifacts remain complete.
+User commands wait for earlier requests. Parameter edits use the acknowledged revision when sent.
+Closing a window drains queued commands before stopping its service.
 The service remains the sole writer and owns revisions, scheduling, permissions, and publication.
 No network listener is created.
 

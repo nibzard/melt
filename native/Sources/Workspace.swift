@@ -55,7 +55,7 @@ final class Pane: NSViewController, NSTextFieldDelegate {
     private let heading = label("", size: 16, bold: true)
     private var definition: Object = [:], state: Object = [:], data: Object = [:]
     private var signature = ""
-    private var editors: [String: NSControl] = [:]
+    private var editors: [String: (parameter: String, control: NSControl)] = [:]
     private var table: DataTable?
     private let tableNotice = label("", size: 10)
     private let textView = NSTextView(), imageView = NSImageView()
@@ -98,8 +98,9 @@ final class Pane: NSViewController, NSTextFieldDelegate {
             for control in definitions { addControl(control) }
             signature = newSignature
         }
-        for (key, editor) in editors {
-            let value = object(state[key])["value"]
+        for entry in editors.values {
+            let editor = entry.control
+            let value = object(state[entry.parameter])["value"]
             if let popup = editor as? NSPopUpButton {
                 if let item = popup.itemArray.first(where: { $0.representedObject as? String == string(value) }) {
                     popup.select(item)
@@ -131,7 +132,7 @@ final class Pane: NSViewController, NSTextFieldDelegate {
                 body.addArrangedSubview(tableNotice)
             }
             table?.update(object(data["table"]))
-            tableNotice.stringValue = object(data["table"])["hasMore"] as? Bool == true ? "Partial table: showing the first 64 rows. Use the harness to read later pages." : ""
+            tableNotice.stringValue = object(data["table"])["hasMore"] as? Bool == true ? "Partial table: showing \(array(object(data["table"])["rows"]).count) rows. Use the harness to read later pages." : ""
         case "document":
             if textView.enclosingScrollView == nil {
                 let scroll = NSScrollView(); scroll.hasVerticalScroller = true
@@ -145,7 +146,7 @@ final class Pane: NSViewController, NSTextFieldDelegate {
                 scroll.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
                 scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 100).isActive = true
             }
-            let text = string(data["text"]) + ((data["truncated"] as? Bool == true) ? "\n\n[Partial document: showing the first 48,000 characters.]" : "")
+            let text = string(data["text"]) + ((data["truncated"] as? Bool == true) ? "\n\n[Partial document: more text is available in the saved source.]" : "")
             if lastText != text { textView.string = text; lastText = text }
         case "plot":
             if imageView.superview == nil {
@@ -198,6 +199,7 @@ final class Pane: NSViewController, NSTextFieldDelegate {
     }
     private func addControl(_ value: Object) {
         let kind = string(value["kind"]), title = string(value["label"]), parameter = string(value["parameter"])
+        let controlID = string(value["id"])
         if kind == "button" {
             let id = string(value["id"])
             let button = ClickButton(title) { [weak self] in self?.host?.activate(projection: self?.identity ?? "", control: id) }
@@ -209,12 +211,12 @@ final class Pane: NSViewController, NSTextFieldDelegate {
         row.addArrangedSubview(label(title))
         if kind == "toggle" {
             let button = ClickButton("") { [weak self] in
-                guard let self = self, let button = self.editors[parameter] as? NSButton else { return }
+                guard let self = self, let button = self.editors[controlID]?.control as? NSButton else { return }
                 self.host?.setParameter(parameter, value: button.state == .on)
             }
             button.setButtonType(.switch); button.setAccessibilityLabel(title)
             button.identifier = NSUserInterfaceItemIdentifier(parameter)
-            editors[parameter] = button; row.addArrangedSubview(button)
+            editors[controlID] = (parameter, button); row.addArrangedSubview(button)
         } else if kind == "select" {
             let popup = NSPopUpButton()
             for option in array(value["options"]).map(object) {
@@ -223,12 +225,12 @@ final class Pane: NSViewController, NSTextFieldDelegate {
             }
             popup.identifier = NSUserInterfaceItemIdentifier(parameter)
             popup.target = self; popup.action = #selector(selectChanged(_:)); popup.setAccessibilityLabel(title)
-            editors[parameter] = popup; row.addArrangedSubview(popup)
+            editors[controlID] = (parameter, popup); row.addArrangedSubview(popup)
         } else {
             let field = NSTextField(string: "")
             field.identifier = NSUserInterfaceItemIdentifier(parameter); field.delegate = self
             field.setAccessibilityLabel(title); field.widthAnchor.constraint(equalToConstant: 100).isActive = true
-            editors[parameter] = field; row.addArrangedSubview(field)
+            editors[controlID] = (parameter, field); row.addArrangedSubview(field)
         }
         controls.addArrangedSubview(row)
     }

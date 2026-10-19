@@ -12,7 +12,7 @@ import pytest
 
 from melt.schema.canonical import model_to_wire
 from melt.schema.commands import decode_frame, encode_frame, read_frame, MeltCommandError
-from runtime.desktop.bridge import DesktopBridge, FRAME_LIMIT, launcher, serve
+from runtime.desktop.bridge import DesktopBridge, FRAME_LIMIT, _encode_answer, launcher, serve
 from runtime.storage import storage_worker_available
 
 AVAILABLE, REASON = storage_worker_available()
@@ -298,3 +298,68 @@ def test_graph_events_use_displayed_revisions_and_update_both_inspectors(tmp_pat
         assert not bridge.session.service.runs
     finally:
         bridge.close()
+
+
+def test_large_document_previews_share_the_response_budget(tmp_path):
+    bridge = DesktopBridge(tmp_path, "large-preview")
+    try:
+        document = {"language": "melt/v0.1", "workspaceId": "large-preview", "title": "Large preview",
+            "sources": {}, "parameters": {}, "actions": {}, "projections": {}, "bindings": {},
+            "layout": {"root": None, "hidden": []}}
+        created = bridge.session.service.create_workspace(document, "create-large-preview")
+        assert created.ok, created.errors
+        text = ('A😀\n"' * 12_000)[:48_000]
+        token = bridge.session.service.capture_artifact_token(text.encode(), "text/plain")
+        imported = bridge.session.request("source.import", expected={"sources/text": 0},
+            payload={"sourceId": "text", "artifactToken": token.token, "originLabel": "large.txt"})
+        assert imported["ok"], imported
+        identities = [f"document-{index}" for index in range(32)]
+        operations = [{"op": "entity.create", "collection": "projections", "id": identity,
+            "value": {"kind": "document", "title": identity,
+                "source": {"sourceId": "text", "version": 1}, "config": {"format": "plain"}, "controls": []}}
+            for identity in identities]
+        operations.append({"op": "layout.replace", "value": {
+            "root": {"kind": "pane", "projection": identities[0]}, "hidden": identities[1:]}})
+        applied = bridge.session.request("workspace.apply",
+            expected={**{f"projections/{identity}": 0 for identity in identities}, "layout": 1}, operations=operations)
+        assert applied["ok"], applied
+        for operation in ("snapshot", "poll"):
+            response = io.BytesIO()
+            serve(bridge, io.BytesIO(encode_frame(json.dumps({"operation": operation}).encode())), response)
+            payload, end = decode_frame(response.getvalue())
+            assert len(payload) <= FRAME_LIMIT
+            assert end == len(response.getvalue())
+            answer = json.loads(payload)
+            assert answer["ok"], answer
+            assert answer["view"]["snapshot"] == bridge.view()["snapshot"]
+            assert answer["view"]["plan"] == bridge.view()["plan"]
+            assert len(answer["view"]["panes"]) == 32
+            for pane in answer["view"]["panes"].values():
+                assert pane["status"] == "ready"
+                assert pane["text"] and text.startswith(pane["text"])
+                assert pane["truncated"]
+        artifact = bridge.session.service.store.artifacts.read(
+            answer["view"]["snapshot"]["document"]["sources"]["text"]["versions"]["1"]["artifact"])
+        assert artifact.decode() == text
+    finally:
+        bridge.close()
+
+
+def test_large_table_previews_preserve_complete_rows():
+    rows = [[str(index), "😀" * 5000] for index in range(64)]
+    table = {"columns": ["id", "text"], "rows": rows, "hasMore": False, "totalRows": 64}
+    answer = {"ok": True, "view": {"snapshot": {}, "plan": {},
+        "panes": {"table": {"status": "ready", "table": table},
+                  "summary": {"status": "ready", "text": "Small summary", "truncated": False}}}}
+    frame = _encode_answer(answer)
+    payload, end = decode_frame(frame)
+    assert end == len(frame)
+    assert len(payload) <= FRAME_LIMIT
+    panes = json.loads(payload)["view"]["panes"]
+    preview = panes["table"]["table"]
+    assert 0 < len(preview["rows"]) < 64
+    assert preview["rows"] == rows[:len(preview["rows"])]
+    assert preview["totalRows"] == 64
+    assert preview["hasMore"]
+    assert panes["summary"] == answer["view"]["panes"]["summary"]
+    assert table["rows"] == rows and not table["hasMore"]
