@@ -1,0 +1,8 @@
+Fix the three defects found in PR 1: commands lost during requests,
+large pane previews exceeding the response limit, and controls sharing
+a parameter overwriting each other. Queue commands until acknowledgement,
+drain the queue on close, and keep graph events tied to displayed guards.
+
+The bridge regression suite passes all 12 tests on Linux. Native checks
+cover queued edits, close and reopen, and shared toggle controls. The
+macOS CI job must pass before merge.
