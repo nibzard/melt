@@ -15,8 +15,9 @@ keep that record honest against the tree it describes:
   the three hero rows.
 - The compiler and reader numbers the record quotes still agree with
   `docs/performance/round-1-linux.json` and its own verdicts.
-- The no-macOS claim still matches the tree: no `native/` sources, a
-  skip-marked round-2 placeholder, and resolvable Linux tools only.
+- The no-macOS claim matches the recorded tree: no `native/` sources
+  at that revision, a skip-marked round-2 placeholder, and resolvable
+  Linux tools only. Later native sources do not rewrite that history.
 - The round boundary stays scoped to this gate, and its open-work list
   holds only tracked work that is still open.
 
@@ -235,8 +236,13 @@ def test_the_no_macos_claim_matches_the_tree():
     for tool in linux_only["toolsRequired"]:
         assert shutil.which(tool), f"recorded tool {tool} does not resolve"
 
-    # Round 1 keeps no native sources and one explicit placeholder.
-    assert not (REPO / "native").exists()
+    # Check the historical claim against the recorded revision. Later
+    # round-2 source additions must not invalidate a completed Linux gate.
+    native_at_gate = subprocess.run(
+        ["git", "ls-tree", record["verifiedTree"], "--", "native"],
+        cwd=REPO, capture_output=True, text=True, check=True,
+    )
+    assert native_at_gate.stdout == ""
     placeholder = (REPO / "tests" / "native" / "test_native_round2.py").read_text(
         encoding="utf-8"
     )

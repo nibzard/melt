@@ -24,10 +24,12 @@ make pele-setup
 | [1. Saved views](01-saved-views/README.md) | `uv run --locked python3 examples/01-saved-views/run.py` | Import data and restore a table and note without computation |
 | [2. Sales analysis](02-sales-analysis/README.md) | `uv run --locked python3 examples/02-sales-analysis/run.py` | Change a parameter and publish a matching table and plot |
 | [3. Linked views](03-linked-views/README.md) | `uv run --locked python3 examples/03-linked-views/run.py` | Share selection between views and add another observer |
+| [4. Little Hours café](04-cafe/README.md) | `uv run --locked python3 examples/04-cafe/run.py` | Save a scenario, add a view without execution, and create a local launcher |
 
 The second example grants execution permission to its included Python
 script inside its new workspace. Read `02-sales-analysis/analyze.py`
 before running it. The first and third examples run no project action.
+The fourth example also grants permission to its included calculation, `04-cafe/analyze.py`.
 No example requires a model account or credentials.
 
 ## Saved results
@@ -56,5 +58,5 @@ Each harness command opens and closes the workspace. Later commands restore
 committed state from disk. Example files stay editable: change their CSV,
 JSON definitions, or analysis script, then run again in a fresh directory.
 
-Example 3 uses the experimental `melt/semantic-draft-1` language.
+Examples 3 and 4 use the experimental `melt/semantic-draft-1` language.
 Examples 1 and 2 use `melt/v0.1`.

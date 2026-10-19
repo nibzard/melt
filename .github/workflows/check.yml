@@ -1,0 +1,57 @@
+name: Melt checks
+
+on:
+  push:
+    branches: [main, codex/rfc001-native-cafe]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: melt-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22.19.0'
+      - run: python3 -m pip install uv==0.10.0
+      - run: make check
+
+  native:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Compile the AppKit host and checks
+        run: |
+          mkdir -p build/native
+          xcrun swiftc -parse-as-library -swift-version 5 -target arm64-apple-macosx13.0 -framework AppKit native/Sources/*.swift -o build/native/Melt
+          xcrun swiftc -parse-as-library -swift-version 5 -D MELT_NATIVE_TESTS -target arm64-apple-macosx13.0 -framework AppKit native/Sources/*.swift native/Tests/HostChecks.swift -o build/native/HostChecks
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22.19.0'
+      - run: python3 -m pip install uv==0.10.0
+      - run: make probe-setup pele-setup
+      - run: ./native/check.sh
+      - name: Verify generated Swift models
+        run: swift protocol/generated/MeltDocument.swift "$PWD"

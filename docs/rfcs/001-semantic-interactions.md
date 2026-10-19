@@ -2,6 +2,9 @@
 
 Status: Proposed; not part of `melt/v0.1`.
 
+Implementation: Experimental Linux implementation under `melt/semantic-draft-1`.
+The [acceptance audit](../gates/rfc-001-audit.md) records the verified scope and remaining native work.
+
 A request for comments (RFC) records a proposed extension and its acceptance tests. This RFC follows the execution foundation in [SPEC.md](../../SPEC.md). It makes the graph-and-inspector example in [note.md](../../note.md) a separate architectural milestone.
 
 ## 1. Decision summary
@@ -187,15 +190,22 @@ Observers are selectors in the compiled dependency plan. They read state and sou
 {
   "projections": {
     "network": {
-      "renderer": {"id": "diagram.flowchart", "version": 1},
-      "graph": "supplier-network",
+      "kind": "graph",
+      "title": "Supplier network",
+      "source": {"sourceId": "supplier-network", "version": 1},
+      "collection": "suppliers",
+      "config": {"nodeLabels": "show"},
+      "controls": [],
       "observe": {
         "highlight": {"state": "selected_supplier"}
       }
     },
     "inspector": {
-      "renderer": {"id": "record", "version": 1},
+      "kind": "record",
+      "title": "Supplier inspector",
       "collection": "suppliers",
+      "config": {"fields": null},
+      "controls": [],
       "observe": {
         "record": {"state": "selected_supplier"}
       }
@@ -205,6 +215,9 @@ Observers are selectors in the compiled dependency plan. They read state and sou
 ```
 
 These are extension fragments, not complete documents. Renderer-specific schema definitions must accompany the experimental fixtures.
+
+The compiler maps `graph` to renderer `melt.graph` and `record` to `melt.record`, both at contract version 1.
+These renderer identifiers belong to compiled plans; document projections declare their `kind`.
 
 The `record` selector resolves a reference in the projection's declared collection. Null displays an empty-selection state. Missing displays the missing key. Unavailable displays a recoverable source error. No state is changed by these display conditions.
 
@@ -268,6 +281,10 @@ In the extension, an action declares output names, kinds, and a publication grou
 ```
 
 A projection source may subscribe using this shape. Alternatively, it may pin a source version with the existing source reference form. There is one writer per output identity: the owning action. Many compatible projections may subscribe.
+
+The experimental implementation also accepts `"follow": "pinned"` with a required positive `version` on the subscription.
+This form pins a published version of that output's logical source while retaining its output identity.
+`"follow": "current"` requires `version` to be absent or null. Both pinning forms must resolve to an existing source version.
 
 The service assigns a stable output incarnation. Inspection returns this value for use in subscriptions; the compiler verifies it. Deleting and recreating an action does not attach old subscribers to a new calculation. Changing output names or kinds requires revision-checked subscriber migration or removal.
 
