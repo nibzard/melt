@@ -5,7 +5,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 ROOT = Path(__file__).parent
-W, H, FPS, DURATION = 1440, 900, 30, 24
+W, H, FPS, DURATION = 1440, 900, 30, 30
 INK, MUTED, GREEN, LINE = '#262b30', '#81858b', '#247460', '#e5e7e9'
 FONT = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
 BOLD = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
@@ -86,16 +86,13 @@ def desktop():
     dc.d.polygon([(605, 847), (600, 864), (594, 858)], fill='#e46d6d')
     dc.dot(780, 889, 2, '#24374a')
     image = Image.alpha_composite(image, dock)
-    shadow = Image.new('RGBA', (W, H))
-    ImageDraw.Draw(shadow).rounded_rectangle((61, 82, 1379, 803), 14, fill=(0, 13, 35, 130))
-    image = Image.alpha_composite(image, shadow.filter(ImageFilter.GaussianBlur(20)))
     return image
 
 
 DESKTOP = desktop()
 
 
-def frame(t):
+def workspace_frame(t, show_cursor=False):
     im = DESKTOP.copy()
     c = Canvas(im)
     box, txt, line = c.box, c.text, c.line
@@ -281,17 +278,210 @@ def frame(t):
             break
     else:
         mx, my = 986, 750
-    for click in [2.23, 8.03, 11.25, 14.13, 17.6, 18.3, 20.25, 21.4]:
+    for click in ([2.23, 8.03, 11.25, 14.13, 17.6, 18.3, 20.25, 21.4] if show_cursor else []):
         if 0 <= t-click < .28:
             r = 5+17*(t-click)/.28
             c.d.ellipse((mx-r, my-r, mx+r, my+r), outline='#7aa8c7', width=2)
-    c.d.polygon([(mx, my), (mx+1, my+22), (mx+6, my+17), (mx+11, my+26), (mx+15, my+24), (mx+10, my+15), (mx+18, my+14)], fill='#24282d', outline='white', width=1)
+    if show_cursor:
+        c.d.polygon([(mx, my), (mx+1, my+22), (mx+6, my+17), (mx+11, my+26), (mx+15, my+24), (mx+10, my+15), (mx+18, my+14)], fill='#24282d', outline='white', width=1)
+    return im.convert('RGB')
+
+
+def app_icon(c, x, y, label, cafe=False, selected=False):
+    if selected:
+        c.box(x-9, y-7, 78, 78, '#ffffff35', 9)
+    c.box(x, y, 60, 60, '#f1e8d6' if cafe else GREEN, 14, '#ffffff88')
+    if cafe:
+        c.box(x+15, y+20, 27, 24, '#79624c', 6)
+        c.d.arc((x+34, y+21, x+49, y+40), 265, 100, fill='#79624c', width=3)
+        c.line((x+13, y+49, x+46, y+49), '#79624c', 2)
+        for xx in [23, 33]:
+            c.line((x+xx, y+8, x+xx-2, y+14), '#a08d73', 2)
+    else:
+        c.text(x+18, y+10, '✦', 30, 'white')
+    width = c.d.textlength(label, font=font(12, True))
+    c.text(x+30-width/2+1, y+70, label, 12, '#16354a', True)
+    c.text(x+30-width/2, y+69, label, 12, 'white', True)
+
+
+def place_window(image, window, x, y, scale=1):
+    if scale <= .001:
+        return
+    ww, hh = window.size
+    if scale < 1:
+        window = window.resize((max(1, round(ww*scale)), max(1, round(hh*scale))), Image.Resampling.LANCZOS)
+        window.putalpha(window.getchannel('A').point(lambda a: round(a*scale)))
+        x += (ww-window.width)//2
+        y += (hh-window.height)//2
+    shadow = Image.new('RGBA', image.size)
+    ImageDraw.Draw(shadow).rounded_rectangle((x, y+8, x+window.width, y+window.height+8), 12, fill=(0, 15, 35, round(100*scale)))
+    image.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(14)))
+    image.alpha_composite(window, (round(x), round(y)))
+
+
+def dashboard(q, saved):
+    # The same surface is used before closing and after reopening.
+    image = workspace_frame(q).crop((62, 70, 1003, 802)).convert('RGBA')
+    c = Canvas(image)
+    c.box(148, 1, 790, 47, '#f0f0f2', 0)
+    c.text(169, 17, 'Little Hours', 13, INK, True)
+    c.text(500, 18, '✓ Saved on this Mac' if saved else 'Preview', 10, MUTED)
+    c.box(641, 10, 127, 28, 'white', 6, '#d9dce1')
+    c.text(655, 17, 'Edit with Agent', 11, INK)
+    c.box(781, 10, 140, 28, 'white' if saved else GREEN, 6, '#d9dce1' if saved else None)
+    c.text(801, 17, 'Share app  ↑' if saved else 'Save as app', 11, INK if saved else 'white', True)
+    # Keep the app's status independent of the Agent connection.
+    c.box(1, 708, 938, 22, '#fafafa', 0)
+    c.text(19, 714, 'On this Mac', 9, MUTED)
+    c.text(185, 714, '✓ All changes saved' if saved else 'Preview · not saved as an app yet', 9, GREEN if saved else MUTED)
+    mask = Image.new('L', image.size)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, 940, 731), 12, fill=255)
+    image.putalpha(mask)
+    return image
+
+
+def agent_window(t, wide=False):
+    width = 660 if wide else 374
+    image = Image.new('RGBA', (width, 650))
+    c = Canvas(image)
+    c.box(0, 0, width-1, 649, '#f8f8fa', 12, '#c9d0d8')
+    c.box(1, 1, width-3, 45, '#f0f0f2', 11)
+    c.d.rectangle((1, 30, width-2, 46), fill='#f0f0f2')
+    for x, color in [(21, '#ff6058'), (41, '#ffbd2e'), (61, '#28c840')]:
+        c.dot(x, 23, 6, color)
+    c.text(92, 15, 'Melt Agent', 13, INK, True)
+    c.line((0, 46, width, 46))
+    left = 24 if not wide else 46
+    if t < 3.35:
+        c.text(left, 89, 'What would you like to make?', 22 if wide else 16, INK, True)
+        c.text(left, 128, 'Turn a task into an app you can keep.', 13, MUTED)
+        for xx, name in [(left, 'sales.csv'), (left+110, 'costs.csv'), (left+220, 'staffing.csv')]:
+            c.box(xx, 182, 99, 27, '#e9edf0', 5)
+            c.text(xx+9, 190, name, 10, '#65717d')
+
+    def message(y, role, rows, user=False):
+        if user:
+            c.box(left-9, y, width-left*2+18, 32+len(rows)*20, '#e7eaf0', 9)
+        c.text(left+3, y+10, role, 9, MUTED if user else GREEN, True)
+        for i, row in enumerate(rows):
+            c.text(left+3, y+30+i*20, row, 12)
+
+    if t >= 3.35:
+        message(70, 'YOU', ['I check café profit every week.', 'Make me an app from these files.'], True)
+        c.text(left+3, 162, 'sales.csv   ·   costs.csv   ·   staffing.csv', 10, MUTED)
+    if 3.35 <= t < 5.2:
+        c.text(left+3, 210, '✦ Building your app' + '.'*(int(t*3)%4), 12, GREEN)
+    elif t >= 5.2:
+        message(192, 'MELT', ['Your dashboard is ready.', 'Mondays are losing money.'])
+    if t >= 7.5:
+        message(278, 'YOU', ['What if beans cost 30% more?'], True)
+    if t >= 8.2:
+        message(344, 'MELT', ['Added a cost control. Try it.'])
+    if t >= 11.5:
+        message(410, 'YOU', ['Add break-even and a control', 'to close on Mondays.'], True)
+    if t >= 12.5:
+        c.text(left+3, 503, '✓ Added both. Ready to keep.', 11, GREEN)
+    c.box(left-9, 549, width-left*2+18, 77, 'white', 8, '#d9dde3')
+    prompt = ''
+    for start, end, rows in [(1.55, 3.35, 'I check café profit every week.\nMake me an app from these files.'), (6, 7.5, 'What if beans cost 30% more?'), (10, 11.5, 'Add break-even and a control\nto close on Mondays.')]:
+        if start <= t < end:
+            prompt = rows[:int(len(rows)*min(1, (t-start)/(end-start-.18)))]
+    if prompt:
+        for i, row in enumerate(prompt.split('\n')):
+            c.text(left+3, 562+i*19, row, 12)
+    else:
+        c.text(left+3, 562, 'Ask for a change…', 11, MUTED)
+    c.box(width-left-24, 594, 25, 24, GREEN if prompt else '#e0e4e9', 6)
+    c.text(width-left-17, 595, '↑', 16, 'white' if prompt else MUTED)
+    return image
+
+
+def frame(t, show_cursor=True):
+    im = DESKTOP.copy()
+    c = Canvas(im)
+    saved = t >= 18.1
+    agent_open = 1 <= t < 19.3
+    app_open = 4 <= t < 20.4 or t >= 23
+    # The menu belongs to the foreground application.
+    c.box(38, 0, 420, 26, '#cee0ef', 0)
+    owner = 'Little Hours' if app_open and (t >= 14 or t < 6) else ('Melt Agent' if agent_open else 'Finder')
+    c.text(43, 5, owner, 12, '#1b3042', True)
+    for xx, name in [(153, 'File'), (195, 'Edit'), (236, 'View'), (283, 'Window'), (358, 'Help')]:
+        c.text(xx, 5, name, 12, '#1b3042')
+    app_icon(c, 1306, 79, 'Melt Agent', selected=t < 1)
+    if saved:
+        app_icon(c, 1306, 207, 'Little Hours', cafe=True, selected=22.3 <= t < 23)
+    # Launch the Agent first. Its window moves aside when it creates the app.
+    if agent_open:
+        if t < 4:
+            place_window(im, agent_window(t, wide=True), 390, 115, .92+.08*ease((t-1)/.35))
+        else:
+            shift = ease((t-4)/.4)
+            closing = 1-.08*ease((t-19.1)/.2)
+            place_window(im, agent_window(t), 770+240*shift, 105, closing)
+    if app_open:
+        q = min(19, 3.1+(t-4)*1.5) if t < 20.4 else 19
+        opening = ease((t-(4 if t < 20.4 else 23))/.42)
+        closing = 1-.08*ease((t-20.2)/.2) if t < 20.4 else 1
+        place_window(im, dashboard(q, saved), 62, 70, (.94+.06*opening)*closing)
+    # A native save sheet makes the transition from preview to app explicit.
+    if 15.9 <= t < 18.1:
+        sheet = Image.new('RGBA', (470, 276))
+        sc = Canvas(sheet)
+        sc.box(0, 0, 469, 275, '#f6f6f8', 12, '#c9cdd3')
+        sc.text(28, 23, 'Save this app', 19, INK, True)
+        sc.text(28, 60, 'Keep it on your desktop. Open it any time.', 12, MUTED)
+        sc.text(28, 109, 'Name', 12)
+        sc.box(109, 98, 331, 33, 'white', 6, '#9eb7d7')
+        sc.text(120, 107, 'Little Hours', 13)
+        sc.text(28, 156, 'Where', 12)
+        sc.box(109, 145, 331, 33, '#e8ebef', 6)
+        sc.text(120, 154, 'Desktop', 12)
+        sc.text(28, 197, 'Includes your controls, data, and saved scenarios.', 10, MUTED)
+        sc.box(267, 231, 78, 29, 'white', 6, '#d1d6dc')
+        sc.text(282, 239, 'Cancel', 11)
+        sc.box(356, 231, 85, 29, '#2676ce', 6)
+        sc.text(370, 239, 'Save app', 11, 'white', True)
+        place_window(im, sheet, 299, 225)
+    # Saving produces a brief icon flight toward its desktop location.
+    if 18.1 <= t < 18.65:
+        p = ease((t-18.1)/.55)
+        fly = Image.new('RGBA', (W, H))
+        app_icon(Canvas(fly), round(820+486*p), round(110+97*p), '', cafe=True)
+        im.alpha_composite(fly)
+    if 18.65 <= t < 19.25:
+        note = Canvas(im)
+        note.box(1080, 40, 312, 53, '#f3f6f9', 11, '#c6d5df')
+        note.text(1096, 49, 'Little Hours saved to Desktop', 12, INK, True)
+        note.text(1096, 69, 'Your app is ready to open or share.', 10, MUTED)
+    # Optional share affordance belongs to the saved application, not the chat.
+    if 26.5 <= t < 29.2:
+        note = Canvas(im)
+        note.box(780, 115, 221, 103, '#f7f8fa', 9, '#d3d8dd')
+        note.text(797, 130, 'Share Little Hours', 12, INK, True)
+        note.text(797, 159, 'Save a copy…', 12)
+        note.text(797, 187, 'App + data + current scenario', 10, MUTED)
+    points = [(0, 1120, 440), (.65, 1335, 108), (1, 1335, 108), (1.5, 970, 717), (3.3, 974, 720), (4.5, 1335, 710), (7.3, 1335, 710), (8.4, 263, 671), (8.6, 263, 671), (9.1, 444, 671), (9.5, 521, 712), (10, 1320, 710), (11.4, 1335, 710), (13, 414, 710), (13.7, 414, 710), (14.3, 521, 712), (15.6, 914, 95), (16.4, 689, 471), (18, 689, 471), (18.7, 1031, 128), (19.3, 1031, 128), (20, 84, 95), (20.4, 84, 95), (21.4, 1080, 410), (22.4, 1335, 237), (23, 1335, 237), (24.8, 521, 712), (25.4, 521, 712), (26.4, 914, 95), (27.2, 914, 95), (29.3, 1080, 610), (30, 1080, 610)]
+    if show_cursor:
+        for a, b in zip(points, points[1:]):
+            if a[0] <= t <= b[0]:
+                p = ease((t-a[0])/(b[0]-a[0]))
+                mx, my = a[1]+(b[1]-a[1])*p, a[2]+(b[2]-a[2])*p
+                break
+        else:
+            mx, my = 1080, 610
+        cc = Canvas(im)
+        for click in [.77, .92, 3.3, 7.4, 11.4, 13.7, 14.3, 15.8, 18, 19.2, 20.3, 22.65, 22.85, 25.2, 26.45]:
+            if 0 <= t-click < .2:
+                r = 5+13*(t-click)/.2
+                cc.d.ellipse((mx-r, my-r, mx+r, my+r), outline='#84aecb', width=2)
+        cc.d.polygon([(mx, my), (mx+1, my+22), (mx+6, my+17), (mx+11, my+26), (mx+15, my+24), (mx+10, my+15), (mx+18, my+14)], fill='#24282d', outline='white', width=1)
     return im.convert('RGB')
 
 
 def render():
     DESKTOP.convert('RGB').save(ROOT/'desktop-wallpaper.png')
-    for sec, name in [(.1, '00-empty'), (5, '01-workspace'), (18.9, '02-evolved'), (22.8, '03-offline')]:
+    for sec, name in [(.1, '00-empty'), (5.5, '01-workspace'), (19.8, '02-evolved'), (16.8, '03-save-dialog'), (21.5, '04-saved-app'), (24, '05-reopened')]:
         frame(sec).save(ROOT/f'{name}.png')
     process = subprocess.Popen([
         'ffmpeg', '-y', '-loglevel', 'error', '-f', 'rawvideo', '-vcodec', 'rawvideo',

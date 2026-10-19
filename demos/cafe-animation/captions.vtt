@@ -1,22 +1,34 @@
 WEBVTT
 
-00:00.000 --> 00:03.100
-An empty Melt workspace. Ask: Can this café survive?
+00:00.000 --> 00:01.500
+Open Melt Agent from the desktop.
 
-00:03.100 --> 00:06.350
-Melt builds charts and scenario tools from three files.
+00:01.500 --> 00:04.000
+I check café profit every week. Make me an app from these files.
 
-00:06.350 --> 00:09.000
-Ask: What if beans cost 30% more? A cost control appears.
+00:04.000 --> 00:06.000
+The Agent creates Little Hours in a separate app window.
 
-00:09.000 --> 00:12.200
-Drag the control. Monthly profit drops to €2,416.
+00:06.000 --> 00:10.000
+Add a bean-cost control. Set costs to +30%.
 
-00:12.200 --> 00:16.000
-Ask for break-even and a Monday control. Both appear in the workspace.
+00:10.000 --> 00:13.500
+Add break-even and a control to close on Mondays.
 
-00:16.000 --> 00:20.300
-Close on Mondays. Monthly profit rises to €2,836.
+00:13.500 --> 00:15.900
+Close Mondays. The scenario now shows €2,836 monthly profit.
 
-00:20.300 --> 00:24.000
-Disconnect the agent. Run the saved tool locally.
+00:15.900 --> 00:18.650
+Save Little Hours as a desktop app, including its data and controls.
+
+00:18.650 --> 00:21.500
+Close the Agent. Close the dashboard. The app's desktop icon remains.
+
+00:21.500 --> 00:24.500
+Open Little Hours from its icon. The same layout, values, and results return.
+
+00:24.500 --> 00:26.500
+Use your saved app directly, with the Agent closed.
+
+00:26.500 --> 00:30.000
+The app can be edited with the Agent or shared as a copy.
