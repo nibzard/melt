@@ -3,6 +3,11 @@ import AppKit
 @main struct HostChecks {
     static func main() throws {
         _ = NSApplication.shared
+        func control(_ id: String, in view: NSView) -> NSControl? {
+            if let item = view as? NSControl, item.identifier?.rawValue == id { return item }
+            for child in view.subviews { if let found = control(id, in: child) { return found } }
+            return nil
+        }
         let descriptor = Data(#"{"format":"melt-launcher/v1","root":"/tmp/data with spaces","workspaceId":"little-hours"}"#.utf8)
         let app = try LocalApp(descriptor)
         let reopened = try LocalApp(app.data)
@@ -28,13 +33,29 @@ import AppKit
         pane.update(definition: definition, plan: plan, state: [:], data: ["status": "unavailable", "message": "Missing artifact"])
         pane.update(definition: definition, plan: plan, state: [:], data: first)
         precondition(findTable(pane.view)?.numberOfRows == 1)
+        let selectPane = Pane(identity: "currency", host: nil)
+        let selectPlan: Object = ["renderer": ["id": "melt.document", "contractVersion": 1],
+            "controls": [["id": "currency", "kind": "select", "label": "Currency", "parameter": "currency",
+                "options": [["value": "eur", "label": "Euros"], ["value": "usd", "label": "US dollars"]]]]]
+        let selectDefinition: Object = ["title": "Currency", "kind": "document"]
+        selectPane.update(definition: selectDefinition, plan: selectPlan,
+            state: ["currency": ["value": "usd", "revision": 1]], data: ["status": "ready", "text": ""])
+        guard let popup = control("currency", in: selectPane.view) as? NSPopUpButton else { fatalError("The select control is missing") }
+        precondition(popup.titleOfSelectedItem == "US dollars")
+        precondition(popup.selectedItem?.representedObject as? String == "usd")
+        selectPane.update(definition: selectDefinition, plan: selectPlan,
+            state: ["currency": ["value": "eur", "revision": 2]], data: ["status": "ready", "text": ""])
+        precondition(popup === control("currency", in: selectPane.view))
+        precondition(popup.titleOfSelectedItem == "Euros")
         print("Native launcher and pane continuity checks passed.")
-        guard CommandLine.arguments.count == 3 else {
-            throw HostError.message("Pass the café launcher and runtime configuration to run the native workflow checks.")
+        guard CommandLine.arguments.count == 5 else {
+            throw HostError.message("Pass the café launcher, runtime configuration, artifact directory, and linked-views launcher.")
         }
         let source = URL(fileURLWithPath: CommandLine.arguments[1])
         let configuration = object(try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[2]))))
         let cafe = try LocalApp(Data(contentsOf: source))
+        let artifacts = URL(fileURLWithPath: CommandLine.arguments[3], isDirectory: true)
+        try FileManager.default.createDirectory(at: artifacts, withIntermediateDirectories: true)
 
         func wait(_ message: String, until condition: () -> Bool) throws {
             let deadline = Date().addingTimeInterval(30)
@@ -49,17 +70,33 @@ import AppKit
         func summary(_ host: Workspace) -> String {
             string(object(object(host.currentView["panes"])["summary"])["text"])
         }
+        func capture(_ host: Workspace, name: String) throws {
+            guard let content = host.window?.contentView else { throw HostError.message("Missing window content") }
+            content.layoutSubtreeIfNeeded(); content.displayIfNeeded()
+            guard let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { throw HostError.message("Cannot capture the window") }
+            content.cacheDisplay(in: content.bounds, to: bitmap)
+            guard let png = bitmap.representation(using: .png, properties: [:]) else { throw HostError.message("Cannot encode the window capture") }
+            try png.write(to: artifacts.appendingPathComponent(name + ".png"))
+        }
 
         let firstHost = try Workspace(app: cafe, configuration: configuration)
         firstHost.showWindow(nil)
         try wait("initial café restoration") { firstHost.isReady && summary(firstHost).contains("€2,836.00") }
-        firstHost.setParameter("bean_increase", value: 0)
+        guard let content = firstHost.window?.contentView,
+              let cost = control("bean_increase", in: content) as? NSTextField,
+              let mondays = control("open_mondays", in: content) as? NSButton,
+              let run = control("summary/run", in: content) as? NSButton else {
+            throw HostError.message("The visible café controls are missing.")
+        }
+        cost.stringValue = "0"
+        cost.delegate?.controlTextDidEndEditing?(Notification(name: NSControl.textDidEndEditingNotification, object: cost))
         try wait("bean cost acknowledgement") { firstHost.isReady && object(parameters(firstHost)["bean_increase"])["value"] as? Int == 0 }
-        firstHost.setParameter("open_mondays", value: true)
+        mondays.performClick(nil)
         try wait("Monday acknowledgement") { firstHost.isReady && object(parameters(firstHost)["open_mondays"])["value"] as? Bool == true }
-        firstHost.activate(projection: "summary", control: "run")
+        run.performClick(nil)
         try wait("native scenario publication") { firstHost.isReady && summary(firstHost).contains("€3,280.00") }
         let savedView = firstHost.currentView
+        try capture(firstHost, name: "before-close")
         let desktop = source.deletingLastPathComponent().appendingPathComponent("Desktop", isDirectory: true)
         try FileManager.default.createDirectory(at: desktop, withIntermediateDirectories: true)
         let savedFile = desktop.appendingPathComponent("Little Hours.meltapp")
@@ -77,8 +114,29 @@ import AppKit
         }
         precondition(jsonSignature(savedView["plan"] ?? [:]) == jsonSignature(reopenedView["plan"] ?? [:]))
         precondition(jsonSignature(savedView["panes"] ?? [:]) == jsonSignature(reopenedView["panes"] ?? [:]))
+        try capture(secondHost, name: "after-reopen")
         secondHost.close()
         try wait("reopened host shutdown") { secondHost.serviceClosed }
         print("Native café edit, run, save, close, and reopen checks passed.")
+
+        let linkedApp = try LocalApp(Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[4])))
+        let linkedHost = try Workspace(app: linkedApp, configuration: configuration)
+        linkedHost.showWindow(nil)
+        func selectedSupplier(_ id: String) -> String {
+            let pane = object(object(linkedHost.currentView["panes"])[id])
+            let record = object(object(pane["observer"])["record"])
+            return string(object(record["cells"])["supplier_id"])
+        }
+        try wait("linked views restoration") { linkedHost.isReady && selectedSupplier("inspector") == "S-73" }
+        guard let linkedContent = linkedHost.window?.contentView,
+              let supplier = control("network/s-42", in: linkedContent) as? NSButton else { throw HostError.message("The supplier selector is missing") }
+        supplier.performClick(nil)
+        try wait("native shared selection") {
+            linkedHost.isReady && selectedSupplier("inspector") == "S-42" && selectedSupplier("risk-inspector") == "S-42"
+        }
+        try capture(linkedHost, name: "linked-views")
+        linkedHost.close()
+        try wait("linked views shutdown") { linkedHost.serviceClosed }
+        print("Native selection updates both inspectors through the shared event contract.")
     }
 }

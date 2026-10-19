@@ -99,10 +99,15 @@ final class Pane: NSViewController, NSTextFieldDelegate {
         }
         for (key, editor) in editors {
             let value = object(state[key])["value"]
-            if let toggle = editor as? NSButton { toggle.state = (value as? Bool ?? false) ? .on : .off }
+            if let popup = editor as? NSPopUpButton {
+                if let item = popup.itemArray.first(where: { $0.representedObject as? String == string(value) }) {
+                    popup.select(item)
+                }
+            }
+            else if let toggle = editor as? NSButton { toggle.state = (value as? Bool ?? false) ? .on : .off }
             else if let field = editor as? NSTextField, field.currentEditor() == nil {
                 field.stringValue = value.map { String(describing: $0) } ?? ""
-            } else if let popup = editor as? NSPopUpButton { popup.selectItem(withTitle: string(value)) }
+            }
         }
         let renderer = object(plan["renderer"])
         let rendererID = string(renderer["id"])
@@ -172,6 +177,7 @@ final class Pane: NSViewController, NSTextFieldDelegate {
                     let event = object(object(self.data["events"])[id])
                     self.host?.sendCommand(event)
                 }
+                button.identifier = NSUserInterfaceItemIdentifier("\(identity)/\(id)")
                 button.setAccessibilityLabel("Select \(string(node["label"]))")
                 body.addArrangedSubview(button)
             }
@@ -193,7 +199,9 @@ final class Pane: NSViewController, NSTextFieldDelegate {
         let kind = string(value["kind"]), title = string(value["label"]), parameter = string(value["parameter"])
         if kind == "button" {
             let id = string(value["id"])
-            controls.addArrangedSubview(ClickButton(title) { [weak self] in self?.host?.activate(projection: self?.identity ?? "", control: id) })
+            let button = ClickButton(title) { [weak self] in self?.host?.activate(projection: self?.identity ?? "", control: id) }
+            button.identifier = NSUserInterfaceItemIdentifier("\(identity)/\(id)")
+            controls.addArrangedSubview(button)
             return
         }
         let row = NSStackView(); row.orientation = .horizontal; row.spacing = 8
@@ -204,10 +212,14 @@ final class Pane: NSViewController, NSTextFieldDelegate {
                 self.host?.setParameter(parameter, value: button.state == .on)
             }
             button.setButtonType(.switch); button.setAccessibilityLabel(title)
+            button.identifier = NSUserInterfaceItemIdentifier(parameter)
             editors[parameter] = button; row.addArrangedSubview(button)
         } else if kind == "select" {
             let popup = NSPopUpButton()
-            popup.addItems(withTitles: array(value["options"]).map { string(object($0)["value"]) })
+            for option in array(value["options"]).map(object) {
+                popup.addItem(withTitle: string(option["label"]))
+                popup.lastItem?.representedObject = string(option["value"])
+            }
             popup.identifier = NSUserInterfaceItemIdentifier(parameter)
             popup.target = self; popup.action = #selector(selectChanged(_:)); popup.setAccessibilityLabel(title)
             editors[parameter] = popup; row.addArrangedSubview(popup)
@@ -220,7 +232,7 @@ final class Pane: NSViewController, NSTextFieldDelegate {
         controls.addArrangedSubview(row)
     }
     @objc private func selectChanged(_ sender: NSPopUpButton) {
-        host?.setParameter(sender.identifier?.rawValue ?? "", value: sender.titleOfSelectedItem ?? "")
+        host?.setParameter(sender.identifier?.rawValue ?? "", value: string(sender.selectedItem?.representedObject))
     }
     func controlTextDidEndEditing(_ notification: Notification) {
         guard let field = notification.object as? NSTextField else { return }
