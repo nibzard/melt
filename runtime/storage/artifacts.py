@@ -10,8 +10,12 @@ never a referenced missing one.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
+import errno
 import os
 import re
+import stat
 import uuid
 from pathlib import Path
 
@@ -91,10 +95,25 @@ class ArtifactStore:
         fsync_directory(self.directory)
         return artifact
 
-    def read(self, artifact: str) -> bytes:
-        """Return the stored bytes of one artifact."""
+    @contextmanager
+    def open(self, artifact: str):
+        """Open a regular artifact file without following symbolic links."""
 
-        return self.path_for(artifact).read_bytes()
+        path = self.path_for(artifact)
+        # Nonblocking open lets the type check reject a pipe without waiting.
+        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError(errno.EINVAL, "an artifact must be a regular file", path)
+            with os.fdopen(fd, "rb", closefd=False) as handle:
+                yield handle
+        finally:
+            os.close(fd)
+
+    def read(self, artifact: str) -> bytes:
+        """Read a verified regular file handle."""
+        with self.open(artifact) as handle:
+            return handle.read()
 
     def verify(self, artifact: str) -> bool:
         """Check that a stored file still hashes to its reference."""

@@ -57,6 +57,15 @@
       "description": "2^53 exceeds the safe integer range of the wire format. The artifact hash is a format-valid placeholder, because no real file carries an unsafe length."
     },
     {
+      "file": "unsafe-integer-default.json",
+      "kind": "document",
+      "category": "unsafe-integers",
+      "code": "E_TYPE",
+      "path": "/parameters/minimum/default",
+      "enforcedBy": "schema",
+      "description": "An unsafe parameter default fails with one decisive diagnostic, the safe-range message of the number branch, not one diagnostic per JsonScalar branch (SPEC.md sections 4.2 and 11.3)."
+    },
+    {
       "file": "invalid-default.json",
       "kind": "document",
       "category": "invalid-defaults",

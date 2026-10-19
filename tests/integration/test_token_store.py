@@ -162,10 +162,15 @@ def test_capture_rejects_bytes_that_do_not_match_the_media_type(
     assert truncated_parquet.diagnostics[0].code == "E_ARTIFACT"
     not_utf8 = rejected(b"revenue \xff notes", "text/plain")
     assert not_utf8.diagnostics[0].code == "E_ARTIFACT"
+    not_graph = rejected(b"{not json", "application/vnd.melt.graph+json")
+    assert not_graph.diagnostics[0].code == "E_ARTIFACT"
+    not_graph_object = rejected(b"[1, 2]", "application/vnd.melt.graph+json")
+    assert not_graph_object.diagnostics[0].code == "E_ARTIFACT"
     unknown_type = rejected(TEXT_BYTES, "application/octet-stream")
     assert unknown_type.diagnostics[0].code == "E_ARTIFACT"
     assert set(CAPTURE_KINDS) == {
         "application/vnd.apache.parquet",
+        "application/vnd.melt.graph+json",
         "image/png",
         "text/plain",
         "text/markdown",

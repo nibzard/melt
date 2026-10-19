@@ -31,11 +31,19 @@ from typing import Any, Mapping, Sequence
 
 from melt.schema.canonical import model_to_wire
 from melt.schema.commands import decode_frame, encode_frame
+from melt.schema.semantic import SEMANTIC_LANGUAGE_ID
 from runtime.storage import PlatformAdapter
 from runtime.workspace import WorkspaceService, local_environment
 
 HARNESS_IDENTIFIER = f"melt-harness/0.1.0"
 """The client version the handshake reports (SPEC.md section 12.6)."""
+
+SPOKEN_LANGUAGES = ("melt/v0.1", SEMANTIC_LANGUAGE_ID)
+"""The language versions the harness negotiates.
+
+A semantic workspace refuses a client that cannot speak its stored
+language, so the harness offers both identifiers: the stable v0.1
+contract and the provisional RFC 001 extension."""
 
 DEFAULT_WORKSPACE = "sales-demo"
 
@@ -46,6 +54,10 @@ MEDIA_TYPES_BY_SUFFIX = {
     ".md": "text/markdown",
     ".py": "text/x-python",
 }
+
+GRAPH_FILE_SUFFIX = ".graph.json"
+"""The suffix of one graph artifact; the identity map stands in the
+media type `application/vnd.melt.graph+json` (RFC 001 section 7.1)."""
 
 _ORIGINS = ("user", "programmatic")
 
@@ -180,16 +192,16 @@ def _command_hello(session: HarnessSession, args: argparse.Namespace) -> dict:
         "session.hello",
         payload={
             "protocolVersions": [1],
-            "languageVersions": ["melt/v0.1"],
+            "languageVersions": list(SPOKEN_LANGUAGES),
             "clientVersion": HARNESS_IDENTIFIER,
         },
         request_id=args.request_id,
     )
 
 
-def _empty_document(workspace: str, title: str) -> dict:
-    return {
-        "language": "melt/v0.1",
+def _empty_document(workspace: str, title: str, language: str) -> dict:
+    document = {
+        "language": language,
         "workspaceId": workspace,
         "title": title,
         "sources": {},
@@ -199,12 +211,16 @@ def _empty_document(workspace: str, title: str) -> dict:
         "bindings": {},
         "layout": {"root": None, "hidden": []},
     }
+    if language == SEMANTIC_LANGUAGE_ID:
+        document["collections"] = {}
+        document["state"] = {}
+    return document
 
 
 def _command_create(session: HarnessSession, args: argparse.Namespace) -> dict:
     document = _read_json(args.document, "--document")
     if document is None:
-        document = _empty_document(session.workspace, args.title)
+        document = _empty_document(session.workspace, args.title, args.language)
     return session.request(
         "workspace.create",
         payload={"document": document},
@@ -221,7 +237,10 @@ def _capture(
     if not file.is_file():
         raise HarnessError(f"no file at {path}")
     if media_type is None:
-        media_type = MEDIA_TYPES_BY_SUFFIX.get(file.suffix.lower())
+        if file.name.endswith(GRAPH_FILE_SUFFIX):
+            media_type = "application/vnd.melt.graph+json"
+        else:
+            media_type = MEDIA_TYPES_BY_SUFFIX.get(file.suffix.lower())
         if media_type is None:
             raise HarnessError(
                 f"cannot infer a media type from {file.suffix!r}; pass"
@@ -276,13 +295,20 @@ def _command_register(session: HarnessSession, args: argparse.Namespace) -> dict
 
 
 def _touched_paths(operations: Sequence[Mapping[str, Any]]) -> list[str]:
-    """The record paths one operation list touches (SPEC.md 12.2)."""
+    """The record paths one operation list touches (SPEC.md 12.2).
+
+    The extension's `state` entities address their records under the
+    reserved `semantic-state/` prefix, exactly as the service's record
+    paths do (RFC 001 section 4).
+    """
+
+    from runtime.workspace.state import entity_path
 
     paths: list[str] = []
     for operation in operations:
         name = operation.get("op")
         if name in ("entity.create", "entity.replace", "entity.delete"):
-            paths.append(f"{operation.get('collection')}/{operation.get('id')}")
+            paths.append(entity_path(operation.get("collection"), operation.get("id")))
         elif name == "parameter.set":
             paths.append(f"state/{operation.get('id')}")
         elif name == "layout.replace":
@@ -409,6 +435,106 @@ def _command_activate(session: HarnessSession, args: argparse.Namespace) -> dict
     return _drive(session, args, answer)
 
 
+def _parse_guards(items: Sequence[str]) -> dict[str, int]:
+    """Parse ``path=revision`` guards into an expected-revision override."""
+
+    guards: dict[str, int] = {}
+    for item in items:
+        path, separator, revision = item.rpartition("=")
+        if not separator or not path or not revision.isdigit():
+            raise HarnessError(
+                f"guard {item!r} must read record-path=revision"
+            )
+        guards[path] = int(revision)
+    return guards
+
+
+def _parse_renderers(items: Sequence[str]) -> "dict[str, int] | None":
+    """Parse ``id=version`` flags into the installed renderer registry.
+
+    An empty flag list means the host ships nothing beyond what the
+    saved plan pinned, so no comparison degrades any pane.
+    """
+
+    if not items:
+        return None
+    installed: dict[str, int] = {}
+    for item in items:
+        renderer, separator, version = item.rpartition("=")
+        if not separator or not renderer or not version.isdigit():
+            raise HarnessError(
+                f"renderer {item!r} must read renderer-id=contract-version"
+            )
+        installed[renderer] = int(version)
+    return installed
+
+
+def _command_renderer_event(
+    session: HarnessSession,
+    args: argparse.Namespace,
+    *,
+    event: str,
+    key: "str | None",
+) -> dict:
+    """Send one renderer event through the framed channel.
+
+    The test renderer builds the envelope the way a host would: a
+    fresh inspection, the binding at the event address, and the
+    revision guards the event carries (RFC 001 sections 5.1 and 5.3).
+    ``--guard path=revision`` overrides one observed revision, so a
+    caller can replay a stale gesture on purpose.
+    """
+
+    from runtime.harness.test_renderer import TestRenderer, TestRendererError
+
+    try:
+        method, payload, expected = TestRenderer(
+            session, installed_renderers=_parse_renderers(args.renderer)
+        ).event_request(
+            projection=args.projection,
+            event=event,
+            key=key,
+            if_revisions=_parse_guards(args.guard),
+        )
+    except TestRendererError as error:
+        raise HarnessError(str(error)) from error
+    return session.request(
+        method,
+        payload=payload,
+        expected=expected,
+        request_id=args.request_id,
+        origin=args.origin,
+    )
+
+
+def _command_select(session: HarnessSession, args: argparse.Namespace) -> dict:
+    return _command_renderer_event(
+        session, args, event="object.select", key=args.key
+    )
+
+
+def _command_clear(session: HarnessSession, args: argparse.Namespace) -> dict:
+    return _command_renderer_event(
+        session, args, event="selection.clear", key=None
+    )
+
+
+def _command_render(session: HarnessSession, args: argparse.Namespace) -> dict:
+    """Render every projection through the test renderer.
+
+    ``--renderer id=version`` declares one renderer the host ships;
+    a pinned renderer the declared set omits or disagrees with renders
+    the unavailable fallback instead (RFC 001 section 7.2). Without the
+    flags the host models one that ships everything the plan pinned.
+    """
+
+    from runtime.harness.test_renderer import TestRenderer
+
+    return TestRenderer(
+        session, installed_renderers=_parse_renderers(args.renderer)
+    ).render()
+
+
 def _command_approve(session: HarnessSession, args: argparse.Namespace) -> dict:
     grant = session.service.grant_execution_permission(
         kind=args.kind,
@@ -488,6 +614,24 @@ def _command_inspect(session: HarnessSession, args: argparse.Namespace) -> dict:
     )
 
 
+def _command_migrate(session: HarnessSession, args: argparse.Namespace) -> dict:
+    """Migrate a `melt/v0.1` workspace to the extension language.
+
+    ``--dry-run`` previews the same migration without writing: its
+    report explains that pane removal no longer invalidates output
+    publication (RFC 001 section 8.3).
+    """
+
+    return session.request(
+        "workspace.migrate",
+        payload={
+            "targetLanguage": SEMANTIC_LANGUAGE_ID,
+            "dryRun": bool(args.dry_run),
+        },
+        request_id=args.request_id,
+    )
+
+
 def _command_plan(session: HarnessSession, args: argparse.Namespace) -> dict:
     from runtime.compiler import CompileRequest, compile_document
 
@@ -507,6 +651,17 @@ def _command_plan(session: HarnessSession, args: argparse.Namespace) -> dict:
                 }
                 for parameter_id, stored in state.parameter_states.items()
             },
+            reference_states={
+                state_id: {
+                    "value": None
+                    if stored.value is None
+                    else model_to_wire(stored.value),
+                    "revision": stored.revision,
+                }
+                for state_id, stored in state.reference_states.items()
+            },
+            collection_incarnations=dict(state.collection_incarnations),
+            output_incarnations=dict(state.output_incarnations),
         )
     )
     if not result.ok:
@@ -827,6 +982,15 @@ def build_parser() -> argparse.ArgumentParser:
     create = add("create", "create the workspace with one document")
     create.add_argument("--document", help="JSON document file (default: an empty workspace)")
     create.add_argument("--title", default="Melt workspace")
+    create.add_argument(
+        "--language",
+        default="melt/v0.1",
+        help=(
+            "language of the default empty document"
+            f" (default: melt/v0.1; {SEMANTIC_LANGUAGE_ID} adds the"
+            " RFC 001 extension maps)"
+        ),
+    )
     create.set_defaults(run=_command_create)
 
     import_command = add("import", "import one file as a new source version")
@@ -888,6 +1052,50 @@ def build_parser() -> argparse.ArgumentParser:
     _add_scheduling_flags(activate)
     activate.set_defaults(run=_command_activate)
 
+    def _add_event_flags(command: argparse.ArgumentParser) -> None:
+        command.add_argument(
+            "--guard",
+            action="append",
+            default=[],
+            metavar="PATH=REVISION",
+            help="override the observed revision of one guarded record",
+        )
+        command.add_argument(
+            "--renderer",
+            action="append",
+            default=[],
+            metavar="ID=VERSION",
+            help="renderer the host ships, with its contract version;"
+            " repeat per renderer. The renderer of the addressed"
+            " projection must be one of them (RFC 001 7.2)",
+        )
+        add_origin(command)
+
+    select = add("select", "select one object through the test renderer")
+    select.add_argument("--projection", required=True)
+    select.add_argument("--key", required=True, help="the object key selected")
+    _add_event_flags(select)
+    select.set_defaults(run=_command_select)
+
+    clear = add("clear", "clear the selection through the test renderer")
+    clear.add_argument("--projection", required=True)
+    _add_event_flags(clear)
+    clear.set_defaults(run=_command_clear)
+
+    render = add(
+        "render", "render every projection through the test renderer"
+    )
+    render.add_argument(
+        "--renderer",
+        action="append",
+        default=[],
+        metavar="ID=VERSION",
+        help="renderer the host ships, with its contract version;"
+        " repeat per renderer. A pinned renderer the set omits or"
+        " disagrees with renders the unavailable fallback (RFC 001 7.2)",
+    )
+    render.set_defaults(run=_command_render)
+
     approve = add("approve", "grant execution permission (host control)")
     approve.add_argument("--registration", required=True)
     approve.add_argument("--kind", choices=("projectExecution", "specificRun"), default="projectExecution")
@@ -931,6 +1139,17 @@ def build_parser() -> argparse.ArgumentParser:
     inspect.add_argument("--collection", help="bound the answer to one collection")
     inspect.add_argument("--ids", help="comma-separated entity identifiers")
     inspect.set_defaults(run=_command_inspect)
+
+    migrate = add(
+        "migrate",
+        "migrate the melt/v0.1 workspace to the extension language",
+    )
+    migrate.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="preview the migration without writing anything",
+    )
+    migrate.set_defaults(run=_command_migrate)
 
     add("plan", "compile the committed document and print the plan").set_defaults(
         run=_command_plan

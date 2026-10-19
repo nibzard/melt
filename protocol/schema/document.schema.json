@@ -1,0 +1,1340 @@
+{
+  "$defs": {
+    "Action": {
+      "additionalProperties": false,
+      "properties": {
+        "implementation": {
+          "$ref": "#/$defs/ActionImplementation"
+        },
+        "inputs": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "$ref": "#/$defs/SourceReference"
+            }
+          },
+          "title": "Inputs",
+          "type": "object"
+        },
+        "outputGroup": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Outputgroup",
+          "type": "string"
+        },
+        "outputs": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "enum": [
+                "table",
+                "image",
+                "text"
+              ],
+              "type": "string"
+            }
+          },
+          "title": "Outputs",
+          "type": "object"
+        },
+        "parameters": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "$ref": "#/$defs/ActionParameterMapping"
+            }
+          },
+          "title": "Parameters",
+          "type": "object"
+        },
+        "targets": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+              "type": "string"
+            }
+          },
+          "title": "Targets",
+          "type": "object"
+        }
+      },
+      "required": [
+        "implementation",
+        "parameters",
+        "inputs",
+        "outputs",
+        "outputGroup",
+        "targets"
+      ],
+      "title": "Action",
+      "type": "object"
+    },
+    "ActionImplementation": {
+      "additionalProperties": false,
+      "properties": {
+        "registrationId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Registrationid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "registrationId"
+      ],
+      "title": "ActionImplementation",
+      "type": "object"
+    },
+    "ActionInvokeEffect": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Action",
+          "type": "string"
+        },
+        "kind": {
+          "const": "action.invoke",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "action"
+      ],
+      "title": "ActionInvokeEffect",
+      "type": "object"
+    },
+    "ActionParameterMapping": {
+      "additionalProperties": false,
+      "properties": {
+        "parameter": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Parameter",
+          "type": "string"
+        }
+      },
+      "required": [
+        "parameter"
+      ],
+      "title": "ActionParameterMapping",
+      "type": "object"
+    },
+    "Binding": {
+      "additionalProperties": false,
+      "properties": {
+        "debounceMs": {
+          "ge": 0,
+          "maximum": 5000,
+          "title": "Debouncems",
+          "type": "integer"
+        },
+        "effect": {
+          "$ref": "#/$defs/ActionInvokeEffect"
+        },
+        "event": {
+          "discriminator": {
+            "mapping": {
+              "control.activate": "#/$defs/ControlActivateEvent",
+              "parameter.changed": "#/$defs/ParameterChangedEvent"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ParameterChangedEvent"
+            },
+            {
+              "$ref": "#/$defs/ControlActivateEvent"
+            }
+          ],
+          "title": "Event"
+        }
+      },
+      "required": [
+        "event",
+        "effect",
+        "debounceMs"
+      ],
+      "title": "Binding",
+      "type": "object"
+    },
+    "ButtonControl": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "button",
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "kind"
+      ],
+      "title": "ButtonControl",
+      "type": "object"
+    },
+    "ControlActivateEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "control": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Control",
+          "type": "string"
+        },
+        "kind": {
+          "const": "control.activate",
+          "title": "Kind",
+          "type": "string"
+        },
+        "projection": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Projection",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "projection",
+        "control"
+      ],
+      "title": "ControlActivateEvent",
+      "type": "object"
+    },
+    "Document": {
+      "additionalProperties": false,
+      "description": "The canonical document (SPEC.md section 4.1).\n\nEvery field is required. Collections may be empty. The document\nholds definitions and current published source references only.",
+      "properties": {
+        "actions": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "$ref": "#/$defs/Action"
+            }
+          },
+          "title": "Actions",
+          "type": "object"
+        },
+        "bindings": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "$ref": "#/$defs/Binding"
+            }
+          },
+          "title": "Bindings",
+          "type": "object"
+        },
+        "language": {
+          "const": "melt/v0.1",
+          "title": "Language",
+          "type": "string"
+        },
+        "layout": {
+          "$ref": "#/$defs/Layout"
+        },
+        "parameters": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "$ref": "#/$defs/Parameter"
+            }
+          },
+          "title": "Parameters",
+          "type": "object"
+        },
+        "projections": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "discriminator": {
+                "mapping": {
+                  "document": "#/$defs/DocumentProjection",
+                  "plot": "#/$defs/PlotProjection",
+                  "table": "#/$defs/TableProjection"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/TableProjection"
+                },
+                {
+                  "$ref": "#/$defs/PlotProjection"
+                },
+                {
+                  "$ref": "#/$defs/DocumentProjection"
+                }
+              ]
+            }
+          },
+          "title": "Projections",
+          "type": "object"
+        },
+        "sources": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "$ref": "#/$defs/Source"
+            }
+          },
+          "title": "Sources",
+          "type": "object"
+        },
+        "title": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "workspaceId": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Workspaceid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "language",
+        "workspaceId",
+        "title",
+        "sources",
+        "parameters",
+        "actions",
+        "projections",
+        "bindings",
+        "layout"
+      ],
+      "title": "Document",
+      "type": "object"
+    },
+    "DocumentConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "format": {
+          "enum": [
+            "plain",
+            "markdown"
+          ],
+          "title": "Format",
+          "type": "string"
+        }
+      },
+      "required": [
+        "format"
+      ],
+      "title": "DocumentConfig",
+      "type": "object"
+    },
+    "DocumentProjection": {
+      "additionalProperties": false,
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/DocumentConfig"
+        },
+        "controls": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "button": "#/$defs/ButtonControl",
+                "number": "#/$defs/NumberControl",
+                "select": "#/$defs/SelectControl",
+                "text": "#/$defs/TextControl",
+                "toggle": "#/$defs/ToggleControl"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/NumberControl"
+              },
+              {
+                "$ref": "#/$defs/TextControl"
+              },
+              {
+                "$ref": "#/$defs/ToggleControl"
+              },
+              {
+                "$ref": "#/$defs/SelectControl"
+              },
+              {
+                "$ref": "#/$defs/ButtonControl"
+              }
+            ]
+          },
+          "title": "Controls",
+          "type": "array"
+        },
+        "kind": {
+          "const": "document",
+          "title": "Kind",
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceReference"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "source",
+        "controls",
+        "kind",
+        "config"
+      ],
+      "title": "DocumentProjection",
+      "type": "object"
+    },
+    "ImageSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "height": {
+          "gt": 0,
+          "title": "Height",
+          "type": "integer"
+        },
+        "width": {
+          "gt": 0,
+          "title": "Width",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "width",
+        "height"
+      ],
+      "title": "ImageSchema",
+      "type": "object"
+    },
+    "ImportOrigin": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "import",
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "label"
+      ],
+      "title": "ImportOrigin",
+      "type": "object"
+    },
+    "Layout": {
+      "additionalProperties": false,
+      "properties": {
+        "hidden": {
+          "items": {
+            "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+            "type": "string"
+          },
+          "title": "Hidden",
+          "type": "array"
+        },
+        "root": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "pane": "#/$defs/PaneNode",
+                  "split": "#/$defs/SplitNode"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/PaneNode"
+                },
+                {
+                  "$ref": "#/$defs/SplitNode"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Root"
+        }
+      },
+      "required": [
+        "root",
+        "hidden"
+      ],
+      "title": "Layout",
+      "type": "object"
+    },
+    "NumberControl": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "number",
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "parameter": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Parameter",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "kind",
+        "parameter"
+      ],
+      "title": "NumberControl",
+      "type": "object"
+    },
+    "PaneNode": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "pane",
+          "title": "Kind",
+          "type": "string"
+        },
+        "projection": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Projection",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "projection"
+      ],
+      "title": "PaneNode",
+      "type": "object"
+    },
+    "Parameter": {
+      "additionalProperties": false,
+      "properties": {
+        "constraints": {
+          "$ref": "#/$defs/ParameterConstraints"
+        },
+        "default": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Default"
+        },
+        "nullable": {
+          "title": "Nullable",
+          "type": "boolean"
+        },
+        "type": {
+          "enum": [
+            "string",
+            "number",
+            "integer",
+            "boolean"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "default",
+        "nullable",
+        "constraints"
+      ],
+      "title": "Parameter",
+      "type": "object"
+    },
+    "ParameterChangedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "parameter.changed",
+          "title": "Kind",
+          "type": "string"
+        },
+        "parameter": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Parameter",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "parameter"
+      ],
+      "title": "ParameterChangedEvent",
+      "type": "object"
+    },
+    "ParameterConstraints": {
+      "additionalProperties": false,
+      "description": "Constraints for every parameter type in one shape.\n\nThe semantic pass checks that only the fields of the declared type\nare present, and that the default satisfies them.",
+      "properties": {
+        "enum": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Enum"
+        },
+        "maxLength": {
+          "anyOf": [
+            {
+              "gt": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maxlength"
+        },
+        "maximum": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maximum"
+        },
+        "minimum": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Minimum"
+        }
+      },
+      "title": "ParameterConstraints",
+      "type": "object"
+    },
+    "PlotConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "fit": {
+          "const": "contain",
+          "title": "Fit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "fit"
+      ],
+      "title": "PlotConfig",
+      "type": "object"
+    },
+    "PlotProjection": {
+      "additionalProperties": false,
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/PlotConfig"
+        },
+        "controls": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "button": "#/$defs/ButtonControl",
+                "number": "#/$defs/NumberControl",
+                "select": "#/$defs/SelectControl",
+                "text": "#/$defs/TextControl",
+                "toggle": "#/$defs/ToggleControl"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/NumberControl"
+              },
+              {
+                "$ref": "#/$defs/TextControl"
+              },
+              {
+                "$ref": "#/$defs/ToggleControl"
+              },
+              {
+                "$ref": "#/$defs/SelectControl"
+              },
+              {
+                "$ref": "#/$defs/ButtonControl"
+              }
+            ]
+          },
+          "title": "Controls",
+          "type": "array"
+        },
+        "kind": {
+          "const": "plot",
+          "title": "Kind",
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceReference"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "source",
+        "controls",
+        "kind",
+        "config"
+      ],
+      "title": "PlotProjection",
+      "type": "object"
+    },
+    "RunOrigin": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "run",
+          "title": "Kind",
+          "type": "string"
+        },
+        "output": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Output",
+          "type": "string"
+        },
+        "runId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Runid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "runId",
+        "output"
+      ],
+      "title": "RunOrigin",
+      "type": "object"
+    },
+    "SelectControl": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "select",
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/SelectOption"
+          },
+          "minItems": 1,
+          "title": "Options",
+          "type": "array"
+        },
+        "parameter": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Parameter",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "kind",
+        "parameter",
+        "options"
+      ],
+      "title": "SelectControl",
+      "type": "object"
+    },
+    "SelectOption": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "label"
+      ],
+      "title": "SelectOption",
+      "type": "object"
+    },
+    "Source": {
+      "additionalProperties": false,
+      "properties": {
+        "currentVersion": {
+          "gt": 0,
+          "title": "Currentversion",
+          "type": "integer"
+        },
+        "kind": {
+          "enum": [
+            "table",
+            "image",
+            "text"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "versions": {
+          "minProperties": 1,
+          "patternProperties": {
+            "^[1-9][0-9]*\\z": {
+              "$ref": "#/$defs/SourceVersion"
+            }
+          },
+          "title": "Versions",
+          "type": "object"
+        }
+      },
+      "required": [
+        "kind",
+        "currentVersion",
+        "versions"
+      ],
+      "title": "Source",
+      "type": "object"
+    },
+    "SourceReference": {
+      "additionalProperties": false,
+      "description": "A source reference is exactly a source ID and a version.",
+      "properties": {
+        "sourceId": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Sourceid",
+          "type": "string"
+        },
+        "version": {
+          "gt": 0,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sourceId",
+        "version"
+      ],
+      "title": "SourceReference",
+      "type": "object"
+    },
+    "SourceVersion": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "pattern": "^sha256:[0-9a-f]{64}\\z",
+          "title": "Artifact",
+          "type": "string"
+        },
+        "byteLength": {
+          "ge": 0,
+          "title": "Bytelength",
+          "type": "integer"
+        },
+        "mediaType": {
+          "title": "Mediatype",
+          "type": "string"
+        },
+        "origin": {
+          "discriminator": {
+            "mapping": {
+              "import": "#/$defs/ImportOrigin",
+              "run": "#/$defs/RunOrigin"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ImportOrigin"
+            },
+            {
+              "$ref": "#/$defs/RunOrigin"
+            }
+          ],
+          "title": "Origin"
+        },
+        "schema": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TableSchema"
+            },
+            {
+              "$ref": "#/$defs/ImageSchema"
+            },
+            {
+              "$ref": "#/$defs/TextSchema"
+            }
+          ],
+          "title": "Schema"
+        }
+      },
+      "required": [
+        "artifact",
+        "mediaType",
+        "byteLength",
+        "schema",
+        "origin"
+      ],
+      "title": "SourceVersion",
+      "type": "object"
+    },
+    "SplitNode": {
+      "additionalProperties": false,
+      "properties": {
+        "axis": {
+          "enum": [
+            "horizontal",
+            "vertical"
+          ],
+          "title": "Axis",
+          "type": "string"
+        },
+        "first": {
+          "discriminator": {
+            "mapping": {
+              "pane": "#/$defs/PaneNode",
+              "split": "#/$defs/SplitNode"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/PaneNode"
+            },
+            {
+              "$ref": "#/$defs/SplitNode"
+            }
+          ],
+          "title": "First"
+        },
+        "kind": {
+          "const": "split",
+          "title": "Kind",
+          "type": "string"
+        },
+        "ratio": {
+          "title": "Ratio",
+          "type": "number"
+        },
+        "second": {
+          "discriminator": {
+            "mapping": {
+              "pane": "#/$defs/PaneNode",
+              "split": "#/$defs/SplitNode"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/PaneNode"
+            },
+            {
+              "$ref": "#/$defs/SplitNode"
+            }
+          ],
+          "title": "Second"
+        }
+      },
+      "required": [
+        "kind",
+        "axis",
+        "ratio",
+        "first",
+        "second"
+      ],
+      "title": "SplitNode",
+      "type": "object"
+    },
+    "TableColumn": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "nullable": {
+          "title": "Nullable",
+          "type": "boolean"
+        },
+        "precision": {
+          "anyOf": [
+            {
+              "gt": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Precision"
+        },
+        "scale": {
+          "anyOf": [
+            {
+              "ge": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scale"
+        },
+        "type": {
+          "enum": [
+            "string",
+            "bool",
+            "int64",
+            "float64",
+            "decimal",
+            "date",
+            "timestamp"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "nullable"
+      ],
+      "title": "TableColumn",
+      "type": "object"
+    },
+    "TableConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "columns": {
+          "anyOf": [
+            {
+              "items": {
+                "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Columns"
+        },
+        "selection": {
+          "enum": [
+            "none",
+            "single"
+          ],
+          "title": "Selection",
+          "type": "string"
+        }
+      },
+      "required": [
+        "columns",
+        "selection"
+      ],
+      "title": "TableConfig",
+      "type": "object"
+    },
+    "TableProjection": {
+      "additionalProperties": false,
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/TableConfig"
+        },
+        "controls": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "button": "#/$defs/ButtonControl",
+                "number": "#/$defs/NumberControl",
+                "select": "#/$defs/SelectControl",
+                "text": "#/$defs/TextControl",
+                "toggle": "#/$defs/ToggleControl"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/NumberControl"
+              },
+              {
+                "$ref": "#/$defs/TextControl"
+              },
+              {
+                "$ref": "#/$defs/ToggleControl"
+              },
+              {
+                "$ref": "#/$defs/SelectControl"
+              },
+              {
+                "$ref": "#/$defs/ButtonControl"
+              }
+            ]
+          },
+          "title": "Controls",
+          "type": "array"
+        },
+        "kind": {
+          "const": "table",
+          "title": "Kind",
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceReference"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "source",
+        "controls",
+        "kind",
+        "config"
+      ],
+      "title": "TableProjection",
+      "type": "object"
+    },
+    "TableSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/TableColumn"
+          },
+          "minItems": 1,
+          "title": "Columns",
+          "type": "array"
+        },
+        "rowKey": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rowkey"
+        }
+      },
+      "required": [
+        "columns"
+      ],
+      "title": "TableSchema",
+      "type": "object"
+    },
+    "TextControl": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "text",
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "parameter": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Parameter",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "kind",
+        "parameter"
+      ],
+      "title": "TextControl",
+      "type": "object"
+    },
+    "TextSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "encoding": {
+          "const": "utf-8",
+          "title": "Encoding",
+          "type": "string"
+        }
+      },
+      "required": [
+        "encoding"
+      ],
+      "title": "TextSchema",
+      "type": "object"
+    },
+    "ToggleControl": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "toggle",
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "parameter": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Parameter",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "kind",
+        "parameter"
+      ],
+      "title": "ToggleControl",
+      "type": "object"
+    }
+  },
+  "$id": "https://melt.dev/protocol/document-schema.json",
+  "$ref": "#/$defs/Document",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "The melt/v0.1 canonical document",
+  "x-generated": {
+    "command": "make protocol (scripts/generate_protocol.py)",
+    "note": "Generated file: do not edit by hand. Regeneration must reproduce the committed bytes; scripts/check.sh enforces it.",
+    "source": "python/melt/schema, the single restricted vocabulary of SPEC.md section 17"
+  }
+}

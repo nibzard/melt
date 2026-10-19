@@ -182,9 +182,112 @@ def test_unsafe_integers_are_rejected(sales_document_copy):
     )
 
 
+def test_unsafe_integer_defaults_are_rejected(sales_document_copy):
+    """Parameter defaults reject unsafe integers before rounding (T037).
+
+    Regression: `9007199254740993` once parsed to the float
+    `9007199254740992.0` and committed silently.
+    """
+
+    sales_document_copy["parameters"]["minimum"]["default"] = 2**53 + 1
+    assert first_code(sales_document_copy) == (
+        "E_TYPE",
+        "/parameters/minimum/default",
+    )
+
+
+def test_scalar_union_failure_collapses_to_one_diagnostic(sales_document_copy):
+    """One rejected scalar field reports one decisive diagnostic (T040).
+
+    Regression: an unsafe integer default emitted three sibling
+    diagnostics, one per `JsonScalar` branch: the decisive safe-range
+    message plus `Input should be a valid boolean` and `Input should be
+    a valid string`, all `E_TYPE` at the same path.
+    """
+
+    sales_document_copy["parameters"]["minimum"]["default"] = 2**53 + 1
+    diagnostics = validate_document(sales_document_copy)
+    assert [(item.code, item.path) for item in diagnostics] == [
+        ("E_TYPE", "/parameters/minimum/default")
+    ]
+    assert "safe integer range" in diagnostics[0].message
+
+
+def test_non_scalar_default_collapses_to_one_diagnostic(sales_document_copy):
+    """A value that no scalar branch accepts reports one diagnostic."""
+
+    sales_document_copy["parameters"]["minimum"]["default"] = []
+    diagnostics = validate_document(sales_document_copy)
+    assert [(item.code, item.path) for item in diagnostics] == [
+        ("E_TYPE", "/parameters/minimum/default")
+    ]
+    assert diagnostics[0].message == "expected a JSON number, no coercion"
+
+
+def test_branch_named_unknown_fields_do_not_collapse():
+    """Distinct diagnostics survive beside the collapse rule (T040).
+
+    Two unknown fields named like scalar branch markers under an entity
+    named `default` report two separate diagnostics. The collapse rule
+    merges only the branch errors of one scalar union, never unrelated
+    errors that happen to carry marker-like names.
+    """
+
+    document = dict(EMPTY_DOCUMENT)
+    document["projections"] = {
+        "default": {
+            "kind": "table",
+            "title": "Sales",
+            "source": None,
+            "config": {"columns": None, "selection": "none"},
+            "controls": [],
+            "bool": 1,
+            "str": 2,
+        }
+    }
+    pairs = codes(document)
+    assert ("E_SCHEMA", "/projections/default/bool") in pairs
+    assert ("E_SCHEMA", "/projections/default/str") in pairs
+
+
 def test_negative_unsafe_integers_are_rejected(sales_document_copy):
+    # The rejection comes from the safe range itself, not from the
+    # constraint minimum of the sales fixture, which this default also
+    # breaks.
     sales_document_copy["parameters"]["minimum"]["default"] = -(2**53)
-    assert first_code(sales_document_copy)[0] == "E_TYPE"
+    assert first_code(sales_document_copy) == (
+        "E_TYPE",
+        "/parameters/minimum/default",
+    )
+
+
+def test_unsafe_integer_constraint_bounds_are_rejected(sales_document_copy):
+    sales_document_copy["parameters"]["minimum"]["constraints"] = {
+        "minimum": 2**53 + 1
+    }
+    assert first_code(sales_document_copy) == (
+        "E_TYPE",
+        "/parameters/minimum/constraints/minimum",
+    )
+    copy = json.loads(json.dumps(sales_document_copy))
+    copy["parameters"]["minimum"]["constraints"] = {"maximum": -(2**53) - 1}
+    assert first_code(copy) == (
+        "E_TYPE",
+        "/parameters/minimum/constraints/maximum",
+    )
+
+
+def test_safe_integer_bounds_are_accepted(sales_document_copy):
+    """The inclusive bounds of the safe range stay valid numbers."""
+
+    sales_document_copy["parameters"]["minimum"]["default"] = 2**53 - 1
+    sales_document_copy["parameters"]["minimum"]["constraints"] = {
+        "minimum": -(2**53 - 1),
+        "maximum": 2**53 - 1,
+    }
+    document = parse_document(sales_document_copy)
+    assert document.parameters["minimum"].default == 9007199254740991.0
+    assert document.parameters["minimum"].constraints.minimum == -9007199254740991.0
 
 
 def test_invalid_entity_ids_are_rejected():

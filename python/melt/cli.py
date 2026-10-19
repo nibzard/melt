@@ -35,7 +35,8 @@ from pathlib import Path
 from melt import LANGUAGE_ID, __version__
 from melt.schema.canonical import document_hash, model_to_wire
 from melt.schema.diagnostics import Diagnostic
-from melt.schema.document import MeltDocumentError, parse_document
+from melt.schema.document import MeltDocumentError
+from melt.schema.semantic import parse_document_for_language
 
 EXIT_OK = 0
 EXIT_INVALID = 1
@@ -230,7 +231,7 @@ def run_validate(args: argparse.Namespace) -> Outcome:
     document = _read_file(args.file, "document")
     if args.catalog is None:
         try:
-            parsed = parse_document(document)
+            parsed = parse_document_for_language(document)
         except MeltDocumentError as error:
             return Outcome(
                 EXIT_INVALID,

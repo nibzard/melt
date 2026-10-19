@@ -8,8 +8,10 @@ negotiate older records instead of silently misreading them
 Records in this module: `RunRecord`, `RegistrationRecord`,
 `PermissionGrantRecord`, `ArtifactRecord`, `OutputGroupRecord`,
 `PendingIntentRecord`, `PublicationRecord`, `ParameterState`,
-`CommandReceipt`, `Snapshot`, `ChangeNotification`, `PageRequest`, and
-`PageResponse`.
+`ReferenceState`, `CommandReceipt`, `Snapshot`, `ChangeNotification`,
+`PageRequest`, and `PageResponse`. `ReferenceState` and the extension
+fields of `Snapshot` serve the provisional `melt/semantic-draft-1`
+language of RFC 001; every `melt/v0.1` record is unchanged.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ from pydantic import (
 
 from melt.schema.canonical import parse_json
 from melt.schema.commands import (
+    AnyDocument,
     CommandResponse,
     Filter,
     MethodName,
@@ -40,7 +43,7 @@ from melt.schema.diagnostics import (
     Diagnostic,
     DiagnosticCode,
     MeltSchemaError,
-    diagnostic_from_pydantic_error,
+    diagnostics_from_pydantic_errors,
     with_code,
 )
 from melt.schema.document import (
@@ -60,6 +63,7 @@ from melt.schema.document import (
     Timestamp,
 )
 from melt.schema.limits import DEFAULT_LIMITS
+from melt.schema.semantic import AnyMeasuredSchema, SemanticReference
 
 RECORD_SCHEMA_VERSION = 1
 """The record schema version of `melt/v0.1`."""
@@ -93,14 +97,49 @@ RunDisposition = Literal["none", "current", "superseded", "rejected"]
 
 
 class CapturedParameter(MeltModel):
-    """One parameter captured at admission (SPEC.md section 7.3)."""
+    """One parameter captured at admission (SPEC.md section 7.3).
+
+    ``revision`` is the state revision of the captured value.
+    ``incarnation`` is the identity incarnation of the parameter the
+    admission captured: deleting and recreating a parameter starts a
+    new incarnation while the state revision begins again at one
+    (SPEC.md section 12.3), so the revision alone cannot prove the
+    captured value still belongs to the same parameter.
+
+    A record saved before identity capture holds no incarnation. Such
+    a capture reads as the first incarnation, which no recreation can
+    satisfy again: a recreation only moves the stored incarnation
+    above one, so an older record stays publishable exactly while its
+    parameter was never recreated.
+    """
 
     value: JsonScalar | None
     revision: PositiveSafeInt
+    incarnation: PositiveSafeInt | None = None
 
 
 class RunRecord(RecordBase):
-    """One admitted or completed run, with its invocation snapshot."""
+    """One admitted or completed run, with its invocation snapshot.
+
+    The snapshot is immutable from admission (SPEC.md section 7.3):
+    ``parameters`` carries each mapped parameter's captured value,
+    state revision, and identity incarnation, and ``parameterIds``
+    names the workspace parameter each captured entry addressed, so
+    launch and publication compare identity without consulting a
+    definition that may since have changed. A record saved before
+    identity capture holds no map and captures without incarnations;
+    both read through their defaults (:class:`CapturedParameter`).
+
+    ``outputIncarnation`` is the stable output identity of the owning
+    action the run captured (RFC 001 section 8.1). The publication
+    group name is reusable, so it cannot identify a calculation: a
+    run belongs to the action that admitted it, and the incarnation
+    proves that action was never deleted and recreated. A record
+    saved before output identity capture holds none; such a run
+    resolves through its owning action alone, exactly as it did
+    before the field existed, and the same-transaction invalidation
+    of a recreation still retires it.
+    """
 
     recordType: Literal["run"]
     runId: OpaqueId
@@ -109,6 +148,7 @@ class RunRecord(RecordBase):
     actionRevision: PositiveSafeInt
     outputGroup: EntityId
     outputGroupRevision: PositiveSafeInt
+    outputIncarnation: OpaqueId | None = None
     generation: PositiveSafeInt
     registrationId: OpaqueId
     registrationRevision: PositiveSafeInt
@@ -116,6 +156,7 @@ class RunRecord(RecordBase):
     environmentFingerprint: NonEmptyStr
     inputs: dict[EntityId, SourceReference]
     parameters: dict[EntityId, CapturedParameter]
+    parameterIds: dict[EntityId, EntityId] = Field(default_factory=dict)
     permissionDecision: OpaqueId | None = None
     state: RunState
     disposition: RunDisposition
@@ -162,6 +203,12 @@ class PendingIntentRecord(RecordBase):
     restarts its timer; a restart marks it interrupted instead of
     executing it. The captured values are immutable from the moment they
     are captured: the dispatched run receives exactly them.
+
+    ``outputIncarnation`` is the stable output identity of the owning
+    action the intent captured (RFC 001 section 8.1). The dispatched
+    run carries it forward, so the current pointer of an output stays
+    bound to the calculation that published it even when another action
+    later reuses the group name.
     """
 
     recordType: Literal["pendingIntent"]
@@ -175,6 +222,7 @@ class PendingIntentRecord(RecordBase):
     environmentFingerprint: NonEmptyStr
     outputGroup: EntityId
     outputGroupRevision: PositiveSafeInt
+    outputIncarnation: OpaqueId | None = None
     generation: PositiveSafeInt
     parameters: dict[EntityId, CapturedParameter] = Field(default_factory=dict)
     parameterIds: dict[EntityId, EntityId] = Field(default_factory=dict)
@@ -339,18 +387,21 @@ class ArtifactRecord(RecordBase):
     the bytes. The service rebuilds its trusted source catalog from
     these records, so a reopened workspace keeps every imported
     artifact without rereading or re-executing anything.
+
+    The `graph` kind and the graph identity map belong to
+    `melt/semantic-draft-1`; every other kind keeps its v0.1 shape.
     """
 
     recordType: Literal["artifact"]
     artifact: ArtifactHash
-    kind: Literal["table", "image", "text"]
+    kind: Literal["table", "image", "text", "graph"]
     mediaType: NonEmptyStr
     byteLength: NonNegativeSafeInt
-    schema_: SourceSchema = Field(alias="schema")
+    schema_: AnyMeasuredSchema = Field(alias="schema")
     createdAt: Timestamp
 
     @property
-    def schema(self) -> SourceSchema:
+    def schema(self) -> AnyMeasuredSchema:
         """The measured schema, under its wire name."""
 
         return self.schema_
@@ -366,6 +417,23 @@ class ParameterState(RecordBase):
     recordType: Literal["parameterState"]
     parameterId: EntityId
     value: JsonScalar | None
+    revision: PositiveSafeInt
+
+
+class ReferenceState(RecordBase):
+    """The stored value and revision of one reference state entry
+    (RFC 001 section 4).
+
+    The value is one serialized semantic reference or null. Revisions
+    begin at 1 and a successful assignment increments them, exactly as
+    parameter state does. A reference that a newer source version
+    leaves unresolved stays stored: resolution is reported, never
+    rewritten (RFC 001 section 3.3).
+    """
+
+    recordType: Literal["referenceState"]
+    stateId: EntityId
+    value: SemanticReference | None
     revision: PositiveSafeInt
 
 
@@ -397,19 +465,37 @@ class Snapshot(RecordBase):
     `incarnations` counts how often each parameter identifier was
     created. Deleting and recreating a parameter starts a new identity
     incarnation, so old events cannot target the new one (section 12.3).
+
+    `collectionIncarnations` and `referenceStates` carry the RFC 001
+    extension state of `melt/semantic-draft-1` workspaces: the opaque
+    incarnation the service issued for each semantic collection, and
+    the stored reference value and revision of each state entry.
+    `outputIncarnations` carries the stable output incarnation the
+    service issued for each action of the extension (RFC 001 8.1).
+    All three stay empty for a `melt/v0.1` workspace, whose snapshots
+    are unchanged.
     """
 
     recordType: Literal["snapshot"]
     workspaceId: EntityId
-    language: Literal["melt/v0.1"]
+    language: Literal["melt/v0.1", "melt/semantic-draft-1"]
     epoch: PositiveSafeInt
     commitSequence: NonNegativeSafeInt
-    document: Document
+    document: AnyDocument
     entityRevisions: dict[NonEmptyStr, PositiveSafeInt]
     parameterStates: dict[EntityId, ParameterState] = Field(
         default_factory=dict
     )
     incarnations: dict[EntityId, PositiveSafeInt] = Field(
+        default_factory=dict
+    )
+    collectionIncarnations: dict[EntityId, NonEmptyStr] = Field(
+        default_factory=dict
+    )
+    outputIncarnations: dict[EntityId, NonEmptyStr] = Field(
+        default_factory=dict
+    )
+    referenceStates: dict[EntityId, ReferenceState] = Field(
         default_factory=dict
     )
     activeRuns: tuple[RunRecord, ...] = ()
@@ -521,6 +607,7 @@ MeltRecord = Union[
     PendingIntentRecord,
     PublicationRecord,
     ParameterState,
+    ReferenceState,
     CommandReceipt,
     Snapshot,
     ChangeNotification,
@@ -537,6 +624,7 @@ RECORD_TYPES: dict[str, int] = {
     "pendingIntent": RECORD_SCHEMA_VERSION,
     "publication": RECORD_SCHEMA_VERSION,
     "parameterState": RECORD_SCHEMA_VERSION,
+    "referenceState": RECORD_SCHEMA_VERSION,
     "commandReceipt": RECORD_SCHEMA_VERSION,
     "snapshot": RECORD_SCHEMA_VERSION,
     "changeNotification": RECORD_SCHEMA_VERSION,
@@ -604,10 +692,7 @@ def parse_record(data: "str | bytes | bytearray | dict") -> MeltRecord:
         return _record_adapter().validate_python(value)
     except ValidationError as error:
         raise MeltRecordError(
-            [
-                diagnostic_from_pydantic_error(item, DiagnosticCode.SCHEMA)
-                for item in error.errors()
-            ]
+            diagnostics_from_pydantic_errors(error.errors(), DiagnosticCode.SCHEMA)
         ) from error
 
 
@@ -635,6 +720,7 @@ __all__ = [
     "PublicationRecord",
     "RECORD_SCHEMA_VERSION",
     "RECORD_TYPES",
+    "ReferenceState",
     "RegistrationRecord",
     "RunDisposition",
     "RunRecord",

@@ -9,14 +9,15 @@ moment the test commits its mutation, so every "during execution" case
 races a live process instead of the dispatch-to-launch window the
 earlier suites used.
 
-The launch path of round 1 blocks its caller until the process exits
+The launch path of round 1 blocked its caller until the process exits
 (``WorkspaceService.launch_admitted_run``), so each test drives that
 call from one helper thread and mutates through the same service
 handlers from the test thread while the launcher parks inside the
 process wait. The mutations therefore interleave with a live project
-process exactly as they will under the non-blocking execution slot of
-backlog task T035; the assertions hold for both drivers. The framed
-channel and the process-group cancellation signal stay owned by T035.
+process under both drivers: this blocking one and the non-blocking
+execution slot of backlog task T035, whose framed-channel liveness and
+signal-driven cancellation the execution-slot suite proves
+(``tests/integration/test_execution_slot.py``).
 
 Scenario map (SPEC.md section 18.3, rows in table order):
 
@@ -259,16 +260,20 @@ def seed_race(
     script: str,
     full: bool = False,
     grant: bool = True,
+    open_kwargs: "dict | None" = None,
 ):
     """Seed the sales workspace behind one gated script.
 
     ``full`` registers the two-output contract of SPEC.md section 16
     with the plot pane; the default registers the light table-only
-    contract the scheduling suite uses.
+    contract the scheduling suite uses. ``open_kwargs`` reach the
+    ``WorkspaceService.open`` call of the seeding helper.
     """
 
     if not full:
-        return seed_workspace(adapter, script=script, grant=grant)
+        return seed_workspace(
+            adapter, script=script, grant=grant, open_kwargs=open_kwargs
+        )
     return seed_workspace(
         adapter,
         script=script,
@@ -279,6 +284,7 @@ def seed_race(
         },
         extra_projections={"revenue": REVENUE_PROJECTION},
         grant=grant,
+        open_kwargs=open_kwargs,
     )
 
 

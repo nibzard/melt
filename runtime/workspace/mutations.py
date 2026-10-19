@@ -11,22 +11,31 @@ A ``workspace.apply`` request is planned before anything is written:
 3. State continuity is checked against the final definitions: changing
    a parameter definition requires its current value to remain valid,
    or the same transaction must supply ``parameter.set`` with a valid
-   replacement and the expected state revision (section 12.3).
+   replacement and the expected state revision (section 12.3). The
+   reference state of `melt/semantic-draft-1` follows the same rule
+   with ``state.set``: an assignment must name the declared collection
+   and its current incarnation, and a stored selection survives a
+   definition change only while it stays valid (RFC 001 section 4).
 4. The final candidate is validated once through the compiler stages,
-   with the resulting parameter state and the trusted catalog and
-   registry inputs of the service.
+   with the resulting parameter and reference state and the trusted
+   catalog and registry inputs of the service.
 
 The plan carries the new revisions, the resulting parameter state, the
 identity incarnation changes, and the compiler read set observed during
 planning. Committing applies every change or none: a plan with
 diagnostics never reaches the store.
+
+The extension operations of RFC 001 are planned here and refused for a
+`melt/v0.1` workspace, whose document defines neither the
+``collections`` nor the ``state`` map: those operations address record
+paths that language never creates.
 """
 
 from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from melt.schema.canonical import model_to_wire
 from melt.schema.commands import (
@@ -36,6 +45,7 @@ from melt.schema.commands import (
     EntityReplace,
     LayoutReplace,
     ParameterSet,
+    StateSet,
 )
 from melt.schema.diagnostics import (
     Diagnostic,
@@ -43,17 +53,30 @@ from melt.schema.diagnostics import (
     sorted_diagnostics,
 )
 from melt.schema.document import Document, Parameter
+from melt.schema.semantic import (
+    SEMANTIC_LANGUAGE_ID,
+    SemanticReference,
+    SemanticState,
+)
 from runtime.compiler.compiler import (
     CompileRequest,
     compile_document,
     parameter_value_error,
+    reference_collection_error,
+    reference_incarnation_error,
 )
+from runtime.workspace.outputs import mint_output_incarnation
+from runtime.workspace.semantic import mint_incarnation
 from runtime.workspace.state import (
     LAYOUT_PATH,
     ParameterStateValue,
+    ReferenceStateValue,
+    STATE_ENTITY_PATH_PREFIX,
     WorkspaceState,
     entity_path,
     pointer_key,
+    reference_state_path,
+    reference_values_equal,
     state_path,
     values_equal,
 )
@@ -96,6 +119,14 @@ class PendingSet:
 
 
 @dataclass
+class PendingReferenceSet:
+    """One ``state.set`` held until the final validation."""
+
+    operation: int
+    value: "SemanticReference | None"
+
+
+@dataclass
 class MutationPlan:
     """The result of planning one mutation transaction."""
 
@@ -108,6 +139,24 @@ class MutationPlan:
     removed_states: set[str] = field(default_factory=set)
     incarnation_bumps: dict[str, int] = field(default_factory=dict)
     observed_revisions: dict[str, int] = field(default_factory=dict)
+    # The RFC 001 extension state of `melt/semantic-draft-1`.
+    touched_reference_state_paths: dict[str, PendingReferenceSet] = field(
+        default_factory=dict
+    )
+    new_reference_states: dict[str, ReferenceStateValue] = field(
+        default_factory=dict
+    )
+    removed_reference_states: set[str] = field(default_factory=set)
+    collection_incarnation_mints: dict[str, str] = field(default_factory=dict)
+    collection_incarnation_removals: set[str] = field(default_factory=set)
+    candidate_incarnations: dict[str, str] = field(default_factory=dict)
+    # The stable output identities of RFC 001 section 8.1: one
+    # incarnation per action of the extension language.
+    output_incarnation_mints: dict[str, str] = field(default_factory=dict)
+    output_incarnation_removals: set[str] = field(default_factory=set)
+    candidate_output_incarnations: dict[str, str] = field(
+        default_factory=dict
+    )
 
     @property
     def ok(self) -> bool:
@@ -118,7 +167,8 @@ class MutationPlan:
 
         A replaced record always counts as changed, even when the
         replacement appears equivalent (SPEC.md section 13.3). A
-        ``parameter.set`` with an equal value changes nothing.
+        ``parameter.set`` with an equal value changes nothing, and a
+        ``state.set`` with an equal reference changes nothing too.
         """
 
         changed = [
@@ -128,6 +178,13 @@ class MutationPlan:
         ]
         changed.extend(state_path(parameter_id) for parameter_id in self.new_states)
         changed.extend(state_path(parameter_id) for parameter_id in self.removed_states)
+        changed.extend(
+            reference_state_path(state_id) for state_id in self.new_reference_states
+        )
+        changed.extend(
+            reference_state_path(state_id)
+            for state_id in self.removed_reference_states
+        )
         return sorted(set(changed))
 
     def new_revisions(self, state: WorkspaceState) -> dict[str, int]:
@@ -195,8 +252,14 @@ def plan_mutation(
     *,
     source_catalog: Any = None,
     action_registry: Any = None,
+    mint: "Callable[[], str] | None" = None,
 ) -> MutationPlan:
-    """Plan one ``workspace.apply`` transaction without writing."""
+    """Plan one ``workspace.apply`` transaction without writing.
+
+    ``mint`` issues the incarnation of a collection the transaction
+    creates. Tests may inject a deterministic minter; the service
+    passes the opaque token minter of RFC 001 section 3.2.
+    """
 
     observed = state.read_set()
     plan = MutationPlan(candidate={}, observed_revisions=observed)
@@ -211,10 +274,13 @@ def plan_mutation(
         )
         return plan
 
+    issue_incarnation = mint or mint_incarnation
+    language = state.document.get("language")
     candidate = copy.deepcopy(state.document)
     plan.candidate = candidate
     touches: dict[str, EntityTouch] = {}
     pending_sets: dict[str, PendingSet] = {}
+    pending_reference_sets: dict[str, PendingReferenceSet] = {}
     touched_order: list[str] = []
 
     def _touch(path: str, index: int) -> EntityTouch:
@@ -231,6 +297,17 @@ def plan_mutation(
         touch.last_operation = index
         return touch
 
+    def _language_error(path: str, collection: str) -> Diagnostic:
+        return _diagnostic(
+            DiagnosticCode.VERSION,
+            path,
+            f"the {language!r} document defines no {collection!r}"
+            " entity collection; the semantic collections and reference"
+            " state of RFC 001 need melt/semantic-draft-1",
+            hint="Migrate the workspace to the extension language, or"
+            " address a collection the language defines.",
+        )
+
     # ------------------------------------------------------------------
     # Stage A: the expectation map
     # ------------------------------------------------------------------
@@ -243,6 +320,10 @@ def plan_mutation(
             path = state_path(operation.id)
             if path not in touched_order:
                 touched_order.append(path)
+        elif isinstance(operation, StateSet):
+            path = reference_state_path(operation.id)
+            if path not in touched_order:
+                touched_order.append(path)
         elif isinstance(operation, LayoutReplace):
             _touch(LAYOUT_PATH, index)
 
@@ -252,6 +333,7 @@ def plan_mutation(
         plan.diagnostics = sorted_diagnostics(diagnostics)
         plan.entity_touches = touches
         plan.touched_state_paths = pending_sets
+        plan.touched_reference_state_paths = pending_reference_sets
         return plan
 
     # ------------------------------------------------------------------
@@ -260,60 +342,69 @@ def plan_mutation(
 
     for index, operation in enumerate(operations):
         path = f"/operations/{index}"
-        if isinstance(operation, EntityCreate):
-            collection = candidate[operation.collection]
-            record = entity_path(operation.collection, operation.id)
-            if operation.id in collection:
+        if isinstance(operation, (EntityCreate, EntityReplace, EntityDelete)):
+            if operation.collection not in candidate:
                 diagnostics.append(
-                    _diagnostic(
-                        DiagnosticCode.CONFLICT,
-                        f"{path}/id",
-                        f"entity {record!r} already exists at revision"
-                        f" {state.current_revision(record)}; creation"
-                        " requires absence",
-                    )
+                    _language_error(f"{path}/collection", operation.collection)
                 )
                 continue
-            collection[operation.id] = model_to_wire(operation.value)
-            touch = _touch(record, index)
-            touch.exists_after = True
-            touch.created = True
-            touch.deleted = False
-        elif isinstance(operation, EntityReplace):
             collection = candidate[operation.collection]
             record = entity_path(operation.collection, operation.id)
-            if operation.id not in collection:
-                diagnostics.append(
-                    _diagnostic(
-                        DiagnosticCode.REFERENCE,
-                        f"{path}/id",
-                        f"entity {record!r} does not exist; replace and"
-                        " delete require an existing record",
+            if isinstance(operation, EntityCreate):
+                if operation.id in collection:
+                    diagnostics.append(
+                        _diagnostic(
+                            DiagnosticCode.CONFLICT,
+                            f"{path}/id",
+                            f"entity {record!r} already exists at revision"
+                            f" {state.current_revision(record)}; creation"
+                            " requires absence",
+                        )
                     )
-                )
-                continue
-            collection[operation.id] = model_to_wire(operation.value)
-            touch = _touch(record, index)
-            touch.exists_after = True
-        elif isinstance(operation, EntityDelete):
-            collection = candidate[operation.collection]
-            record = entity_path(operation.collection, operation.id)
-            if operation.id not in collection:
-                diagnostics.append(
-                    _diagnostic(
-                        DiagnosticCode.REFERENCE,
-                        f"{path}/id",
-                        f"entity {record!r} does not exist; replace and"
-                        " delete require an existing record",
+                    continue
+                collection[operation.id] = model_to_wire(operation.value)
+                touch = _touch(record, index)
+                touch.exists_after = True
+                touch.created = True
+                touch.deleted = False
+            elif isinstance(operation, EntityReplace):
+                if operation.id not in collection:
+                    diagnostics.append(
+                        _diagnostic(
+                            DiagnosticCode.REFERENCE,
+                            f"{path}/id",
+                            f"entity {record!r} does not exist; replace and"
+                            " delete require an existing record",
+                        )
                     )
-                )
-                continue
-            del collection[operation.id]
-            touch = _touch(record, index)
-            touch.exists_after = False
-            touch.deleted = True
+                    continue
+                collection[operation.id] = model_to_wire(operation.value)
+                touch = _touch(record, index)
+                touch.exists_after = True
+            else:
+                if operation.id not in collection:
+                    diagnostics.append(
+                        _diagnostic(
+                            DiagnosticCode.REFERENCE,
+                            f"{path}/id",
+                            f"entity {record!r} does not exist; replace and"
+                            " delete require an existing record",
+                        )
+                    )
+                    continue
+                del collection[operation.id]
+                touch = _touch(record, index)
+                touch.exists_after = False
+                touch.deleted = True
         elif isinstance(operation, ParameterSet):
             pending_sets[operation.id] = PendingSet(
+                operation=index, value=operation.value
+            )
+        elif isinstance(operation, StateSet):
+            if "state" not in candidate:
+                diagnostics.append(_language_error(f"{path}/op", "state"))
+                continue
+            pending_reference_sets[operation.id] = PendingReferenceSet(
                 operation=index, value=operation.value
             )
         elif isinstance(operation, LayoutReplace):
@@ -324,6 +415,7 @@ def plan_mutation(
         plan.diagnostics = sorted_diagnostics(diagnostics)
         plan.entity_touches = touches
         plan.touched_state_paths = pending_sets
+        plan.touched_reference_state_paths = pending_reference_sets
         return plan
 
     # ------------------------------------------------------------------
@@ -454,11 +546,178 @@ def plan_mutation(
         plan.diagnostics = sorted_diagnostics(diagnostics)
         plan.entity_touches = touches
         plan.touched_state_paths = pending_sets
+        plan.touched_reference_state_paths = pending_reference_sets
         return plan
 
     plan.new_states = resulting_states
     plan.entity_touches = touches
     plan.touched_state_paths = pending_sets
+
+    # ------------------------------------------------------------------
+    # Stage C': the semantic collections and reference state of the
+    # melt/semantic-draft-1 extension (RFC 001 sections 3 and 4)
+    # ------------------------------------------------------------------
+
+    resulting_reference_states: dict[str, ReferenceStateValue] = {}
+    candidate_incarnations = dict(state.collection_incarnations)
+    for record, touch in touches.items():
+        collection_name, _, entity_id = record.partition("/")
+        if collection_name != "collections":
+            continue
+        if touch.created and touch.exists_after:
+            # Creating the collection issues its opaque incarnation;
+            # replacing a definition keeps it, because the collection
+            # identity survives a binding change (RFC 001 3.2).
+            incarnation = issue_incarnation()
+            candidate_incarnations[entity_id] = incarnation
+            plan.collection_incarnation_mints[entity_id] = incarnation
+        if not touch.exists_after:
+            candidate_incarnations.pop(entity_id, None)
+            plan.collection_incarnation_removals.add(entity_id)
+    plan.candidate_incarnations = candidate_incarnations
+
+    # The stable output identities of RFC 001 section 8.1: creating an
+    # action of the extension issues one opaque incarnation, replacing
+    # a definition keeps it — the calculation's identity survives a
+    # mapping change — and deleting the action removes it, so old
+    # subscribers cannot attach to a recreated calculation.
+    candidate_output_incarnations = dict(state.output_incarnations)
+    if language == SEMANTIC_LANGUAGE_ID:
+        for record, touch in touches.items():
+            collection_name, _, entity_id = record.partition("/")
+            if collection_name != "actions":
+                continue
+            if touch.created and touch.exists_after:
+                incarnation = mint_output_incarnation()
+                candidate_output_incarnations[entity_id] = incarnation
+                plan.output_incarnation_mints[entity_id] = incarnation
+            if not touch.exists_after:
+                candidate_output_incarnations.pop(entity_id, None)
+                plan.output_incarnation_removals.add(entity_id)
+    plan.candidate_output_incarnations = candidate_output_incarnations
+
+    state_definitions_after = candidate.get("state", {})
+    collections_after = candidate.get("collections", {})
+    for state_id in sorted(state_definitions_after):
+        record = entity_path("state", state_id)
+        touch = touches.get(record)
+        pending = pending_reference_sets.get(state_id)
+        entry = SemanticState.model_validate(state_definitions_after[state_id])
+        current = state.reference_states.get(state_id)
+
+        def _assignment_error(
+            value: "SemanticReference | None",
+        ) -> "tuple[str, str] | None":
+            """The code and message of one invalid assignment, or None.
+
+            A reference must match the declared collection
+            (`E_TYPE`, a reference-type mismatch) and the collection's
+            current incarnation in the candidate (`E_CONFLICT`, a
+            stale identity), exactly as RFC 001 sections 3.2 and 4
+            require at assignment time.
+            """
+
+            if value is None:
+                return None
+            message = reference_collection_error(entry, value)
+            if message is not None:
+                return DiagnosticCode.TYPE, message
+            if value.collection in collections_after:
+                message = reference_incarnation_error(value, candidate_incarnations)
+                if message is not None:
+                    return DiagnosticCode.CONFLICT, message
+            return None
+
+        if touch is not None and touch.created:
+            value = pending.value if pending is not None else None
+            if pending is not None:
+                error = _assignment_error(pending.value)
+                if error is not None:
+                    code, message = error
+                    diagnostics.append(
+                        _diagnostic(
+                            code,
+                            f"/operations/{pending.operation}/value",
+                            f"reference does not satisfy state"
+                            f" {state_id!r}: {message}",
+                        )
+                    )
+                    continue
+            resulting_reference_states[state_id] = ReferenceStateValue(
+                value=value, revision=1
+            )
+            continue
+
+        if touch is not None and not touch.exists_after:
+            continue
+
+        value = (
+            pending.value
+            if pending is not None
+            else current.value
+            if current is not None
+            else None
+        )
+        if current is None:
+            # Cannot happen while every creation initializes state, but
+            # a hand-forged snapshot is refused rather than silently
+            # repaired.
+            diagnostics.append(
+                _diagnostic(
+                    DiagnosticCode.STATE_MIGRATION,
+                    f"/operations/{touch.last_operation}" if touch else "/operations",
+                    f"reference state {state_id!r} holds no stored record",
+                )
+            )
+            continue
+
+        error = _assignment_error(value)
+        if error is not None:
+            code, message = error
+            if pending is not None:
+                diagnostics.append(
+                    _diagnostic(
+                        code,
+                        f"/operations/{pending.operation}/value",
+                        f"reference does not satisfy state {state_id!r}:"
+                        f" {message}",
+                    )
+                )
+            elif touch is not None:
+                diagnostics.append(
+                    _diagnostic(
+                        DiagnosticCode.STATE_MIGRATION,
+                        f"/operations/{touch.last_operation}",
+                        f"reference state {state_id!r}: the stored"
+                        f" selection violates the new definition:"
+                        f" {message}",
+                        hint="Supply state.set with a valid reference or"
+                        " null and the expected state revision in the"
+                        " same transaction (RFC 001 section 4).",
+                    )
+                )
+            continue
+
+        if pending is not None and not reference_values_equal(
+            value, current.value
+        ):
+            resulting_reference_states[state_id] = ReferenceStateValue(
+                value=value, revision=current.revision + 1
+            )
+
+    for record, touch in touches.items():
+        if not record.startswith(f"{STATE_ENTITY_PATH_PREFIX}/"):
+            continue
+        state_id = record[len(STATE_ENTITY_PATH_PREFIX) + 1 :]
+        if touch.deleted and not touch.exists_after:
+            plan.removed_reference_states.add(state_id)
+
+    if diagnostics:
+        plan.diagnostics = sorted_diagnostics(diagnostics)
+        return plan
+
+    plan.new_reference_states = resulting_reference_states
+    plan.touched_reference_state_paths = pending_reference_sets
 
     # ------------------------------------------------------------------
     # Stage D: validate the final candidate once through the compiler
@@ -477,12 +736,30 @@ def plan_mutation(
             "value": state_value.value,
             "revision": state_value.revision,
         }
+    full_reference_states: dict[str, dict] = {}
+    for state_id in state_definitions_after:
+        if state_id in resulting_reference_states:
+            state_value = resulting_reference_states[state_id]
+        else:
+            current = state.reference_states.get(state_id)
+            if current is None:
+                continue
+            state_value = current
+        full_reference_states[state_id] = {
+            "value": None
+            if state_value.value is None
+            else model_to_wire(state_value.value),
+            "revision": state_value.revision,
+        }
     result = compile_document(
         CompileRequest(
             document=candidate,
             source_catalog=source_catalog,
             action_registry=action_registry,
             parameter_states=full_states,
+            reference_states=full_reference_states,
+            collection_incarnations=candidate_incarnations,
+            output_incarnations=candidate_output_incarnations,
         )
     )
     if not result.ok:
@@ -509,11 +786,32 @@ def initial_state_from_document(
     }
 
 
+def initial_reference_states(
+    document: Document,
+) -> dict[str, ReferenceStateValue]:
+    """Return the starting state of every reference state entry.
+
+    The only default is null (RFC 001 section 4): a reference value
+    names the incarnation of a collection the service has not issued
+    before creation, so every entry starts empty at revision 1.
+    """
+
+    states = getattr(document, "state", None)
+    if not states:
+        return {}
+    return {
+        state_id: ReferenceStateValue(value=None, revision=1)
+        for state_id in states
+    }
+
+
 __all__ = [
     "EntityTouch",
     "expectation_diagnostics",
     "MutationPlan",
+    "PendingReferenceSet",
     "PendingSet",
+    "initial_reference_states",
     "initial_state_from_document",
     "plan_mutation",
 ]

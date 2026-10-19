@@ -1,0 +1,16 @@
+[
+  {
+    "op": "entity.create",
+    "collection": "parameters",
+    "id": "minimum",
+    "value": {
+      "type": "number",
+      "default": 0,
+      "nullable": false,
+      "constraints": {
+        "minimum": 0,
+        "maximum": 1000000000
+      }
+    }
+  }
+]

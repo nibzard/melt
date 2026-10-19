@@ -63,6 +63,9 @@ def test_record_types_are_versioned():
         "pendingIntent",
         "publication",
         "parameterState",
+        # The RFC 001 extension record of melt/semantic-draft-1; every
+        # melt/v0.1 record above keeps its shape.
+        "referenceState",
         "commandReceipt",
         "snapshot",
         "changeNotification",
@@ -340,6 +343,49 @@ def test_parameter_state_revisions_start_at_one():
     assert codes(wire)[0][0] == "E_SCHEMA"
 
 
+@pytest.mark.parametrize("value", [2**53 + 1, -(2**53)])
+def test_parameter_state_rejects_unsafe_integer_values(value):
+    """Stored parameter state rejects unsafe integers (T037).
+
+    Regression: a stored value of `9007199254740993` once loaded as the
+    rounded float `9007199254740992.0`, so a reopened workspace restored
+    a value the wire never carried (SPEC.md section 4.2).
+    """
+
+    wire = {
+        "recordType": "parameterState",
+        "schemaVersion": 1,
+        "parameterId": "minimum",
+        "value": value,
+        "revision": 1,
+    }
+    assert ("E_TYPE", "/value") in codes(wire)
+
+
+def test_parameter_state_scalar_failure_collapses_to_one_diagnostic():
+    """One rejected stored value reports one diagnostic (T040).
+
+    Regression: an unsafe stored value failed every `JsonScalar`
+    branch, so the record reported three sibling `E_TYPE` diagnostics
+    at `/value`, one per branch.
+    """
+
+    wire = {
+        "recordType": "parameterState",
+        "schemaVersion": 1,
+        "parameterId": "minimum",
+        "value": 2**53 + 1,
+        "revision": 1,
+    }
+    with pytest.raises(MeltRecordError) as raised:
+        parse_record(wire)
+    diagnostics = raised.value.diagnostics
+    assert [(item.code, item.path) for item in diagnostics] == [
+        ("E_TYPE", "/value")
+    ]
+    assert "safe integer range" in diagnostics[0].message
+
+
 # ---------------------------------------------------------------------------
 # CommandReceipt
 # ---------------------------------------------------------------------------
@@ -585,6 +631,22 @@ def test_int64_and_decimal_cells_travel_as_strings():
         page_response(columns=["amount"], rows=[["1200.50"]], nextOffset=None)
     )
     assert record.rows == (("1200.50",),)
+
+
+def test_page_response_invalid_cell_collapses_to_one_diagnostic():
+    """One invalid table cell reports one diagnostic (T042).
+
+    Regression: a cell that no `TableCell` branch accepts sat at an
+    integer-indexed position inside `rows`, so the record reported
+    three sibling `E_TYPE` diagnostics under `/rows/0/1`, one per
+    branch, each with its raw pydantic branch marker in the path.
+    """
+
+    diagnostics = _diagnostics(page_response(rows=[["2026-01", {"bad": 1}]]))
+    assert [(item.code, item.path) for item in diagnostics] == [
+        ("E_TYPE", "/rows/0/1")
+    ]
+    assert diagnostics[0].message == "expected a JSON number, no coercion"
 
 
 # ---------------------------------------------------------------------------

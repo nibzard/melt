@@ -1,0 +1,70 @@
+{
+  "language": "melt/semantic-draft-1",
+  "workspaceId": "supplier-demo",
+  "title": "Supplier risk",
+  "sources": {},
+  "parameters": {},
+  "actions": {
+    "analyze-risk": {
+      "implementation": {
+        "registrationId": "risk-script-v1"
+      },
+      "parameters": {},
+      "inputs": {},
+      "outputs": {
+        "risk-table": "table",
+        "risk-plot": "image"
+      },
+      "outputGroup": "risk-results",
+      "targets": {
+        "risk-table": "risk"
+      }
+    }
+  },
+  "projections": {
+    "risk": {
+      "kind": "table",
+      "title": "Risk table",
+      "source": {
+        "actionOutput": {
+          "action": "analyze-risk",
+          "output": "risk-table",
+          "incarnation": "out-fixture-1"
+        },
+        "follow": "current"
+      },
+      "config": {
+        "columns": null,
+        "selection": "none"
+      },
+      "controls": []
+    },
+    "risk-plot-pane": {
+      "kind": "plot",
+      "title": "Risk plot",
+      "source": {
+        "actionOutput": {
+          "action": "analyze-risk",
+          "output": "risk-plot",
+          "incarnation": "out-fixture-1"
+        },
+        "follow": "pinned",
+        "version": 1
+      },
+      "config": {
+        "fit": "contain"
+      },
+      "controls": []
+    }
+  },
+  "bindings": {},
+  "collections": {},
+  "state": {},
+  "layout": {
+    "root": null,
+    "hidden": [
+      "risk",
+      "risk-plot-pane"
+    ]
+  }
+}

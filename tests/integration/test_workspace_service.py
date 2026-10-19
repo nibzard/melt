@@ -1142,6 +1142,66 @@ def _serve_and_close(service: WorkspaceService, sock: socket.socket) -> None:
         sock.close()
 
 
+def test_framed_channel_rejects_unsafe_integer_values(
+    service_adapter: PlatformAdapter,
+):
+    """Regression (T037): a framed ``parameter.set`` of ``2^53 + 1`` once
+    answered ``ok: true`` and committed the silently rounded float
+    ``9007199254740992.0``. The wire rule of SPEC.md section 4.2 now
+    rejects the integer at the command boundary, before the cast to
+    float can round it, so no state record and no commit change.
+    """
+
+    with seeded_service(service_adapter) as service:
+        sequence_before = service.commit_sequence
+        for value, request_id in (
+            (9007199254740993, "02-unsafe-set"),
+            (-9007199254740992, "03-unsafe-set-negative"),
+        ):
+            payload = json.dumps(
+                {
+                    "protocolVersion": 1,
+                    "workspaceId": WORKSPACE,
+                    "requestId": request_id,
+                    "method": "workspace.apply",
+                    "expected": {"state/minimum": 1},
+                    "operations": [
+                        {"op": "parameter.set", "id": "minimum", "value": value}
+                    ],
+                }
+            ).encode("utf-8")
+            answer = service.process_frame(encode_frame(payload))
+            body = json.loads(decode_frame(answer)[0].decode("utf-8"))
+            assert body["requestId"] == request_id
+            assert body["ok"] is False
+            pairs = [(error["code"], error["path"]) for error in body["errors"]]
+            # One rejected value, one decisive diagnostic: the framed
+            # boundary collapses the scalar-union branch noise (T040).
+            assert pairs == [("E_TYPE", "/operations/0/value")]
+            assert "safe integer range" in body["errors"][0]["message"]
+        # Nothing committed: the stored state keeps its default value,
+        # its revision, and the commit sequence.
+        assert service.parameter_state["minimum"].value == 0.0
+        assert service.parameter_state["minimum"].revision == 1
+        assert service.commit_sequence == sequence_before
+        inspected = service.handle_request(
+            json.dumps(
+                {
+                    "protocolVersion": 1,
+                    "workspaceId": WORKSPACE,
+                    "requestId": "04-inspect",
+                    "method": "workspace.inspect",
+                    "payload": {},
+                }
+            ).encode("utf-8")
+        )
+        assert inspected.ok, inspected.errors
+        assert inspected.result["parameterStates"]["minimum"] == {
+            "value": 0.0,
+            "revision": 1,
+        }
+
+
 def test_process_frame_answers_a_valid_frame(service_adapter: PlatformAdapter):
     """One framed request in, one framed response out (SPEC.md 12.1).
 

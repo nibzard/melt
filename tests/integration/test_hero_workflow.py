@@ -558,6 +558,7 @@ def test_the_hero_workflow_passes_through_the_harness(repo_root, data_root):
         "parameter": "minimum",
         "value": 200.0,
         "stateRevision": 4,
+        "stateIncarnation": 1,
     }
     assert intent["capturedInputs"] == {
         "sales": {"sourceId": "sales-input", "version": 1}

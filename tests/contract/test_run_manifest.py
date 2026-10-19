@@ -130,19 +130,74 @@ def test_names_use_entity_identifier_syntax():
 
 
 def test_captured_values_are_json_scalars():
-    # A non-scalar value fails every branch of the scalar union. The
-    # schema layer reports one diagnostic per union branch, each rooted
-    # at the captured field.
+    # A non-scalar value fails every branch of the scalar union, and
+    # the failure collapses into one decisive diagnostic at the
+    # captured field (T040).
     with pytest.raises(MeltManifestError) as failure:
         parse_manifest(manifest_document(parameters={"minimum": {"nested": True}}))
-    for diagnostic in failure.value.diagnostics:
-        assert diagnostic.code == "E_TYPE"
-        assert diagnostic.path.startswith("/parameters/minimum")
+    assert [(item.code, item.path) for item in failure.value.diagnostics] == [
+        ("E_TYPE", "/parameters/minimum")
+    ]
     with pytest.raises(MeltManifestError) as failure:
         parse_manifest(manifest_document(parameters={"minimum": [1]}))
-    for diagnostic in failure.value.diagnostics:
-        assert diagnostic.code == "E_TYPE"
-        assert diagnostic.path.startswith("/parameters/minimum")
+    assert [(item.code, item.path) for item in failure.value.diagnostics] == [
+        ("E_TYPE", "/parameters/minimum")
+    ]
+
+
+def test_unsafe_captured_value_collapses_to_one_diagnostic():
+    """An unsafe captured integer reports the safe-range message (T040).
+
+    Regression: the value failed every `JsonScalar` branch, so the
+    manifest reported three sibling `E_TYPE` diagnostics at
+    `/parameters/minimum`, one per branch.
+    """
+
+    with pytest.raises(MeltManifestError) as failure:
+        parse_manifest(
+            manifest_document(parameters={"minimum": 2**53 + 1})
+        )
+    diagnostics = failure.value.diagnostics
+    assert [(item.code, item.path) for item in diagnostics] == [
+        ("E_TYPE", "/parameters/minimum")
+    ]
+    assert "safe integer range" in diagnostics[0].message
+
+
+def test_invalid_captured_value_under_neutral_key_collapses_to_one_diagnostic():
+    """One invalid captured value under any key reports one diagnostic (T043).
+
+    Regression: a captured value sits under an arbitrary entity-ID
+    map key, so a key that names no scalar-union holder field, as
+    `threshold` does not, defeated the holder lookup. The manifest
+    reported three sibling `E_TYPE` diagnostics under
+    `/parameters/threshold`, one per branch, each with its raw
+    pydantic branch marker in the path. The holder is now read from
+    the enclosing map field name.
+    """
+
+    with pytest.raises(MeltManifestError) as failure:
+        parse_manifest(manifest_document(parameters={"threshold": {"bad": 1}}))
+    diagnostics = failure.value.diagnostics
+    assert [(item.code, item.path) for item in diagnostics] == [
+        ("E_TYPE", "/parameters/threshold")
+    ]
+    assert diagnostics[0].message == "expected a JSON number, no coercion"
+
+
+def test_key_that_looks_like_a_branch_marker_keeps_its_path():
+    """A marker-shaped entity ID stays in the path (T043).
+
+    Entity IDs match `[a-z][a-z0-9_-]{0,63}`, so `bool` is a valid
+    key. The collapse removes the branch marker, never the key the
+    parameter is captured under.
+    """
+
+    with pytest.raises(MeltManifestError) as failure:
+        parse_manifest(manifest_document(parameters={"bool": {"bad": 1}}))
+    assert [(item.code, item.path) for item in failure.value.diagnostics] == [
+        ("E_TYPE", "/parameters/bool")
+    ]
 
 
 def test_null_captured_values_parse_for_nullable_slots():

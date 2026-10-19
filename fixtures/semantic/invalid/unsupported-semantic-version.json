@@ -1,0 +1,65 @@
+{
+  "language": "melt/semantic-draft-2",
+  "workspaceId": "supplier-demo",
+  "title": "Supplier risk",
+  "sources": {
+    "supplier-records": {
+      "kind": "table",
+      "currentVersion": 1,
+      "versions": {
+        "1": {
+          "artifact": "sha256:0b03b11a7e1c826a41f3bdc4a877b87487c254110a8fc54692c170c3f2afb99e",
+          "mediaType": "application/vnd.apache.parquet",
+          "byteLength": 737,
+          "schema": {
+            "columns": [
+              {
+                "id": "supplier_id",
+                "type": "string",
+                "nullable": false
+              },
+              {
+                "id": "name",
+                "type": "string",
+                "nullable": false
+              }
+            ],
+            "rowKey": null
+          },
+          "origin": {
+            "kind": "import",
+            "label": "suppliers.parquet"
+          }
+        }
+      }
+    }
+  },
+  "parameters": {},
+  "actions": {},
+  "projections": {},
+  "bindings": {},
+  "collections": {
+    "suppliers": {
+      "source": {
+        "sourceId": "supplier-records",
+        "version": 1
+      },
+      "key": "supplier_id"
+    }
+  },
+  "state": {
+    "selected_supplier": {
+      "type": {
+        "kind": "ref",
+        "collection": "suppliers"
+      },
+      "nullable": true,
+      "default": null,
+      "scope": "workspace"
+    }
+  },
+  "layout": {
+    "root": null,
+    "hidden": []
+  }
+}

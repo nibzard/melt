@@ -5,6 +5,21 @@ __pycache__/
 build/
 dist/
 
+# Raw output of the round 1 benchmark runs (backlog task T023). The
+# recorded measurement of each run lives under docs/performance; every
+# scratch rerun writes under build/, which stays ignored.
+build/benchmarks/
+
+# Scratch output of the protocol generation (backlog task T007). The
+# generated files themselves are committed under protocol/ so the
+# regeneration drift gate can compare them; only scratch copies that
+# never belong to the tree stay ignored, together with any Swift
+# Package Manager build directory the generated harness creates when
+# someone compiles it.
+build/protocol/
+protocol/generated/.build/
+protocol/generated/*.build/
+
 # Virtual environments
 .venv/
 venv/

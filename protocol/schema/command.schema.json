@@ -1,0 +1,3540 @@
+{
+  "$defs": {
+    "Action": {
+      "additionalProperties": false,
+      "properties": {
+        "implementation": {
+          "$ref": "#/$defs/ActionImplementation"
+        },
+        "inputs": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "$ref": "#/$defs/SourceReference"
+            }
+          },
+          "title": "Inputs",
+          "type": "object"
+        },
+        "outputGroup": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Outputgroup",
+          "type": "string"
+        },
+        "outputs": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "enum": [
+                "table",
+                "image",
+                "text"
+              ],
+              "type": "string"
+            }
+          },
+          "title": "Outputs",
+          "type": "object"
+        },
+        "parameters": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "$ref": "#/$defs/ActionParameterMapping"
+            }
+          },
+          "title": "Parameters",
+          "type": "object"
+        },
+        "targets": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+              "type": "string"
+            }
+          },
+          "title": "Targets",
+          "type": "object"
+        }
+      },
+      "required": [
+        "implementation",
+        "parameters",
+        "inputs",
+        "outputs",
+        "outputGroup",
+        "targets"
+      ],
+      "title": "Action",
+      "type": "object"
+    },
+    "ActionImplementation": {
+      "additionalProperties": false,
+      "properties": {
+        "registrationId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Registrationid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "registrationId"
+      ],
+      "title": "ActionImplementation",
+      "type": "object"
+    },
+    "ActionInvokeEffect": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Action",
+          "type": "string"
+        },
+        "kind": {
+          "const": "action.invoke",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "action"
+      ],
+      "title": "ActionInvokeEffect",
+      "type": "object"
+    },
+    "ActionInvokePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "actionId": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Actionid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "actionId"
+      ],
+      "title": "ActionInvokePayload",
+      "type": "object"
+    },
+    "ActionOutputId": {
+      "additionalProperties": false,
+      "description": "The stable identity one subscription follows (RFC 001 8.1).\n\nThe incarnation is service-issued when the action entity is\ncreated; inspection returns it and the compiler verifies it, so\ndeleting and recreating an action does not attach old subscribers\nto a new calculation.",
+      "properties": {
+        "action": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Action",
+          "type": "string"
+        },
+        "incarnation": {
+          "minLength": 1,
+          "title": "Incarnation",
+          "type": "string"
+        },
+        "output": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Output",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "output",
+        "incarnation"
+      ],
+      "title": "ActionOutputId",
+      "type": "object"
+    },
+    "ActionParameterMapping": {
+      "additionalProperties": false,
+      "properties": {
+        "parameter": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Parameter",
+          "type": "string"
+        }
+      },
+      "required": [
+        "parameter"
+      ],
+      "title": "ActionParameterMapping",
+      "type": "object"
+    },
+    "ActionRegisterPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "contract": {
+          "$ref": "#/$defs/RegistrationContract"
+        },
+        "environmentId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Environmentid",
+          "type": "string"
+        },
+        "scriptToken": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Scripttoken",
+          "type": "string"
+        }
+      },
+      "required": [
+        "scriptToken",
+        "environmentId",
+        "contract"
+      ],
+      "title": "ActionRegisterPayload",
+      "type": "object"
+    },
+    "Binding": {
+      "additionalProperties": false,
+      "properties": {
+        "debounceMs": {
+          "ge": 0,
+          "maximum": 5000,
+          "title": "Debouncems",
+          "type": "integer"
+        },
+        "effect": {
+          "$ref": "#/$defs/ActionInvokeEffect"
+        },
+        "event": {
+          "discriminator": {
+            "mapping": {
+              "control.activate": "#/$defs/ControlActivateEvent",
+              "parameter.changed": "#/$defs/ParameterChangedEvent"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ParameterChangedEvent"
+            },
+            {
+              "$ref": "#/$defs/ControlActivateEvent"
+            }
+          ],
+          "title": "Event"
+        }
+      },
+      "required": [
+        "event",
+        "effect",
+        "debounceMs"
+      ],
+      "title": "Binding",
+      "type": "object"
+    },
+    "ButtonControl": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "button",
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "kind"
+      ],
+      "title": "ButtonControl",
+      "type": "object"
+    },
+    "CommandEnvelope": {
+      "additionalProperties": false,
+      "properties": {
+        "expected": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "ge": 0,
+                "type": "integer"
+              },
+              "propertyNames": {
+                "minLength": 1
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected"
+        },
+        "method": {
+          "enum": [
+            "session.hello",
+            "workspace.create",
+            "workspace.inspect",
+            "workspace.preview",
+            "workspace.apply",
+            "source.import",
+            "action.register",
+            "action.invoke",
+            "control.activate",
+            "object.select",
+            "selection.clear",
+            "run.cancel",
+            "run.inspect",
+            "table.page",
+            "workspace.subscribe",
+            "workspace.migrate"
+          ],
+          "title": "Method",
+          "type": "string"
+        },
+        "operations": {
+          "anyOf": [
+            {
+              "items": {
+                "discriminator": {
+                  "mapping": {
+                    "entity.create": "#/$defs/EntityCreate",
+                    "entity.delete": "#/$defs/EntityDelete",
+                    "entity.replace": "#/$defs/EntityReplace",
+                    "layout.replace": "#/$defs/LayoutReplace",
+                    "parameter.set": "#/$defs/ParameterSet",
+                    "state.set": "#/$defs/StateSet"
+                  },
+                  "propertyName": "op"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/EntityCreate"
+                  },
+                  {
+                    "$ref": "#/$defs/EntityReplace"
+                  },
+                  {
+                    "$ref": "#/$defs/EntityDelete"
+                  },
+                  {
+                    "$ref": "#/$defs/ParameterSet"
+                  },
+                  {
+                    "$ref": "#/$defs/StateSet"
+                  },
+                  {
+                    "$ref": "#/$defs/LayoutReplace"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Operations"
+        },
+        "payload": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Payload"
+        },
+        "protocolVersion": {
+          "const": 1,
+          "title": "Protocolversion",
+          "type": "integer"
+        },
+        "requestId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Requestid",
+          "type": "string"
+        },
+        "workspaceId": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Workspaceid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "workspaceId",
+        "requestId",
+        "method"
+      ],
+      "title": "CommandEnvelope",
+      "type": "object"
+    },
+    "ControlActivateEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "control": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Control",
+          "type": "string"
+        },
+        "kind": {
+          "const": "control.activate",
+          "title": "Kind",
+          "type": "string"
+        },
+        "projection": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Projection",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "projection",
+        "control"
+      ],
+      "title": "ControlActivateEvent",
+      "type": "object"
+    },
+    "ControlActivatePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "controlId": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Controlid",
+          "type": "string"
+        },
+        "projectionId": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Projectionid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "projectionId",
+        "controlId"
+      ],
+      "title": "ControlActivatePayload",
+      "type": "object"
+    },
+    "Diagnostic": {
+      "additionalProperties": false,
+      "description": "One diagnostic in the shape that SPEC.md section 11.3 defines.",
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "hint": {
+          "default": "",
+          "title": "Hint",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "relatedPaths": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Relatedpaths",
+          "type": "array"
+        }
+      },
+      "required": [
+        "code",
+        "path",
+        "message"
+      ],
+      "title": "Diagnostic",
+      "type": "object"
+    },
+    "Document": {
+      "additionalProperties": false,
+      "description": "The canonical document (SPEC.md section 4.1).\n\nEvery field is required. Collections may be empty. The document\nholds definitions and current published source references only.",
+      "properties": {
+        "actions": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "$ref": "#/$defs/Action"
+            }
+          },
+          "title": "Actions",
+          "type": "object"
+        },
+        "bindings": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "$ref": "#/$defs/Binding"
+            }
+          },
+          "title": "Bindings",
+          "type": "object"
+        },
+        "language": {
+          "const": "melt/v0.1",
+          "title": "Language",
+          "type": "string"
+        },
+        "layout": {
+          "$ref": "#/$defs/Layout"
+        },
+        "parameters": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "$ref": "#/$defs/Parameter"
+            }
+          },
+          "title": "Parameters",
+          "type": "object"
+        },
+        "projections": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "discriminator": {
+                "mapping": {
+                  "document": "#/$defs/DocumentProjection",
+                  "plot": "#/$defs/PlotProjection",
+                  "table": "#/$defs/TableProjection"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/TableProjection"
+                },
+                {
+                  "$ref": "#/$defs/PlotProjection"
+                },
+                {
+                  "$ref": "#/$defs/DocumentProjection"
+                }
+              ]
+            }
+          },
+          "title": "Projections",
+          "type": "object"
+        },
+        "sources": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "$ref": "#/$defs/Source"
+            }
+          },
+          "title": "Sources",
+          "type": "object"
+        },
+        "title": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "workspaceId": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Workspaceid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "language",
+        "workspaceId",
+        "title",
+        "sources",
+        "parameters",
+        "actions",
+        "projections",
+        "bindings",
+        "layout"
+      ],
+      "title": "Document",
+      "type": "object"
+    },
+    "DocumentConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "format": {
+          "enum": [
+            "plain",
+            "markdown"
+          ],
+          "title": "Format",
+          "type": "string"
+        }
+      },
+      "required": [
+        "format"
+      ],
+      "title": "DocumentConfig",
+      "type": "object"
+    },
+    "DocumentProjection": {
+      "additionalProperties": false,
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/DocumentConfig"
+        },
+        "controls": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "button": "#/$defs/ButtonControl",
+                "number": "#/$defs/NumberControl",
+                "select": "#/$defs/SelectControl",
+                "text": "#/$defs/TextControl",
+                "toggle": "#/$defs/ToggleControl"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/NumberControl"
+              },
+              {
+                "$ref": "#/$defs/TextControl"
+              },
+              {
+                "$ref": "#/$defs/ToggleControl"
+              },
+              {
+                "$ref": "#/$defs/SelectControl"
+              },
+              {
+                "$ref": "#/$defs/ButtonControl"
+              }
+            ]
+          },
+          "title": "Controls",
+          "type": "array"
+        },
+        "kind": {
+          "const": "document",
+          "title": "Kind",
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceReference"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "source",
+        "controls",
+        "kind",
+        "config"
+      ],
+      "title": "DocumentProjection",
+      "type": "object"
+    },
+    "EntityCreate": {
+      "additionalProperties": false,
+      "properties": {
+        "collection": {
+          "enum": [
+            "parameters",
+            "actions",
+            "projections",
+            "bindings",
+            "collections",
+            "state"
+          ],
+          "title": "Collection",
+          "type": "string"
+        },
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Id",
+          "type": "string"
+        },
+        "op": {
+          "const": "entity.create",
+          "title": "Op",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Parameter"
+            },
+            {
+              "$ref": "#/$defs/Action"
+            },
+            {
+              "$ref": "#/$defs/SemanticAction"
+            },
+            {
+              "$ref": "#/$defs/TableProjection"
+            },
+            {
+              "$ref": "#/$defs/PlotProjection"
+            },
+            {
+              "$ref": "#/$defs/DocumentProjection"
+            },
+            {
+              "$ref": "#/$defs/SemanticTableProjection"
+            },
+            {
+              "$ref": "#/$defs/SemanticPlotProjection"
+            },
+            {
+              "$ref": "#/$defs/SemanticDocumentProjection"
+            },
+            {
+              "$ref": "#/$defs/GraphProjection"
+            },
+            {
+              "$ref": "#/$defs/RecordProjection"
+            },
+            {
+              "$ref": "#/$defs/Binding"
+            },
+            {
+              "$ref": "#/$defs/SemanticBinding"
+            },
+            {
+              "$ref": "#/$defs/SemanticCollection"
+            },
+            {
+              "$ref": "#/$defs/SemanticState"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "op",
+        "collection",
+        "id",
+        "value"
+      ],
+      "title": "EntityCreate",
+      "type": "object"
+    },
+    "EntityDelete": {
+      "additionalProperties": false,
+      "properties": {
+        "collection": {
+          "enum": [
+            "parameters",
+            "actions",
+            "projections",
+            "bindings",
+            "collections",
+            "state"
+          ],
+          "title": "Collection",
+          "type": "string"
+        },
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Id",
+          "type": "string"
+        },
+        "op": {
+          "const": "entity.delete",
+          "title": "Op",
+          "type": "string"
+        }
+      },
+      "required": [
+        "op",
+        "collection",
+        "id"
+      ],
+      "title": "EntityDelete",
+      "type": "object"
+    },
+    "EntityReplace": {
+      "additionalProperties": false,
+      "properties": {
+        "collection": {
+          "enum": [
+            "parameters",
+            "actions",
+            "projections",
+            "bindings",
+            "collections",
+            "state"
+          ],
+          "title": "Collection",
+          "type": "string"
+        },
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Id",
+          "type": "string"
+        },
+        "op": {
+          "const": "entity.replace",
+          "title": "Op",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Parameter"
+            },
+            {
+              "$ref": "#/$defs/Action"
+            },
+            {
+              "$ref": "#/$defs/SemanticAction"
+            },
+            {
+              "$ref": "#/$defs/TableProjection"
+            },
+            {
+              "$ref": "#/$defs/PlotProjection"
+            },
+            {
+              "$ref": "#/$defs/DocumentProjection"
+            },
+            {
+              "$ref": "#/$defs/SemanticTableProjection"
+            },
+            {
+              "$ref": "#/$defs/SemanticPlotProjection"
+            },
+            {
+              "$ref": "#/$defs/SemanticDocumentProjection"
+            },
+            {
+              "$ref": "#/$defs/GraphProjection"
+            },
+            {
+              "$ref": "#/$defs/RecordProjection"
+            },
+            {
+              "$ref": "#/$defs/Binding"
+            },
+            {
+              "$ref": "#/$defs/SemanticBinding"
+            },
+            {
+              "$ref": "#/$defs/SemanticCollection"
+            },
+            {
+              "$ref": "#/$defs/SemanticState"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "op",
+        "collection",
+        "id",
+        "value"
+      ],
+      "title": "EntityReplace",
+      "type": "object"
+    },
+    "EventFieldValue": {
+      "additionalProperties": false,
+      "description": "One value selector: a declared field of the event payload.",
+      "properties": {
+        "eventField": {
+          "const": "objectRef",
+          "title": "Eventfield",
+          "type": "string"
+        }
+      },
+      "required": [
+        "eventField"
+      ],
+      "title": "EventFieldValue",
+      "type": "object"
+    },
+    "Filter": {
+      "additionalProperties": false,
+      "description": "One table filter.\n\n`isNull` omits `value`. `contains` accepts only strings. Order\ncomparisons accept numbers, dates, timestamps, and strings. The\nreader checks operators against column types (SPEC.md section\n12.7).",
+      "properties": {
+        "column": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Column",
+          "type": "string"
+        },
+        "operator": {
+          "enum": [
+            "eq",
+            "lt",
+            "lte",
+            "gt",
+            "gte",
+            "contains",
+            "isNull"
+          ],
+          "title": "Operator",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        }
+      },
+      "required": [
+        "column",
+        "operator"
+      ],
+      "title": "Filter",
+      "type": "object"
+    },
+    "GraphConfig": {
+      "additionalProperties": false,
+      "description": "The renderer configuration of one graph projection.",
+      "properties": {
+        "nodeLabels": {
+          "enum": [
+            "show",
+            "hide"
+          ],
+          "title": "Nodelabels",
+          "type": "string"
+        }
+      },
+      "required": [
+        "nodeLabels"
+      ],
+      "title": "GraphConfig",
+      "type": "object"
+    },
+    "GraphEdge": {
+      "additionalProperties": false,
+      "description": "One edge between two existing nodes, by their node IDs.",
+      "properties": {
+        "edgeId": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Edgeid",
+          "type": "string"
+        },
+        "from": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "From",
+          "type": "string"
+        },
+        "to": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "To",
+          "type": "string"
+        }
+      },
+      "required": [
+        "edgeId",
+        "from",
+        "to"
+      ],
+      "title": "GraphEdge",
+      "type": "object"
+    },
+    "GraphNode": {
+      "additionalProperties": false,
+      "description": "One node of the minimal graph contract (RFC 001 section 7.1).\n\n`nodeId` identifies the visual element; the collection and key name\nthe semantic object it represents. Node IDs and object identities\nstay separate: several nodes may carry the same reference.",
+      "properties": {
+        "collection": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Collection",
+          "type": "string"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "nodeId": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Nodeid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "nodeId",
+        "label",
+        "collection",
+        "key"
+      ],
+      "title": "GraphNode",
+      "type": "object"
+    },
+    "GraphObservers": {
+      "additionalProperties": false,
+      "description": "The observer slots of one graph projection.",
+      "properties": {
+        "highlight": {
+          "$ref": "#/$defs/HighlightObserve"
+        }
+      },
+      "required": [
+        "highlight"
+      ],
+      "title": "GraphObservers",
+      "type": "object"
+    },
+    "GraphProjection": {
+      "additionalProperties": false,
+      "description": "One projection over an immutable graph source (RFC 001 6, 7.1).\n\nThe graph declares the one collection its nodes reference, so\nselection has one static reference type. Nodes outside that\ncollection are rejected by validation.",
+      "properties": {
+        "collection": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Collection",
+          "type": "string"
+        },
+        "config": {
+          "$ref": "#/$defs/GraphConfig"
+        },
+        "controls": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "button": "#/$defs/ButtonControl",
+                "number": "#/$defs/NumberControl",
+                "select": "#/$defs/SelectControl",
+                "text": "#/$defs/TextControl",
+                "toggle": "#/$defs/ToggleControl"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/NumberControl"
+              },
+              {
+                "$ref": "#/$defs/TextControl"
+              },
+              {
+                "$ref": "#/$defs/ToggleControl"
+              },
+              {
+                "$ref": "#/$defs/SelectControl"
+              },
+              {
+                "$ref": "#/$defs/ButtonControl"
+              }
+            ]
+          },
+          "title": "Controls",
+          "type": "array"
+        },
+        "kind": {
+          "const": "graph",
+          "title": "Kind",
+          "type": "string"
+        },
+        "observe": {
+          "$ref": "#/$defs/GraphObservers"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceReference"
+        },
+        "title": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "collection",
+        "controls",
+        "kind",
+        "source",
+        "config",
+        "observe"
+      ],
+      "title": "GraphProjection",
+      "type": "object"
+    },
+    "GraphSchema": {
+      "additionalProperties": false,
+      "description": "The typed graph and its validated identity map (RFC 001 7.1).\n\nThe identity map is measured from the artifact bytes at import and\nstored with the source version, so compilation never derives object\nidentity from labels or element order.",
+      "properties": {
+        "edges": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/GraphEdge"
+          },
+          "title": "Edges",
+          "type": "array"
+        },
+        "nodes": {
+          "items": {
+            "$ref": "#/$defs/GraphNode"
+          },
+          "minItems": 1,
+          "title": "Nodes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "nodes"
+      ],
+      "title": "GraphSchema",
+      "type": "object"
+    },
+    "GraphSource": {
+      "additionalProperties": false,
+      "description": "One logical graph source of immutable graph versions.",
+      "properties": {
+        "currentVersion": {
+          "gt": 0,
+          "title": "Currentversion",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "graph",
+          "title": "Kind",
+          "type": "string"
+        },
+        "versions": {
+          "minProperties": 1,
+          "patternProperties": {
+            "^[1-9][0-9]*\\z": {
+              "$ref": "#/$defs/GraphSourceVersion"
+            }
+          },
+          "title": "Versions",
+          "type": "object"
+        }
+      },
+      "required": [
+        "kind",
+        "currentVersion",
+        "versions"
+      ],
+      "title": "GraphSource",
+      "type": "object"
+    },
+    "GraphSourceVersion": {
+      "additionalProperties": false,
+      "description": "One version of a graph source: the measured identity map.",
+      "properties": {
+        "artifact": {
+          "pattern": "^sha256:[0-9a-f]{64}\\z",
+          "title": "Artifact",
+          "type": "string"
+        },
+        "byteLength": {
+          "ge": 0,
+          "title": "Bytelength",
+          "type": "integer"
+        },
+        "mediaType": {
+          "title": "Mediatype",
+          "type": "string"
+        },
+        "origin": {
+          "discriminator": {
+            "mapping": {
+              "import": "#/$defs/ImportOrigin",
+              "run": "#/$defs/RunOrigin"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ImportOrigin"
+            },
+            {
+              "$ref": "#/$defs/RunOrigin"
+            }
+          ],
+          "title": "Origin"
+        },
+        "schema": {
+          "$ref": "#/$defs/GraphSchema"
+        }
+      },
+      "required": [
+        "artifact",
+        "mediaType",
+        "byteLength",
+        "schema",
+        "origin"
+      ],
+      "title": "GraphSourceVersion",
+      "type": "object"
+    },
+    "HighlightObserve": {
+      "additionalProperties": false,
+      "description": "The `highlight` selector: which state the graph highlights by.",
+      "properties": {
+        "state": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "title": "HighlightObserve",
+      "type": "object"
+    },
+    "ImageSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "height": {
+          "gt": 0,
+          "title": "Height",
+          "type": "integer"
+        },
+        "width": {
+          "gt": 0,
+          "title": "Width",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "width",
+        "height"
+      ],
+      "title": "ImageSchema",
+      "type": "object"
+    },
+    "ImportOrigin": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "import",
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "label"
+      ],
+      "title": "ImportOrigin",
+      "type": "object"
+    },
+    "Layout": {
+      "additionalProperties": false,
+      "properties": {
+        "hidden": {
+          "items": {
+            "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+            "type": "string"
+          },
+          "title": "Hidden",
+          "type": "array"
+        },
+        "root": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "pane": "#/$defs/PaneNode",
+                  "split": "#/$defs/SplitNode"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/PaneNode"
+                },
+                {
+                  "$ref": "#/$defs/SplitNode"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Root"
+        }
+      },
+      "required": [
+        "root",
+        "hidden"
+      ],
+      "title": "Layout",
+      "type": "object"
+    },
+    "LayoutReplace": {
+      "additionalProperties": false,
+      "properties": {
+        "op": {
+          "const": "layout.replace",
+          "title": "Op",
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/Layout"
+        }
+      },
+      "required": [
+        "op",
+        "value"
+      ],
+      "title": "LayoutReplace",
+      "type": "object"
+    },
+    "NullLiteralValue": {
+      "additionalProperties": false,
+      "description": "One value selector: the typed null literal.",
+      "properties": {
+        "literal": {
+          "title": "Literal",
+          "type": "null"
+        }
+      },
+      "required": [
+        "literal"
+      ],
+      "title": "NullLiteralValue",
+      "type": "object"
+    },
+    "NumberControl": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "number",
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "parameter": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Parameter",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "kind",
+        "parameter"
+      ],
+      "title": "NumberControl",
+      "type": "object"
+    },
+    "ObjectSelectEvent": {
+      "additionalProperties": false,
+      "description": "One selection gesture: carries one semantic reference.",
+      "properties": {
+        "kind": {
+          "const": "object.select",
+          "title": "Kind",
+          "type": "string"
+        },
+        "projection": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Projection",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "projection"
+      ],
+      "title": "ObjectSelectEvent",
+      "type": "object"
+    },
+    "ObjectSelectPayload": {
+      "additionalProperties": false,
+      "description": "One `object.select` renderer event (RFC 001 section 5.1).\n\nThe payload carries the one semantic reference the gesture selected.\nThe projection, its definition revision, the renderer contract, and\nthe displayed source and collection revisions ride the envelope:\nits `expected` map pins them (sections 5.1 and 5.3).",
+      "properties": {
+        "objectRef": {
+          "$ref": "#/$defs/SemanticReference"
+        },
+        "projectionId": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Projectionid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "projectionId",
+        "objectRef"
+      ],
+      "title": "ObjectSelectPayload",
+      "type": "object"
+    },
+    "OkResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "commitSequence": {
+          "ge": 0,
+          "title": "Commitsequence",
+          "type": "integer"
+        },
+        "ok": {
+          "const": true,
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "requestId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Requestid",
+          "type": "string"
+        },
+        "result": {
+          "additionalProperties": true,
+          "title": "Result",
+          "type": "object"
+        }
+      },
+      "required": [
+        "requestId",
+        "ok",
+        "commitSequence"
+      ],
+      "title": "OkResponse",
+      "type": "object"
+    },
+    "OutputSubscription": {
+      "additionalProperties": false,
+      "description": "One projection source that follows an action output (RFC 001 8.1).\n\n``follow: \"current\"`` resolves the output's current pointer at\nevery commit sequence, so the subscriber advances with each\nsuccessful publication. ``follow: \"pinned\"`` freezes one version of\nthe output's stable logical source: the subscriber does not\nadvance, and its view reports the version status it holds.",
+      "properties": {
+        "actionOutput": {
+          "$ref": "#/$defs/ActionOutputId"
+        },
+        "follow": {
+          "enum": [
+            "current",
+            "pinned"
+          ],
+          "title": "Follow",
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "gt": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        }
+      },
+      "required": [
+        "actionOutput",
+        "follow"
+      ],
+      "title": "OutputSubscription",
+      "type": "object"
+    },
+    "PaneNode": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "pane",
+          "title": "Kind",
+          "type": "string"
+        },
+        "projection": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Projection",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "projection"
+      ],
+      "title": "PaneNode",
+      "type": "object"
+    },
+    "Parameter": {
+      "additionalProperties": false,
+      "properties": {
+        "constraints": {
+          "$ref": "#/$defs/ParameterConstraints"
+        },
+        "default": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Default"
+        },
+        "nullable": {
+          "title": "Nullable",
+          "type": "boolean"
+        },
+        "type": {
+          "enum": [
+            "string",
+            "number",
+            "integer",
+            "boolean"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "default",
+        "nullable",
+        "constraints"
+      ],
+      "title": "Parameter",
+      "type": "object"
+    },
+    "ParameterChangedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "parameter.changed",
+          "title": "Kind",
+          "type": "string"
+        },
+        "parameter": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Parameter",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "parameter"
+      ],
+      "title": "ParameterChangedEvent",
+      "type": "object"
+    },
+    "ParameterConstraints": {
+      "additionalProperties": false,
+      "description": "Constraints for every parameter type in one shape.\n\nThe semantic pass checks that only the fields of the declared type\nare present, and that the default satisfies them.",
+      "properties": {
+        "enum": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Enum"
+        },
+        "maxLength": {
+          "anyOf": [
+            {
+              "gt": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maxlength"
+        },
+        "maximum": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maximum"
+        },
+        "minimum": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Minimum"
+        }
+      },
+      "title": "ParameterConstraints",
+      "type": "object"
+    },
+    "ParameterContractEntry": {
+      "additionalProperties": false,
+      "description": "One parameter slot in a registration contract.",
+      "properties": {
+        "constraints": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ParameterConstraints"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "nullable": {
+          "title": "Nullable",
+          "type": "boolean"
+        },
+        "type": {
+          "enum": [
+            "string",
+            "number",
+            "integer",
+            "boolean"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "nullable"
+      ],
+      "title": "ParameterContractEntry",
+      "type": "object"
+    },
+    "ParameterSet": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Id",
+          "type": "string"
+        },
+        "op": {
+          "const": "parameter.set",
+          "title": "Op",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "op",
+        "id",
+        "value"
+      ],
+      "title": "ParameterSet",
+      "type": "object"
+    },
+    "PlotConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "fit": {
+          "const": "contain",
+          "title": "Fit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "fit"
+      ],
+      "title": "PlotConfig",
+      "type": "object"
+    },
+    "PlotProjection": {
+      "additionalProperties": false,
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/PlotConfig"
+        },
+        "controls": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "button": "#/$defs/ButtonControl",
+                "number": "#/$defs/NumberControl",
+                "select": "#/$defs/SelectControl",
+                "text": "#/$defs/TextControl",
+                "toggle": "#/$defs/ToggleControl"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/NumberControl"
+              },
+              {
+                "$ref": "#/$defs/TextControl"
+              },
+              {
+                "$ref": "#/$defs/ToggleControl"
+              },
+              {
+                "$ref": "#/$defs/SelectControl"
+              },
+              {
+                "$ref": "#/$defs/ButtonControl"
+              }
+            ]
+          },
+          "title": "Controls",
+          "type": "array"
+        },
+        "kind": {
+          "const": "plot",
+          "title": "Kind",
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceReference"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "source",
+        "controls",
+        "kind",
+        "config"
+      ],
+      "title": "PlotProjection",
+      "type": "object"
+    },
+    "RecordConfig": {
+      "additionalProperties": false,
+      "description": "The renderer configuration of one record projection.\n\n`fields` is null for every column of the collection's pinned\nversion, or an ordered list of distinct column identifiers.",
+      "properties": {
+        "fields": {
+          "anyOf": [
+            {
+              "items": {
+                "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Fields"
+        }
+      },
+      "required": [
+        "fields"
+      ],
+      "title": "RecordConfig",
+      "type": "object"
+    },
+    "RecordObserve": {
+      "additionalProperties": false,
+      "description": "The `record` selector: which state resolves the shown record.",
+      "properties": {
+        "state": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "title": "RecordObserve",
+      "type": "object"
+    },
+    "RecordObservers": {
+      "additionalProperties": false,
+      "description": "The observer slots of one record projection.",
+      "properties": {
+        "record": {
+          "$ref": "#/$defs/RecordObserve"
+        }
+      },
+      "required": [
+        "record"
+      ],
+      "title": "RecordObservers",
+      "type": "object"
+    },
+    "RecordProjection": {
+      "additionalProperties": false,
+      "description": "One projection that resolves a reference in one collection.\n\nThe record selector reads state and sources; it writes neither. A\nnull selection displays an empty state, a missing key displays the\nmissing key, and an unreadable source displays a recoverable error\n(RFC 001 section 6).",
+      "properties": {
+        "collection": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Collection",
+          "type": "string"
+        },
+        "config": {
+          "$ref": "#/$defs/RecordConfig"
+        },
+        "controls": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "button": "#/$defs/ButtonControl",
+                "number": "#/$defs/NumberControl",
+                "select": "#/$defs/SelectControl",
+                "text": "#/$defs/TextControl",
+                "toggle": "#/$defs/ToggleControl"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/NumberControl"
+              },
+              {
+                "$ref": "#/$defs/TextControl"
+              },
+              {
+                "$ref": "#/$defs/ToggleControl"
+              },
+              {
+                "$ref": "#/$defs/SelectControl"
+              },
+              {
+                "$ref": "#/$defs/ButtonControl"
+              }
+            ]
+          },
+          "title": "Controls",
+          "type": "array"
+        },
+        "kind": {
+          "const": "record",
+          "title": "Kind",
+          "type": "string"
+        },
+        "observe": {
+          "$ref": "#/$defs/RecordObservers"
+        },
+        "title": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "collection",
+        "controls",
+        "kind",
+        "config",
+        "observe"
+      ],
+      "title": "RecordProjection",
+      "type": "object"
+    },
+    "ReferenceType": {
+      "additionalProperties": false,
+      "description": "The type of one reference state entry (RFC 001 section 4).\n\nOnly `ref` exists in this extension. Numeric and string parameters\nkeep their v0.1 shape and are not migrated into this state system.",
+      "properties": {
+        "collection": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Collection",
+          "type": "string"
+        },
+        "kind": {
+          "const": "ref",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "collection"
+      ],
+      "title": "ReferenceType",
+      "type": "object"
+    },
+    "RegistrationContract": {
+      "additionalProperties": false,
+      "description": "The contract an `action.register` payload declares.\n\nA contract holds parameters, inputs, and outputs. It cannot\ndeclare a permission grant (SPEC.md section 12.6).",
+      "properties": {
+        "inputs": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "enum": [
+                "table",
+                "image",
+                "text"
+              ],
+              "type": "string"
+            }
+          },
+          "title": "Inputs",
+          "type": "object"
+        },
+        "outputs": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "enum": [
+                "table",
+                "image",
+                "text"
+              ],
+              "type": "string"
+            }
+          },
+          "title": "Outputs",
+          "type": "object"
+        },
+        "parameters": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "$ref": "#/$defs/ParameterContractEntry"
+            }
+          },
+          "title": "Parameters",
+          "type": "object"
+        }
+      },
+      "required": [
+        "parameters",
+        "inputs",
+        "outputs"
+      ],
+      "title": "RegistrationContract",
+      "type": "object"
+    },
+    "RejectedResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "errors": {
+          "items": {
+            "$ref": "#/$defs/Diagnostic"
+          },
+          "minItems": 1,
+          "title": "Errors",
+          "type": "array"
+        },
+        "ok": {
+          "const": false,
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "requestId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Requestid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "requestId",
+        "ok",
+        "errors"
+      ],
+      "title": "RejectedResponse",
+      "type": "object"
+    },
+    "RunCancelPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "runId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Runid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "runId"
+      ],
+      "title": "RunCancelPayload",
+      "type": "object"
+    },
+    "RunInspectPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "runId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Runid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "runId"
+      ],
+      "title": "RunInspectPayload",
+      "type": "object"
+    },
+    "RunOrigin": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "run",
+          "title": "Kind",
+          "type": "string"
+        },
+        "output": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Output",
+          "type": "string"
+        },
+        "runId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Runid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "runId",
+        "output"
+      ],
+      "title": "RunOrigin",
+      "type": "object"
+    },
+    "SelectControl": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "select",
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/SelectOption"
+          },
+          "minItems": 1,
+          "title": "Options",
+          "type": "array"
+        },
+        "parameter": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Parameter",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "kind",
+        "parameter",
+        "options"
+      ],
+      "title": "SelectControl",
+      "type": "object"
+    },
+    "SelectOption": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "label"
+      ],
+      "title": "SelectOption",
+      "type": "object"
+    },
+    "SelectionClearEvent": {
+      "additionalProperties": false,
+      "description": "One clearing gesture: carries no object data.",
+      "properties": {
+        "kind": {
+          "const": "selection.clear",
+          "title": "Kind",
+          "type": "string"
+        },
+        "projection": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Projection",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "projection"
+      ],
+      "title": "SelectionClearEvent",
+      "type": "object"
+    },
+    "SelectionClearPayload": {
+      "additionalProperties": false,
+      "description": "One `selection.clear` renderer event (RFC 001 section 5.1).\n\nClear carries no object data; the bound assignment writes the typed\nnull literal.",
+      "properties": {
+        "projectionId": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Projectionid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "projectionId"
+      ],
+      "title": "SelectionClearPayload",
+      "type": "object"
+    },
+    "SemanticAction": {
+      "additionalProperties": false,
+      "description": "One action of `melt/semantic-draft-1` (RFC 001 section 8.1).\n\nThe extension action declares output names, kinds, and a\npublication group. It carries no projection targets: publication is\nindependent of panes, and projections subscribe to an output by its\nstable incarnation instead. An action with no subscribers can still\nrun and publish, and closing, hiding, or removing a projection\nneither cancels it nor invalidates its outputs.",
+      "properties": {
+        "implementation": {
+          "$ref": "#/$defs/ActionImplementation"
+        },
+        "inputs": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "$ref": "#/$defs/SourceReference"
+            }
+          },
+          "title": "Inputs",
+          "type": "object"
+        },
+        "outputGroup": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Outputgroup",
+          "type": "string"
+        },
+        "outputs": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "enum": [
+                "table",
+                "image",
+                "text"
+              ],
+              "type": "string"
+            }
+          },
+          "title": "Outputs",
+          "type": "object"
+        },
+        "parameters": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "$ref": "#/$defs/ActionParameterMapping"
+            }
+          },
+          "title": "Parameters",
+          "type": "object"
+        }
+      },
+      "required": [
+        "implementation",
+        "parameters",
+        "inputs",
+        "outputs",
+        "outputGroup"
+      ],
+      "title": "SemanticAction",
+      "type": "object"
+    },
+    "SemanticBinding": {
+      "additionalProperties": false,
+      "description": "One binding of `melt/semantic-draft-1`.\n\nA pure renderer event commits immediately: its debounce is fixed at\nzero, because the service checks the event and commits the state\nchange and receipt together (RFC 001 section 5.3).",
+      "properties": {
+        "debounceMs": {
+          "default": 0,
+          "ge": 0,
+          "maximum": 5000,
+          "title": "Debouncems",
+          "type": "integer"
+        },
+        "effect": {
+          "discriminator": {
+            "mapping": {
+              "action.invoke": "#/$defs/ActionInvokeEffect",
+              "state.set": "#/$defs/StateSetEffect"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ActionInvokeEffect"
+            },
+            {
+              "$ref": "#/$defs/StateSetEffect"
+            }
+          ],
+          "title": "Effect"
+        },
+        "event": {
+          "discriminator": {
+            "mapping": {
+              "control.activate": "#/$defs/ControlActivateEvent",
+              "object.select": "#/$defs/ObjectSelectEvent",
+              "parameter.changed": "#/$defs/ParameterChangedEvent",
+              "selection.clear": "#/$defs/SelectionClearEvent"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ParameterChangedEvent"
+            },
+            {
+              "$ref": "#/$defs/ControlActivateEvent"
+            },
+            {
+              "$ref": "#/$defs/ObjectSelectEvent"
+            },
+            {
+              "$ref": "#/$defs/SelectionClearEvent"
+            }
+          ],
+          "title": "Event"
+        }
+      },
+      "required": [
+        "event",
+        "effect"
+      ],
+      "title": "SemanticBinding",
+      "type": "object"
+    },
+    "SemanticCollection": {
+      "additionalProperties": false,
+      "description": "One typed identity index over a table source (RFC 001 section 3.1).\n\n`source` pins one immutable source version; updating it is a\nrevision-checked mutation. `key` names the column whose values are\nthe object keys: unique, non-null strings, compared case-sensitively\nand never trimmed or normalized.",
+      "properties": {
+        "key": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Key",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceReference"
+        }
+      },
+      "required": [
+        "source",
+        "key"
+      ],
+      "title": "SemanticCollection",
+      "type": "object"
+    },
+    "SemanticDocument": {
+      "additionalProperties": false,
+      "description": "The `melt/semantic-draft-1` document.\n\nEvery v0.1 field keeps its v0.1 meaning and checks. The two added\nmaps are required, like every other top-level collection, and may\nbe empty. The graph and record projections and the pure-event\nbindings extend their v0.1 counterparts without changing them, and\nthe actions of this language declare outputs without projection\ntargets (RFC 001 section 8.1).",
+      "properties": {
+        "actions": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "$ref": "#/$defs/SemanticAction"
+            }
+          },
+          "title": "Actions",
+          "type": "object"
+        },
+        "bindings": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "$ref": "#/$defs/SemanticBinding"
+            }
+          },
+          "title": "Bindings",
+          "type": "object"
+        },
+        "collections": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "$ref": "#/$defs/SemanticCollection"
+            }
+          },
+          "title": "Collections",
+          "type": "object"
+        },
+        "language": {
+          "const": "melt/semantic-draft-1",
+          "title": "Language",
+          "type": "string"
+        },
+        "layout": {
+          "$ref": "#/$defs/Layout"
+        },
+        "parameters": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "$ref": "#/$defs/Parameter"
+            }
+          },
+          "title": "Parameters",
+          "type": "object"
+        },
+        "projections": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "discriminator": {
+                "mapping": {
+                  "document": "#/$defs/SemanticDocumentProjection",
+                  "graph": "#/$defs/GraphProjection",
+                  "plot": "#/$defs/SemanticPlotProjection",
+                  "record": "#/$defs/RecordProjection",
+                  "table": "#/$defs/SemanticTableProjection"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/SemanticTableProjection"
+                },
+                {
+                  "$ref": "#/$defs/SemanticPlotProjection"
+                },
+                {
+                  "$ref": "#/$defs/SemanticDocumentProjection"
+                },
+                {
+                  "$ref": "#/$defs/GraphProjection"
+                },
+                {
+                  "$ref": "#/$defs/RecordProjection"
+                }
+              ]
+            }
+          },
+          "title": "Projections",
+          "type": "object"
+        },
+        "sources": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Source"
+                },
+                {
+                  "$ref": "#/$defs/GraphSource"
+                }
+              ]
+            }
+          },
+          "title": "Sources",
+          "type": "object"
+        },
+        "state": {
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{0,63}\\z": {
+              "$ref": "#/$defs/SemanticState"
+            }
+          },
+          "title": "State",
+          "type": "object"
+        },
+        "title": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "workspaceId": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Workspaceid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "language",
+        "workspaceId",
+        "title",
+        "sources",
+        "parameters",
+        "actions",
+        "projections",
+        "bindings",
+        "layout",
+        "collections",
+        "state"
+      ],
+      "title": "SemanticDocument",
+      "type": "object"
+    },
+    "SemanticDocumentProjection": {
+      "additionalProperties": false,
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/DocumentConfig"
+        },
+        "controls": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "button": "#/$defs/ButtonControl",
+                "number": "#/$defs/NumberControl",
+                "select": "#/$defs/SelectControl",
+                "text": "#/$defs/TextControl",
+                "toggle": "#/$defs/ToggleControl"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/NumberControl"
+              },
+              {
+                "$ref": "#/$defs/TextControl"
+              },
+              {
+                "$ref": "#/$defs/ToggleControl"
+              },
+              {
+                "$ref": "#/$defs/SelectControl"
+              },
+              {
+                "$ref": "#/$defs/ButtonControl"
+              }
+            ]
+          },
+          "title": "Controls",
+          "type": "array"
+        },
+        "kind": {
+          "const": "document",
+          "title": "Kind",
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceReference"
+            },
+            {
+              "$ref": "#/$defs/OutputSubscription"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Source"
+        },
+        "title": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "source",
+        "controls",
+        "kind",
+        "config"
+      ],
+      "title": "SemanticDocumentProjection",
+      "type": "object"
+    },
+    "SemanticPlotProjection": {
+      "additionalProperties": false,
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/PlotConfig"
+        },
+        "controls": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "button": "#/$defs/ButtonControl",
+                "number": "#/$defs/NumberControl",
+                "select": "#/$defs/SelectControl",
+                "text": "#/$defs/TextControl",
+                "toggle": "#/$defs/ToggleControl"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/NumberControl"
+              },
+              {
+                "$ref": "#/$defs/TextControl"
+              },
+              {
+                "$ref": "#/$defs/ToggleControl"
+              },
+              {
+                "$ref": "#/$defs/SelectControl"
+              },
+              {
+                "$ref": "#/$defs/ButtonControl"
+              }
+            ]
+          },
+          "title": "Controls",
+          "type": "array"
+        },
+        "kind": {
+          "const": "plot",
+          "title": "Kind",
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceReference"
+            },
+            {
+              "$ref": "#/$defs/OutputSubscription"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Source"
+        },
+        "title": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "source",
+        "controls",
+        "kind",
+        "config"
+      ],
+      "title": "SemanticPlotProjection",
+      "type": "object"
+    },
+    "SemanticReference": {
+      "additionalProperties": false,
+      "description": "One serialized semantic reference (RFC 001 section 3.2).\n\nReferences are workspace-scoped and carry no source version:\nresolution uses the collection's current pinned version, and run\ninputs capture their versions separately.",
+      "properties": {
+        "collection": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Collection",
+          "type": "string"
+        },
+        "incarnation": {
+          "minLength": 1,
+          "title": "Incarnation",
+          "type": "string"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "collection",
+        "incarnation",
+        "key"
+      ],
+      "title": "SemanticReference",
+      "type": "object"
+    },
+    "SemanticState": {
+      "additionalProperties": false,
+      "description": "One nullable reference state entry with workspace scope.\n\nThe default is null and only null: a reference value carries the\nservice-issued incarnation of its collection, so no document can\nname one before the service creates the collection. Defaults apply\nonly on creation; changing one never resets a selection.",
+      "properties": {
+        "default": {
+          "title": "Default",
+          "type": "null"
+        },
+        "nullable": {
+          "title": "Nullable",
+          "type": "boolean"
+        },
+        "scope": {
+          "const": "workspace",
+          "title": "Scope",
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/ReferenceType"
+        }
+      },
+      "required": [
+        "type",
+        "nullable",
+        "default",
+        "scope"
+      ],
+      "title": "SemanticState",
+      "type": "object"
+    },
+    "SemanticTableProjection": {
+      "additionalProperties": false,
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/TableConfig"
+        },
+        "controls": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "button": "#/$defs/ButtonControl",
+                "number": "#/$defs/NumberControl",
+                "select": "#/$defs/SelectControl",
+                "text": "#/$defs/TextControl",
+                "toggle": "#/$defs/ToggleControl"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/NumberControl"
+              },
+              {
+                "$ref": "#/$defs/TextControl"
+              },
+              {
+                "$ref": "#/$defs/ToggleControl"
+              },
+              {
+                "$ref": "#/$defs/SelectControl"
+              },
+              {
+                "$ref": "#/$defs/ButtonControl"
+              }
+            ]
+          },
+          "title": "Controls",
+          "type": "array"
+        },
+        "kind": {
+          "const": "table",
+          "title": "Kind",
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceReference"
+            },
+            {
+              "$ref": "#/$defs/OutputSubscription"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Source"
+        },
+        "title": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "source",
+        "controls",
+        "kind",
+        "config"
+      ],
+      "title": "SemanticTableProjection",
+      "type": "object"
+    },
+    "SessionHelloPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "clientVersion": {
+          "minLength": 1,
+          "title": "Clientversion",
+          "type": "string"
+        },
+        "languageVersions": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Languageversions",
+          "type": "array"
+        },
+        "protocolVersions": {
+          "items": {
+            "ge": 0,
+            "type": "integer"
+          },
+          "minItems": 1,
+          "title": "Protocolversions",
+          "type": "array"
+        }
+      },
+      "required": [
+        "protocolVersions",
+        "languageVersions",
+        "clientVersion"
+      ],
+      "title": "SessionHelloPayload",
+      "type": "object"
+    },
+    "SortKey": {
+      "additionalProperties": false,
+      "properties": {
+        "column": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Column",
+          "type": "string"
+        },
+        "direction": {
+          "enum": [
+            "asc",
+            "desc"
+          ],
+          "title": "Direction",
+          "type": "string"
+        }
+      },
+      "required": [
+        "column",
+        "direction"
+      ],
+      "title": "SortKey",
+      "type": "object"
+    },
+    "Source": {
+      "additionalProperties": false,
+      "properties": {
+        "currentVersion": {
+          "gt": 0,
+          "title": "Currentversion",
+          "type": "integer"
+        },
+        "kind": {
+          "enum": [
+            "table",
+            "image",
+            "text"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "versions": {
+          "minProperties": 1,
+          "patternProperties": {
+            "^[1-9][0-9]*\\z": {
+              "$ref": "#/$defs/SourceVersion"
+            }
+          },
+          "title": "Versions",
+          "type": "object"
+        }
+      },
+      "required": [
+        "kind",
+        "currentVersion",
+        "versions"
+      ],
+      "title": "Source",
+      "type": "object"
+    },
+    "SourceImportPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "artifactToken": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Artifacttoken",
+          "type": "string"
+        },
+        "originLabel": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Originlabel",
+          "type": "string"
+        },
+        "sourceId": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Sourceid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sourceId",
+        "artifactToken",
+        "originLabel"
+      ],
+      "title": "SourceImportPayload",
+      "type": "object"
+    },
+    "SourceReference": {
+      "additionalProperties": false,
+      "description": "A source reference is exactly a source ID and a version.",
+      "properties": {
+        "sourceId": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Sourceid",
+          "type": "string"
+        },
+        "version": {
+          "gt": 0,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sourceId",
+        "version"
+      ],
+      "title": "SourceReference",
+      "type": "object"
+    },
+    "SourceVersion": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "pattern": "^sha256:[0-9a-f]{64}\\z",
+          "title": "Artifact",
+          "type": "string"
+        },
+        "byteLength": {
+          "ge": 0,
+          "title": "Bytelength",
+          "type": "integer"
+        },
+        "mediaType": {
+          "title": "Mediatype",
+          "type": "string"
+        },
+        "origin": {
+          "discriminator": {
+            "mapping": {
+              "import": "#/$defs/ImportOrigin",
+              "run": "#/$defs/RunOrigin"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ImportOrigin"
+            },
+            {
+              "$ref": "#/$defs/RunOrigin"
+            }
+          ],
+          "title": "Origin"
+        },
+        "schema": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TableSchema"
+            },
+            {
+              "$ref": "#/$defs/ImageSchema"
+            },
+            {
+              "$ref": "#/$defs/TextSchema"
+            }
+          ],
+          "title": "Schema"
+        }
+      },
+      "required": [
+        "artifact",
+        "mediaType",
+        "byteLength",
+        "schema",
+        "origin"
+      ],
+      "title": "SourceVersion",
+      "type": "object"
+    },
+    "SplitNode": {
+      "additionalProperties": false,
+      "properties": {
+        "axis": {
+          "enum": [
+            "horizontal",
+            "vertical"
+          ],
+          "title": "Axis",
+          "type": "string"
+        },
+        "first": {
+          "discriminator": {
+            "mapping": {
+              "pane": "#/$defs/PaneNode",
+              "split": "#/$defs/SplitNode"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/PaneNode"
+            },
+            {
+              "$ref": "#/$defs/SplitNode"
+            }
+          ],
+          "title": "First"
+        },
+        "kind": {
+          "const": "split",
+          "title": "Kind",
+          "type": "string"
+        },
+        "ratio": {
+          "title": "Ratio",
+          "type": "number"
+        },
+        "second": {
+          "discriminator": {
+            "mapping": {
+              "pane": "#/$defs/PaneNode",
+              "split": "#/$defs/SplitNode"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/PaneNode"
+            },
+            {
+              "$ref": "#/$defs/SplitNode"
+            }
+          ],
+          "title": "Second"
+        }
+      },
+      "required": [
+        "kind",
+        "axis",
+        "ratio",
+        "first",
+        "second"
+      ],
+      "title": "SplitNode",
+      "type": "object"
+    },
+    "StateSet": {
+      "additionalProperties": false,
+      "description": "One reference state assignment (RFC 001 sections 4 and 5.2).\n\nThe value is a serialized semantic reference or null. A reference\nmust match the declared collection and its current incarnation at\nassignment time, so a stale incarnation cannot select an object in\na recreated collection. The workspace service rejects this\noperation for a `melt/v0.1` workspace, whose language defines no\nreference state.",
+      "properties": {
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Id",
+          "type": "string"
+        },
+        "op": {
+          "const": "state.set",
+          "title": "Op",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SemanticReference"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "op",
+        "id",
+        "value"
+      ],
+      "title": "StateSet",
+      "type": "object"
+    },
+    "StateSetEffect": {
+      "additionalProperties": false,
+      "description": "One typed assignment: this binding writes one state record.\n\nThe value selector names a declared event field or a typed literal.\nThere are no expressions, function calls, string interpolations, or\nexecutable callbacks (RFC 001 section 5.2).",
+      "properties": {
+        "kind": {
+          "const": "state.set",
+          "title": "Kind",
+          "type": "string"
+        },
+        "target": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Target",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EventFieldValue"
+            },
+            {
+              "$ref": "#/$defs/NullLiteralValue"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "kind",
+        "target",
+        "value"
+      ],
+      "title": "StateSetEffect",
+      "type": "object"
+    },
+    "TableColumn": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "nullable": {
+          "title": "Nullable",
+          "type": "boolean"
+        },
+        "precision": {
+          "anyOf": [
+            {
+              "gt": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Precision"
+        },
+        "scale": {
+          "anyOf": [
+            {
+              "ge": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scale"
+        },
+        "type": {
+          "enum": [
+            "string",
+            "bool",
+            "int64",
+            "float64",
+            "decimal",
+            "date",
+            "timestamp"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "nullable"
+      ],
+      "title": "TableColumn",
+      "type": "object"
+    },
+    "TableConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "columns": {
+          "anyOf": [
+            {
+              "items": {
+                "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Columns"
+        },
+        "selection": {
+          "enum": [
+            "none",
+            "single"
+          ],
+          "title": "Selection",
+          "type": "string"
+        }
+      },
+      "required": [
+        "columns",
+        "selection"
+      ],
+      "title": "TableConfig",
+      "type": "object"
+    },
+    "TablePagePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "filters": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Filter"
+          },
+          "title": "Filters",
+          "type": "array"
+        },
+        "limit": {
+          "gt": 0,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "offset": {
+          "ge": 0,
+          "title": "Offset",
+          "type": "integer"
+        },
+        "sort": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SortKey"
+          },
+          "title": "Sort",
+          "type": "array"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceReference"
+        }
+      },
+      "required": [
+        "source",
+        "offset",
+        "limit"
+      ],
+      "title": "TablePagePayload",
+      "type": "object"
+    },
+    "TableProjection": {
+      "additionalProperties": false,
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/TableConfig"
+        },
+        "controls": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "button": "#/$defs/ButtonControl",
+                "number": "#/$defs/NumberControl",
+                "select": "#/$defs/SelectControl",
+                "text": "#/$defs/TextControl",
+                "toggle": "#/$defs/ToggleControl"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/NumberControl"
+              },
+              {
+                "$ref": "#/$defs/TextControl"
+              },
+              {
+                "$ref": "#/$defs/ToggleControl"
+              },
+              {
+                "$ref": "#/$defs/SelectControl"
+              },
+              {
+                "$ref": "#/$defs/ButtonControl"
+              }
+            ]
+          },
+          "title": "Controls",
+          "type": "array"
+        },
+        "kind": {
+          "const": "table",
+          "title": "Kind",
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceReference"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "source",
+        "controls",
+        "kind",
+        "config"
+      ],
+      "title": "TableProjection",
+      "type": "object"
+    },
+    "TableSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/TableColumn"
+          },
+          "minItems": 1,
+          "title": "Columns",
+          "type": "array"
+        },
+        "rowKey": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rowkey"
+        }
+      },
+      "required": [
+        "columns"
+      ],
+      "title": "TableSchema",
+      "type": "object"
+    },
+    "TextControl": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "text",
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "parameter": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Parameter",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "kind",
+        "parameter"
+      ],
+      "title": "TextControl",
+      "type": "object"
+    },
+    "TextSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "encoding": {
+          "const": "utf-8",
+          "title": "Encoding",
+          "type": "string"
+        }
+      },
+      "required": [
+        "encoding"
+      ],
+      "title": "TextSchema",
+      "type": "object"
+    },
+    "ToggleControl": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "toggle",
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "parameter": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Parameter",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "kind",
+        "parameter"
+      ],
+      "title": "ToggleControl",
+      "type": "object"
+    },
+    "WorkspaceCreatePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "document": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Document"
+            },
+            {
+              "$ref": "#/$defs/SemanticDocument"
+            }
+          ],
+          "title": "Document"
+        }
+      },
+      "required": [
+        "document"
+      ],
+      "title": "WorkspaceCreatePayload",
+      "type": "object"
+    },
+    "WorkspaceInspectPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "collection": {
+          "anyOf": [
+            {
+              "enum": [
+                "parameters",
+                "actions",
+                "projections",
+                "bindings",
+                "collections",
+                "state"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Collection"
+        },
+        "ids": {
+          "anyOf": [
+            {
+              "items": {
+                "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ids"
+        }
+      },
+      "title": "WorkspaceInspectPayload",
+      "type": "object"
+    },
+    "WorkspaceMigratePayload": {
+      "additionalProperties": false,
+      "description": "One explicit language migration request (RFC 001 section 8.3).\n\nThe migration starts from `melt/v0.1` and commits\n`melt/semantic-draft-1`: every v0.1 target becomes a following\nsubscription, and source versions, projection IDs, parameter\nvalues, and layout stay unchanged. ``dryRun`` previews the same\nmigration without writing; its report explains that pane removal no\nlonger invalidates output publication.",
+      "properties": {
+        "dryRun": {
+          "default": false,
+          "title": "Dryrun",
+          "type": "boolean"
+        },
+        "targetLanguage": {
+          "const": "melt/semantic-draft-1",
+          "title": "Targetlanguage",
+          "type": "string"
+        }
+      },
+      "required": [
+        "targetLanguage"
+      ],
+      "title": "WorkspaceMigratePayload",
+      "type": "object"
+    },
+    "WorkspaceSubscribePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "afterSequence": {
+          "ge": 0,
+          "title": "Aftersequence",
+          "type": "integer"
+        },
+        "epoch": {
+          "gt": 0,
+          "title": "Epoch",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "afterSequence",
+        "epoch"
+      ],
+      "title": "WorkspaceSubscribePayload",
+      "type": "object"
+    }
+  },
+  "$id": "https://melt.dev/protocol/commandenvelope-schema.json",
+  "$ref": "#/$defs/CommandEnvelope",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "The Melt command envelope, its responses, and every method payload",
+  "x-generated": {
+    "command": "make protocol (scripts/generate_protocol.py)",
+    "note": "Generated file: do not edit by hand. Regeneration must reproduce the committed bytes; scripts/check.sh enforces it.",
+    "source": "python/melt/schema, the single restricted vocabulary of SPEC.md section 17"
+  }
+}

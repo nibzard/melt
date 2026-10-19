@@ -29,7 +29,7 @@ from melt.schema.diagnostics import (
     Diagnostic,
     DiagnosticCode,
     MeltSchemaError,
-    diagnostic_from_pydantic_error,
+    diagnostics_from_pydantic_errors,
     with_code,
 )
 from melt.schema.document import (
@@ -142,10 +142,7 @@ def parse_manifest(data: "str | bytes | bytearray | Mapping") -> RunManifest:
         return RunManifest.model_validate(value)
     except ValidationError as error:
         raise MeltManifestError(
-            [
-                diagnostic_from_pydantic_error(item, DiagnosticCode.SCHEMA)
-                for item in error.errors()
-            ]
+            diagnostics_from_pydantic_errors(error.errors(), DiagnosticCode.SCHEMA)
         ) from error
 
 

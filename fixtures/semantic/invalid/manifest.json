@@ -1,0 +1,240 @@
+{
+  "schemaVersion": 1,
+  "description": "Expected diagnostics for every invalid fixture of the provisional melt/semantic-draft-1 extension (RFC 001 sections 3 through 8). The format matches fixtures/invalid/manifest.json; every entry here is enforced by the Python schema layer, python/melt/schema/semantic.py.",
+  "fixtures": [
+    {
+      "file": "action-with-targets.json",
+      "kind": "document",
+      "category": "extension-action-shape",
+      "code": "E_SCHEMA",
+      "path": "/actions/analyze-risk/targets",
+      "enforcedBy": "schema",
+      "description": "An extension action declares outputs without projection targets (RFC 001 section 8.1)."
+    },
+    {
+      "file": "binding-action-effect-on-pure-event.json",
+      "kind": "document",
+      "category": "binding-effect-kind",
+      "code": "E_TYPE",
+      "path": "/bindings/select-supplier/effect",
+      "enforcedBy": "schema",
+      "description": "A pure renderer event binds only a state.set effect; selection never invokes a capability (RFC 001 sections 5.2 and 2)."
+    },
+    {
+      "file": "binding-clear-with-event-field.json",
+      "kind": "document",
+      "category": "binding-value-shape",
+      "code": "E_TYPE",
+      "path": "/bindings/clear-supplier/effect/value",
+      "enforcedBy": "schema",
+      "description": "selection.clear carries no object data; only the typed null literal is assignable (RFC 001 section 5.1)."
+    },
+    {
+      "file": "binding-collection-mismatch.json",
+      "kind": "document",
+      "category": "binding-type-fit",
+      "code": "E_TYPE",
+      "path": "/bindings/select-supplier/effect/target",
+      "enforcedBy": "schema",
+      "description": "The target state holds references of the collection the event selects (RFC 001 section 5.2)."
+    },
+    {
+      "file": "binding-debounce-nonzero.json",
+      "kind": "document",
+      "category": "binding-debounce",
+      "code": "E_SCHEMA",
+      "path": "/bindings/select-supplier/debounceMs",
+      "enforcedBy": "schema",
+      "description": "A pure event binding commits immediately; its debounce is fixed at zero (RFC 001 section 5.3)."
+    },
+    {
+      "file": "binding-duplicate-address.json",
+      "kind": "document",
+      "category": "binding-uniqueness",
+      "code": "E_SCHEMA",
+      "path": "/bindings/select-supplier/event",
+      "enforcedBy": "schema",
+      "description": "Each event address carries at most one binding; the later binding in sorted order carries the diagnostic (RFC 001 section 5.2)."
+    },
+    {
+      "file": "binding-event-non-graph-projection.json",
+      "kind": "document",
+      "category": "binding-event-projection",
+      "code": "E_TYPE",
+      "path": "/bindings/select-supplier/event/projection",
+      "enforcedBy": "schema",
+      "description": "A renderer event binds only a projection whose renderer declares it (RFC 001 sections 5.1 and 7.2)."
+    },
+    {
+      "file": "binding-expression-value.json",
+      "kind": "document",
+      "category": "binding-value-shape",
+      "code": "E_SCHEMA",
+      "path": "/bindings/select-supplier/effect/value",
+      "enforcedBy": "schema",
+      "description": "Only declared event fields and typed literals stand as values; no expressions (RFC 001 section 5.2)."
+    },
+    {
+      "file": "binding-unknown-state.json",
+      "kind": "document",
+      "category": "binding-target",
+      "code": "E_REFERENCE",
+      "path": "/bindings/select-supplier/effect/target",
+      "enforcedBy": "schema",
+      "description": "A state.set effect writes a declared state record (RFC 001 section 5.2)."
+    },
+    {
+      "file": "collection-key-not-string.json",
+      "kind": "document",
+      "category": "collection-key-type",
+      "code": "E_TYPE",
+      "path": "/collections/suppliers/key",
+      "enforcedBy": "schema",
+      "description": "A collection key column holds unique non-null strings (RFC 001 section 3.1)."
+    },
+    {
+      "file": "collection-unknown-source.json",
+      "kind": "document",
+      "category": "collection-source",
+      "code": "E_REFERENCE",
+      "path": "/collections/suppliers/source/sourceId",
+      "enforcedBy": "schema",
+      "description": "A collection pins a source version the document carries (RFC 001 section 3.1)."
+    },
+    {
+      "file": "graph-node-foreign-collection.json",
+      "kind": "document",
+      "category": "graph-identity-map",
+      "code": "E_TYPE",
+      "path": "/projections/network/collection",
+      "enforcedBy": "schema",
+      "description": "A selectable graph carries one collection; nodes outside it are rejected (RFC 001 section 7.1)."
+    },
+    {
+      "file": "graph-source-wrong-media-type.json",
+      "kind": "document",
+      "category": "graph-source-media-type",
+      "code": "E_TYPE",
+      "path": "/sources/supplier-network/versions/1/mediaType",
+      "enforcedBy": "schema",
+      "description": "A graph source version carries the graph media type (RFC 001 section 7.1)."
+    },
+    {
+      "file": "observer-collection-mismatch.json",
+      "kind": "document",
+      "category": "observer-type-fit",
+      "code": "E_TYPE",
+      "path": "/projections/network/observe/highlight/state",
+      "enforcedBy": "schema",
+      "description": "The observed state holds references of the collection the projection reads (RFC 001 section 6)."
+    },
+    {
+      "file": "observer-unknown-state.json",
+      "kind": "document",
+      "category": "observer-state",
+      "code": "E_REFERENCE",
+      "path": "/projections/network/observe/highlight/state",
+      "enforcedBy": "schema",
+      "description": "An observer slot names a declared state entry (RFC 001 section 6)."
+    },
+    {
+      "file": "record-unknown-field.json",
+      "kind": "document",
+      "category": "record-config",
+      "code": "E_REFERENCE",
+      "path": "/projections/inspector/config/fields/1",
+      "enforcedBy": "schema",
+      "description": "A record projection configures columns the pinned version carries (RFC 001 section 6)."
+    },
+    {
+      "file": "state-non-nullable.json",
+      "kind": "document",
+      "category": "state-nullable",
+      "code": "E_TYPE",
+      "path": "/state/selected_supplier/nullable",
+      "enforcedBy": "schema",
+      "description": "The first extension adds nullable reference state only (RFC 001 section 4)."
+    },
+    {
+      "file": "state-unknown-collection.json",
+      "kind": "document",
+      "category": "state-collection",
+      "code": "E_REFERENCE",
+      "path": "/state/selected_supplier/type/collection",
+      "enforcedBy": "schema",
+      "description": "A reference state entry names a declared collection (RFC 001 section 4)."
+    },
+    {
+      "file": "subscription-follow-current-with-version.json",
+      "kind": "document",
+      "category": "output-subscription-shape",
+      "code": "E_SCHEMA",
+      "path": "/projections/risk/source",
+      "enforcedBy": "schema",
+      "description": "A following subscription carries no version; it resolves the current pointer (RFC 001 section 8.1)."
+    },
+    {
+      "file": "subscription-kind-mismatch.json",
+      "kind": "document",
+      "category": "output-subscription-type",
+      "code": "E_TYPE",
+      "path": "/projections/risk/source",
+      "enforcedBy": "schema",
+      "description": "The subscribing projection is compatible with the output kind (RFC 001 section 8.1)."
+    },
+    {
+      "file": "subscription-pinned-without-version.json",
+      "kind": "document",
+      "category": "output-subscription-shape",
+      "code": "E_SCHEMA",
+      "path": "/projections/risk-plot-pane/source",
+      "enforcedBy": "schema",
+      "description": "A pinned subscription names the version it freezes (RFC 001 section 8.1)."
+    },
+    {
+      "file": "subscription-unknown-action.json",
+      "kind": "document",
+      "category": "output-subscription-reference",
+      "code": "E_REFERENCE",
+      "path": "/projections/risk/source/actionOutput/action",
+      "enforcedBy": "schema",
+      "description": "A subscription names one action the document carries (RFC 001 section 8.1)."
+    },
+    {
+      "file": "subscription-unknown-output.json",
+      "kind": "document",
+      "category": "output-subscription-reference",
+      "code": "E_REFERENCE",
+      "path": "/projections/risk/source/actionOutput/output",
+      "enforcedBy": "schema",
+      "description": "A subscription names one output the action declares (RFC 001 section 8.1)."
+    },
+    {
+      "file": "unsupported-semantic-version.json",
+      "kind": "document",
+      "category": "unsupported-versions",
+      "code": "E_VERSION",
+      "path": "/language",
+      "enforcedBy": "schema",
+      "description": "melt/semantic-draft-1 is the only extension identifier this schema package parses."
+    },
+    {
+      "file": "v01-document-with-collections.json",
+      "kind": "document",
+      "category": "v01-extension-fields",
+      "code": "E_SCHEMA",
+      "path": "/collections",
+      "enforcedBy": "schema",
+      "description": "A melt/v0.1 document rejects the RFC 001 extension fields (RFC 001 section 1)."
+    },
+    {
+      "file": "v01-projection-with-subscription.json",
+      "kind": "document",
+      "category": "v01-extension-fields",
+      "code": "E_SCHEMA",
+      "path": "/projections/extra/source/actionOutput",
+      "enforcedBy": "schema",
+      "description": "A melt/v0.1 projection source is a source reference or null, never a subscription (RFC 001 section 8.3)."
+    }
+  ]
+}

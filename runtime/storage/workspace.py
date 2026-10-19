@@ -19,6 +19,7 @@ workspace header. An unknown version is reported, never migrated.
 from __future__ import annotations
 
 import json
+import os
 import random
 import re
 from dataclasses import dataclass
@@ -88,6 +89,7 @@ class WorkspaceStore:
         worker: StorageWorker,
         header: Mapping[str, Any],
         commit_sequence: int,
+        opening_records: list[StoredRecord] | None = None,
     ):
         self._workspace_id = workspace_id
         self._layout = layout
@@ -97,6 +99,7 @@ class WorkspaceStore:
         self._commit_sequence = int(commit_sequence)
         self._artifacts = ArtifactStore(layout.artifacts)
         self._closed = False
+        self._opening_records = opening_records
 
     # ------------------------------------------------------------------
     # Opening
@@ -127,7 +130,7 @@ class WorkspaceStore:
             lock.release()
             raise
         try:
-            header, commit_sequence = cls._negotiate(worker, workspace_id)
+            header, commit_sequence, opening_records = cls._negotiate(worker, workspace_id)
         except BaseException:
             worker.terminate()
             lock.release()
@@ -139,12 +142,13 @@ class WorkspaceStore:
             worker=worker,
             header=header,
             commit_sequence=commit_sequence,
+            opening_records=opening_records,
         )
 
     @classmethod
     def _negotiate(
         cls, worker: StorageWorker, workspace_id: str
-    ) -> tuple[dict, int]:
+    ) -> tuple[dict, int, list[StoredRecord]]:
         """Load or create the workspace header (SPEC.md section 14 step 1)."""
 
         committed = _scan_all(worker)
@@ -165,8 +169,12 @@ class WorkspaceStore:
             sequence, entries = worker.commit_entries(
                 [(HEADER_KIND, header)]
             )
+            committed.append(StoredRecord(
+                id=int(entries[0]["id"]), kind=HEADER_KIND,
+                data=dict(header), commit_sequence=sequence,
+            ))
             header = dict(header, entryId=entries[0]["id"])
-            return header, sequence
+            return header, sequence, committed
         stored = latest.data
         stored_version = stored.get("formatVersion")
         if stored_version != STORAGE_FORMAT_VERSION:
@@ -194,7 +202,7 @@ class WorkspaceStore:
         commit_sequence = max(
             (record.commit_sequence for record in committed), default=0
         )
-        return header, commit_sequence
+        return header, commit_sequence, committed
 
     # ------------------------------------------------------------------
     # State of the open store
@@ -298,6 +306,7 @@ class WorkspaceStore:
             )
             for entry, (_kind, payload) in zip(entries, prepared)
         ]
+        self._opening_records = None
         self._commit_sequence = max(self._commit_sequence, sequence)
         return sequence, stored
 
@@ -309,6 +318,17 @@ class WorkspaceStore:
         if entry is None:
             return None
         return _record_from_entry(entry)
+
+    def take_opening_records(self) -> list[StoredRecord]:
+        """Reuse the header scan once for recovery under single ownership.
+
+        An intervening append invalidates this snapshot. Later calls scan
+        storage normally; callers cannot mutate a retained recovery copy.
+        """
+        self._require_open()
+        records = self._opening_records
+        self._opening_records = None
+        return self.records() if records is None else records
 
     def records(self) -> list[StoredRecord]:
         """Every committed record, oldest first."""
@@ -326,6 +346,44 @@ class WorkspaceStore:
 
         self._require_open()
         return self._worker.durability_facts()
+
+    def write_backup(self, label: str) -> Path:
+        """Copy the committed database into ``backups/`` (section 14).
+
+        The copy uses the SQLite backup API through a second read-only
+        connection, so it is consistent even while the owning worker
+        connection holds the database in WAL mode: frames still living
+        in the write-ahead log land in the backup too. The file and
+        its directory are synchronized before the path returns, so a
+        caller that commits afterwards may treat the backup as the
+        pre-commit state (RFC 001 section 8.3).
+        """
+
+        import sqlite3
+
+        from runtime.storage.artifacts import fsync_directory
+
+        self._require_open()
+        self.layout.backups.mkdir(parents=True, exist_ok=True)
+        target = self.layout.backups / f"{label}.sqlite"
+        source = sqlite3.connect(
+            f"file:{self.layout.database}?mode=ro", uri=True
+        )
+        try:
+            destination = sqlite3.connect(str(target))
+            try:
+                source.backup(destination)
+            finally:
+                destination.close()
+        finally:
+            source.close()
+        descriptor = os.open(target, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        fsync_directory(self.layout.backups)
+        return target
 
     # ------------------------------------------------------------------
     # Artifacts
@@ -352,6 +410,7 @@ class WorkspaceStore:
         if self._closed:
             return
         self._closed = True
+        self._opening_records = None
         try:
             self._worker.terminate()
         finally:
@@ -392,11 +451,16 @@ def _scan_all(worker: StorageWorker) -> list[StoredRecord]:
     if not worker.root_conversation_committed:
         return records
     cursor: Mapping[str, Any] | None = None
+    limit = 200
     while True:
-        entries, next_cursor = worker.scan_entries(cursor=cursor)
+        entries, next_cursor = worker.scan_entries(limit=limit, cursor=cursor)
         records.extend(_record_from_entry(entry) for entry in entries)
         if next_cursor is None:
             return records
+        # Keep the byte-limited page size the worker found. Otherwise
+        # every later page would repeat the same oversized scan retries.
+        if entries:
+            limit = min(limit, len(entries))
         cursor = next_cursor
 
 

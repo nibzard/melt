@@ -1,16 +1,26 @@
 #!/usr/bin/env node
 // Verify canonical hashes across the supported languages (SPEC.md
-// sections 4.2 and 18.1, backlog task T020).
+// sections 4.2 and 18.1, backlog tasks T020 and T007).
 //
 // Python is the reference implementation: python/melt/schema/canonical.py
-// computes the hashes recorded in fixtures/valid/document-hashes.json.
-// This script holds an independent RFC 8785 canonicalizer in JavaScript
-// and proves both languages agree:
+// computes the hashes recorded in fixtures/valid/document-hashes.json and
+// fixtures/semantic/document-hashes.json. This script proves the
+// agreement of every JavaScript implementation:
 //
 //   1. The reference vectors of tests/contract/jcs/ canonicalize to the
 //      exact expected text (the same shared fixtures the Python suite
 //      runs, RFC 8785 appendix H).
-//   2. Every valid document fixture hashes to its recorded value.
+//   2. Every valid v0.1 document fixture hashes to its recorded value
+//      through an independent RFC 8785 canonicalizer written directly
+//      in this file, together with the ad-hoc wire-form mirror below.
+//   3. Every entry of both hash indexes also hashes to its recorded
+//      value through the generated TypeScript models of
+//      protocol/generated/melt-document.ts: those models validate the
+//      document shape, normalize it into the wire form (every field
+//      present, absent optional fields explicit nulls or their
+//      defaults), and canonicalize the result (SPEC.md section 17).
+//      The semantic fixtures join the agreement through this path, so
+//      the v0.1 pass of step 2 stays unchanged.
 //
 // scripts/check.sh runs this verifier, and the contract suite runs it
 // again through tests/contract/test_fixtures.py. The script uses no npm
@@ -23,6 +33,8 @@ import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+
+import { canonicalDocumentHash } from "../protocol/generated/melt-document.ts";
 
 const VECTOR_NAMES = [
   "arrays",
@@ -131,9 +143,12 @@ const COLUMN_FIELDS = ["label", "precision", "scale"];
 // an absent table rowKey are explicit nulls on the wire. Number-typed
 // fields serialize through the IEEE 754 double either way, so an
 // integer literal and its float form hash identically. This function
-// mirrors that normalization for a freshly parsed document (it mutates
-// its input); the same rule will hold for the generated TypeScript and
-// Swift models of backlog task T007.
+// mirrors that normalization for a freshly parsed v0.1 document (it
+// mutates its input); the generated TypeScript and Swift models of
+// protocol/generated apply the complete rule of the vocabulary — every
+// model field present, absent optional fields carrying their defaults —
+// so they cover the semantic extension fixtures as well (backlog task
+// T007).
 function toWireForm(document) {
   for (const parameter of Object.values(document.parameters ?? {})) {
     if (parameter.constraints) {
@@ -236,11 +251,57 @@ function checkDocumentHashes(root, failures) {
   return agreed;
 }
 
+function checkGeneratedModelHashes(root, failures) {
+  // The generated TypeScript models verify both hash indexes: the v0.1
+  // set of fixtures/valid and the semantic set of fixtures/semantic
+  // (kept separate so the v0.1 suite stays unchanged, backlog task
+  // T007).
+  const indexes = [
+    { directory: "fixtures/valid", index: "document-hashes.json" },
+    { directory: "fixtures/semantic", index: "document-hashes.json" },
+  ];
+  let agreed = 0;
+  let total = 0;
+  for (const { directory, index } of indexes) {
+    const directoryPath = path.join(root, directory);
+    const recorded = JSON.parse(
+      readFileSync(path.join(directoryPath, index), "utf8"),
+    ).documents;
+    for (const name of Object.keys(recorded).sort()) {
+      total += 1;
+      const text = readFileSync(path.join(directoryPath, name), "utf8");
+      let hash;
+      try {
+        hash = canonicalDocumentHash(text);
+      } catch (error) {
+        failures.push(
+          `${directory}/${name}: the generated TypeScript models reject` +
+            ` the document (${error.message})`,
+        );
+        continue;
+      }
+      if (hash === recorded[name]) {
+        agreed += 1;
+      } else {
+        failures.push(
+          `${directory}/${name}: the generated TypeScript models` +
+            " disagree with the recorded hash",
+        );
+        process.stderr.write(
+          `${directory}/${name}:\n  typescript: ${hash}\n  recorded:   ${recorded[name]}\n`,
+        );
+      }
+    }
+  }
+  return { agreed, total };
+}
+
 function main() {
   const { root } = parseArguments(process.argv.slice(2));
   const failures = [];
   const vectors = checkReferenceVectors(root, failures);
   const documents = checkDocumentHashes(root, failures);
+  const generated = checkGeneratedModelHashes(root, failures);
   if (failures.length > 0) {
     process.stderr.write(
       `verify-canonical-hashes: ${failures.length} disagreement(s)` +
@@ -251,7 +312,13 @@ function main() {
   }
   process.stdout.write(
     `verify-canonical-hashes: ${vectors} reference vectors and ${documents}` +
-      " document hashes agree between the JavaScript and Python implementations\n",
+      " document hashes agree between the JavaScript and Python" +
+      " implementations\n",
+  );
+  process.stdout.write(
+    `verify-canonical-hashes: ${generated.agreed} of ${generated.total}` +
+      " recorded document hashes agree through the generated" +
+      " TypeScript models (fixtures/valid and fixtures/semantic)\n",
   );
 }
 

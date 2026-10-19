@@ -38,6 +38,7 @@ from melt.schema.records import (
     PendingIntentRecord,
     RunRecord,
 )
+from runtime.workspace.state import ParameterStateValue
 
 RUN_ID_PREFIX = "run-"
 """Service-minted run identifiers carry this prefix."""
@@ -295,6 +296,12 @@ class InvocationSnapshot:
     the input source references, the parameter values with their state
     revisions, the action definition revision, the output group
     revision, the generation, and the permission decision reference.
+
+    ``output_incarnation`` is the stable output identity of the owning
+    action (RFC 001 section 8.1). The group name alone cannot identify
+    a calculation, because a later transaction may hand it to another
+    action, so the snapshot captures the identity the current pointers
+    of the run's outputs resolve against.
     """
 
     action_id: str
@@ -309,6 +316,7 @@ class InvocationSnapshot:
     parameters: dict[str, CapturedParameter]
     parameter_ids: dict[str, str]
     inputs: dict[str, dict]
+    output_incarnation: "str | None" = None
 
 
 def build_pending_intent(
@@ -345,9 +353,14 @@ def build_pending_intent(
             "environmentFingerprint": snapshot.environment_fingerprint,
             "outputGroup": snapshot.output_group,
             "outputGroupRevision": snapshot.output_group_revision,
+            "outputIncarnation": snapshot.output_incarnation,
             "generation": snapshot.generation,
             "parameters": {
-                name: {"value": captured.value, "revision": captured.revision}
+                name: {
+                    "value": captured.value,
+                    "revision": captured.revision,
+                    "incarnation": captured.incarnation,
+                }
                 for name, captured in sorted(snapshot.parameters.items())
             },
             "parameterIds": dict(sorted(snapshot.parameter_ids.items())),
@@ -378,8 +391,11 @@ def build_run_record(
 
     The run carries the full invocation snapshot of the intent, so
     changes to the workspace cannot change an admitted run's inputs
-    (SPEC.md section 7.3). Publication disposition starts at ``none``
-    and is decided by the publication path alone.
+    (SPEC.md section 7.3). That includes the stable output identity of
+    the owning action, so the run's publications resolve against the
+    calculation that admitted it rather than the group name it happened
+    to hold (RFC 001 section 8.1). Publication disposition starts at
+    ``none`` and is decided by the publication path alone.
     """
 
     return RunRecord.model_validate(
@@ -392,6 +408,7 @@ def build_run_record(
             "actionRevision": intent.actionRevision,
             "outputGroup": intent.outputGroup,
             "outputGroupRevision": intent.outputGroupRevision,
+            "outputIncarnation": intent.outputIncarnation,
             "generation": intent.generation,
             "registrationId": intent.registrationId,
             "registrationRevision": intent.registrationRevision,
@@ -401,9 +418,14 @@ def build_run_record(
                 name: dict(reference) for name, reference in intent.inputs.items()
             },
             "parameters": {
-                name: {"value": captured.value, "revision": captured.revision}
-                for name, captured in intent.parameters.items()
+                name: {
+                    "value": captured.value,
+                    "revision": captured.revision,
+                    "incarnation": captured.incarnation,
+                }
+                for name, captured in sorted(intent.parameters.items())
             },
+            "parameterIds": dict(sorted(intent.parameterIds.items())),
             "permissionDecision": permission_decision,
             "state": state,
             "disposition": "none",
@@ -527,6 +549,76 @@ def intent_definition_error(
     return None
 
 
+def captured_parameter_identity_error(
+    *,
+    document: "Mapping | None",
+    parameter_states: "Mapping[str, ParameterStateValue]",
+    parameter_incarnations: "Mapping[str, int]",
+    action_id: str,
+    parameter_ids: "Mapping[str, str]",
+    parameters: "Mapping[str, CapturedParameter]",
+) -> "Diagnostic | None":
+    """Return the identity error of one captured parameter set, or None.
+
+    Deleting and recreating a parameter starts a new identity
+    incarnation under the same identifier while the recreated state
+    begins again at revision one (SPEC.md section 12.3), so an
+    invocation that captured the previous incarnation can neither
+    launch nor publish under the recreated name, value, and revision.
+    A capture without an incarnation is a record saved before identity
+    capture: it reads as the first incarnation, which no recreation
+    can satisfy again. A mere value change keeps the identity and
+    stays eligible here; its runs settle through the ordinary
+    supersession of publication.
+    """
+
+    mappings = ((document or {}).get("actions", {}).get(action_id) or {}).get(
+        "parameters", {}
+    )
+    for name in sorted(parameters):
+        captured = parameters[name]
+        parameter_id = parameter_ids.get(name)
+        if parameter_id is None:
+            # An older record without its id map falls back to the
+            # definition the action still declares for this name.
+            parameter_id = (mappings.get(name) or {}).get("parameter")
+        if parameter_id is None:
+            # No definition maps this name anymore; the definition
+            # checks report that. Nothing to compare here.
+            continue
+        stored = parameter_states.get(parameter_id)
+        if stored is None:
+            return Diagnostic(
+                code=DiagnosticCode.CONFLICT,
+                path=f"/parameters/{parameter_id}",
+                message=f"parameter {parameter_id!r} holds no stored state;"
+                " the captured invocation names a parameter identity"
+                " the document dropped",
+                hint="Invoke the action again; its next admission"
+                " captures the definitions of the current document"
+                " (SPEC.md section 12.3).",
+            )
+        captured_identity = (
+            1 if captured.incarnation is None else captured.incarnation
+        )
+        stored_identity = parameter_incarnations.get(parameter_id, 1)
+        if captured_identity != stored_identity:
+            return Diagnostic(
+                code=DiagnosticCode.CONFLICT,
+                path=f"/parameters/{parameter_id}",
+                message=f"parameter {parameter_id!r} was deleted and"
+                f" recreated: its identity moved to incarnation"
+                f" {stored_identity}, while the captured invocation"
+                f" holds incarnation {captured_identity}; a recreated"
+                " parameter is a new identity even when its name,"
+                " value, and state revision match",
+                hint="Invoke the action again; its next admission"
+                " captures the new parameter identity (SPEC.md"
+                " section 12.3).",
+            )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # The launch attempt report
 # ---------------------------------------------------------------------------
@@ -589,6 +681,7 @@ __all__ = [
     "build_pending_intent",
     "build_run_record",
     "bump_group_revision",
+    "captured_parameter_identity_error",
     "changed_output_groups",
     "default_clock",
     "due_intents",

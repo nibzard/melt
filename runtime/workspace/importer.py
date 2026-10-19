@@ -8,7 +8,10 @@ and schema measure up against the actual bytes:
 - a table artifact is a readable Parquet file whose column types map to
   the Melt column vocabulary;
 - an image artifact is a PNG whose dimensions fit the limit table;
-- a text artifact is valid UTF-8.
+- a text artifact is valid UTF-8;
+- a graph artifact is one JSON object whose nodes and edges satisfy the
+  minimal graph contract, and its measured schema is the identity map
+  itself (RFC 001 section 7.1).
 
 The import adapter maps original Parquet column labels to entity-ID
 column identifiers and retains each original label that differs
@@ -27,7 +30,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from melt.schema.canonical import model_to_wire, sha256_hash
+from melt.schema.canonical import model_to_wire, parse_json, sha256_hash
 from melt.schema.diagnostics import Diagnostic, DiagnosticCode, MeltSchemaError
 from melt.schema.document import (
     SOURCE_KIND_MEDIA_TYPES,
@@ -36,10 +39,21 @@ from melt.schema.document import (
     TextSchema,
 )
 from melt.schema.limits import DEFAULT_LIMITS
+from melt.schema.semantic import (
+    GRAPH_MEDIA_TYPE,
+    GraphSchema,
+    SEMANTIC_SOURCE_KIND_MEDIA_TYPES,
+)
 from runtime.storage.artifacts import ArtifactStore
 from runtime.workspace.tokens import CapturedArtifact
 
-IMPORT_KINDS = frozenset(SOURCE_KIND_MEDIA_TYPES)
+SOURCE_KINDS_MEDIA_TYPES: dict[str, frozenset[str]] = {
+    **SOURCE_KIND_MEDIA_TYPES,
+    **SEMANTIC_SOURCE_KIND_MEDIA_TYPES,
+}
+"""The media types each source kind accepts, graph included."""
+
+IMPORT_KINDS = frozenset(SOURCE_KINDS_MEDIA_TYPES)
 """The capture kinds a source import accepts (`script` is excluded)."""
 
 ENTITY_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,63}\Z")
@@ -261,10 +275,35 @@ def _measure_text(payload: bytes) -> dict:
     return model_to_wire(TextSchema.model_validate({"encoding": "utf-8"}))
 
 
+def _measure_graph(payload: bytes) -> dict:
+    """Measure the identity map of one graph artifact (RFC 001 7.1).
+
+    The measured schema is the validated identity map itself, stored
+    with the source version, so node identities never depend on labels
+    or element order.
+    """
+
+    try:
+        value = parse_json(payload)
+    except MeltSchemaError as error:
+        _fail(
+            "graph bytes are not one JSON document: " + error.diagnostics[0].message,
+        )
+    try:
+        return model_to_wire(GraphSchema.model_validate(value))
+    except Exception:
+        _fail(
+            "graph bytes do not satisfy the minimal graph contract: nodes"
+            " with stable ids, labels, and semantic references, and edges"
+            " between existing nodes",
+        )
+
+
 _MEASURERS = {
     "table": _measure_table,
     "image": _measure_image,
     "text": _measure_text,
+    "graph": _measure_graph,
 }
 
 
@@ -273,7 +312,7 @@ def measure_artifact(
 ) -> dict:
     """Measure the source schema of verified artifact bytes."""
 
-    allowed = SOURCE_KIND_MEDIA_TYPES.get(kind)
+    allowed = SOURCE_KINDS_MEDIA_TYPES.get(kind)
     if allowed is None or media_type not in allowed:
         _fail(
             f"kind {kind!r} with media type {media_type!r} matches no"
@@ -297,7 +336,7 @@ def register_artifact(
     if captured.kind not in IMPORT_KINDS:
         _fail(
             f"a {captured.kind!r} capture cannot import a source; source"
-            " kinds are table, image, and text",
+            " kinds are table, image, text, and graph",
             path="/payload/artifactToken",
         )
     try:

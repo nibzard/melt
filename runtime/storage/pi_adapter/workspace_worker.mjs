@@ -343,26 +343,38 @@ async function opScan(request) {
 	}
 	const order = request.order === "descending" ? "descending" : "ascending";
 	const cursor = request.cursor === undefined || request.cursor === null ? undefined : request.cursor;
-	const page = await storage.scanEntries(
-		{ conversationId: ROOT_CONVERSATION_ID, order },
-		limit,
-		cursor,
-		CONTEXT,
-	);
-	const entries = [];
-	for (const item of page.items) {
-		const read = await storage.entry(item.id, CONTEXT);
-		if (read === undefined) {
-			throw new WorkerError("E_PARSE", `entry ${item.id} vanished between scan and read`);
+	let pageSize = limit;
+	while (true) {
+		const page = await storage.scanEntries(
+			{ conversationId: ROOT_CONVERSATION_ID, order },
+			pageSize,
+			cursor,
+			CONTEXT,
+		);
+		const entries = [];
+		for (const item of page.items) {
+			const read = await storage.entry(item.id, CONTEXT);
+			if (read === undefined) {
+				throw new WorkerError("E_PARSE", `entry ${item.id} vanished between scan and read`);
+			}
+			entries.push({
+				id: item.id,
+				kind: item.kind,
+				data: item.data ?? null,
+				commitSequence: Number(read.commitSeq),
+			});
 		}
-		entries.push({
-			id: item.id,
-			kind: item.kind,
-			data: item.data ?? null,
-			commitSequence: Number(read.commitSeq),
-		});
+		const result = { entries, next: page.next ?? null };
+		if (Buffer.byteLength(JSON.stringify({ ok: true, ...result }), "utf8") <= FRAME_LIMIT_BYTES) {
+			return result;
+		}
+		if (pageSize === 1) {
+			throw new WorkerError("E_LIMIT", "one stored record exceeds the scan response frame limit");
+		}
+		// Retry from the same opaque cursor. Only the adapter creates cursors,
+		// so shrinking a page cannot skip entries or change scan order.
+		pageSize = Math.max(1, Math.floor(Math.min(pageSize, entries.length) / 2));
 	}
-	return { entries, next: page.next ?? null };
 }
 
 /** Close the owning connection. A later `open` on this worker is allowed. */

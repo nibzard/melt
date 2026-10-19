@@ -424,6 +424,7 @@ def obsolescence_error(
     registration_entry,
     group: "OutputGroupRecord | None",
     parameter_states: Mapping[str, ParameterStateValue],
+    parameter_incarnations: Mapping[str, int],
     action_revision_of: Callable[[str], int],
 ) -> "Diagnostic | None":
     """Return why one run went obsolete, or None while it stays eligible.
@@ -435,6 +436,13 @@ def obsolescence_error(
     change never appears here. The same check reports the staleness of a
     current result, because a drifted current result is exactly a
     dependency that moved (section 13.5).
+
+    The parameter comparison covers identity, not only revisions: a
+    recreated parameter restarts its state at revision one under a new
+    incarnation (SPEC.md section 12.3), so matching name, value, and
+    revision cannot restore the captured identity. A capture without an
+    incarnation is a record saved before identity capture and reads as
+    the first incarnation, which no recreation can satisfy again.
     """
 
     if group is None or group.generation != run.generation:
@@ -496,6 +504,37 @@ def obsolescence_error(
                 f"parameter {parameter_id!r} moved to state revision"
                 f" {0 if stored is None else stored.revision}; the run"
                 f" captured revision {captured_revision}",
+            )
+        captured_identity = (
+            1 if captured.incarnation is None else captured.incarnation
+        )
+        stored_identity = parameter_incarnations.get(parameter_id, 1)
+        if captured_identity != stored_identity:
+            return _diagnostic(
+                DiagnosticCode.CONFLICT,
+                f"/parameters/{parameter_id}",
+                f"parameter {parameter_id!r} was deleted and recreated:"
+                f" its identity moved to incarnation {stored_identity},"
+                f" while the run captured incarnation"
+                f" {captured_identity}; a recreated parameter is a new"
+                " identity even when its name, value, and state"
+                " revision match",
+                hint="Invoke the action again; its next admission"
+                " captures the new parameter identity (SPEC.md"
+                " section 12.3).",
+            )
+        captured_parameter_id = run.parameterIds.get(name)
+        if (
+            captured_parameter_id is not None
+            and captured_parameter_id != parameter_id
+        ):
+            return _diagnostic(
+                DiagnosticCode.CONFLICT,
+                f"/parameters/{parameter_id}",
+                f"the action now maps {name!r} to parameter"
+                f" {parameter_id!r}, but the run captured parameter"
+                f" {captured_parameter_id!r}; the run cannot publish"
+                " against a parameter it never captured",
             )
     current_inputs = {
         name: dict(reference)
@@ -570,11 +609,16 @@ def _captured_parameters(
             name: mapping["parameter"]
             for name, mapping in action.get("parameters", {}).items()
         }
+    # The captured map wins: the view reports the identity the run
+    # actually captured, and a definition that later remapped the name
+    # fills only the gaps of an older record.
+    parameter_ids.update(dict(run.parameterIds))
     return {
         name: {
             "parameter": parameter_ids.get(name, name),
             "value": captured.value,
             "stateRevision": captured.revision,
+            "stateIncarnation": captured.incarnation,
         }
         for name, captured in sorted(run.parameters.items())
     }
@@ -603,6 +647,7 @@ def result_statuses(
     *,
     action_revision_of: Callable[[str], int],
     registry_entry_of: Callable[[str], object],
+    parameter_incarnations: "Mapping[str, int] | None" = None,
 ) -> dict[str, dict]:
     """Return the result status of every output group (section 13.5).
 
@@ -615,29 +660,47 @@ def result_statuses(
     the retained result, so a host can show the parameter values that
     produced what is on screen when they differ from the current
     controls. Pending and error states retain an earlier result.
+
+    The runs and the pending intent of an entry belong to the action
+    that owns the group, never to the group name alone: a transaction
+    that moves the owner away and hands the name to another action
+    leaves the previous owner's retained result under its own group and
+    reports the new owner's group as empty until it publishes a result
+    of its own (RFC 001 section 8.1, backlog task T045).
     """
 
     actions = (document or {}).get("actions", {})
-    group_of: dict[str, list[RunRecord]] = {}
+    runs_of: dict[str, list[RunRecord]] = {}
     for run in runs.values():
-        group_of.setdefault(run.outputGroup, []).append(run)
+        runs_of.setdefault(run.actionId, []).append(run)
     statuses: dict[str, dict] = {}
     for action_id, action in sorted(actions.items()):
         group_id = action.get("outputGroup")
         if group_id is None:
             continue
-        group_runs = sorted(group_of.get(group_id, []), key=_run_sort_key)
-        newest_run = group_runs[-1] if group_runs else None
+        action_runs = sorted(runs_of.get(action_id, []), key=_run_sort_key)
+        newest_run = action_runs[-1] if action_runs else None
         current_run = next(
             (
                 run
-                for run in reversed(group_runs)
+                for run in reversed(action_runs)
                 if run.disposition == "current"
             ),
             None,
         )
         group = groups.get(group_id)
-        intent = intents.get(group_id)
+        # The pending slot of a group belongs to the action that owns it
+        # now: an action that moved away neither reports nor inherits
+        # the request another owner reserved under the same name.
+        held = intents.get(group_id)
+        intent = (
+            held if held is not None and held.actionId == action_id else None
+        )
+        # The drift of a retained result compares the group contract the
+        # run captured, because that is the contract its eligibility
+        # depended on. An action that moved to another group keeps its
+        # result under the captured name and reports it stale, while the
+        # group entry itself speaks for the group the action holds now.
         drift = (
             None
             if current_run is None
@@ -646,8 +709,9 @@ def result_statuses(
                 run=current_run,
                 action=actions.get(current_run.actionId),
                 registration_entry=registry_entry_of(current_run.registrationId),
-                group=group,
+                group=groups.get(current_run.outputGroup),
                 parameter_states=parameter_states,
+                parameter_incarnations=parameter_incarnations or {},
                 action_revision_of=action_revision_of,
             )
         )

@@ -37,7 +37,7 @@ from melt.schema.diagnostics import (
     Diagnostic,
     DiagnosticCode,
     MeltSchemaError,
-    diagnostic_from_pydantic_error,
+    diagnostics_from_pydantic_errors,
     json_pointer,
     sorted_diagnostics,
     split_code,
@@ -88,6 +88,16 @@ def _finite_number(value: object) -> float:
         raise ValueError(
             with_code(DiagnosticCode.TYPE, "expected a JSON number, no coercion")
         )
+    if isinstance(value, int) and not -SAFE_INTEGER_MAX <= value <= SAFE_INTEGER_MAX:
+        # Converting first would round 2^53 + 1 to 2^53 silently, so the
+        # wire rule of SPEC.md section 4.2 is checked before the cast.
+        raise ValueError(
+            with_code(
+                DiagnosticCode.TYPE,
+                f"integer {value} is outside the safe integer range"
+                f" [-(2^53 - 1), 2^53 - 1]",
+            )
+        )
     result = float(value)
     if not math.isfinite(result):
         raise ValueError(
@@ -97,6 +107,8 @@ def _finite_number(value: object) -> float:
 
 
 FiniteNumber = Annotated[float, BeforeValidator(_finite_number)]
+"""A finite JSON number. Integers outside the safe range are rejected
+before the cast to `float` can round them (SPEC.md section 4.2)."""
 
 JsonScalar = Union[StrictBool, FiniteNumber, StrictStr]
 """A JSON scalar value. The semantic pass checks it against its type."""
@@ -818,9 +830,17 @@ def check_parameter(parameter_id: str, parameter: Parameter) -> list[Diagnostic]
 
 
 def check_source(source_id: str, source: Source) -> list[Diagnostic]:
-    """Check one source against its own versions."""
+    """Check one source against its own versions.
+
+    A source kind outside the v0.1 table answers nothing here: the
+    extension language checks its own kinds in
+    :mod:`melt.schema.semantic`, and a `melt/v0.1` document never
+    carries one.
+    """
     path = f"/sources/{source_id}"
     diagnostics: list[Diagnostic] = []
+    if source.kind not in SOURCE_KIND_MEDIA_TYPES:
+        return diagnostics
     if str(source.currentVersion) not in source.versions:
         diagnostics.append(
             _diagnostic(
@@ -950,7 +970,13 @@ _OUTPUT_KIND_PROJECTION_KIND = {
 
 
 def check_action(action_id: str, action: Action, document: Document) -> list[Diagnostic]:
-    """Check one action's mappings against the document collections."""
+    """Check one action's mappings against the document collections.
+
+    An action of the extension language carries no ``targets``: its
+    outputs subscribe projections instead of targeting them, and
+    :func:`melt.schema.semantic.check_output_subscriptions` covers those
+    (RFC 001 section 8.1). A `melt/v0.1` action keeps every v0.1 check.
+    """
     path = f"/actions/{action_id}"
     diagnostics: list[Diagnostic] = []
     for name, mapping in action.parameters.items():
@@ -982,6 +1008,9 @@ def check_action(action_id: str, action: Action, document: Document) -> list[Dia
                     f"source version {reference.version} does not exist",
                 )
             )
+    targets = getattr(action, "targets", None)
+    if targets is None:
+        return diagnostics
     for output_name in action.outputs:
         if output_name not in action.targets:
             diagnostics.append(
@@ -1058,7 +1087,7 @@ def check_output_groups(document: Document) -> list[Diagnostic]:
             )
         else:
             group_owner[action.outputGroup] = action_id
-        for target_name, projection_id in action.targets.items():
+        for target_name, projection_id in getattr(action, "targets", {}).items():
             first_projection = projection_owner.get(projection_id)
             if first_projection is not None and first_projection != action_id:
                 diagnostics.append(
@@ -1081,13 +1110,24 @@ def check_projection(
     projection_id: str,
     projection: "_ProjectionBase",
     document: Document,
-    targeted: set,
+    targeted: "set[str] | None",
 ) -> list[Diagnostic]:
-    """Check one projection against its source and renderer contract."""
+    """Check one projection against its source and renderer contract.
+
+    A projection kind outside the v0.1 three answers nothing here: the
+    extension language checks its own kinds in
+    :mod:`melt.schema.semantic`, and a `melt/v0.1` document never
+    carries one. ``targeted`` is None under the extension language,
+    whose actions target nothing: a null source stays an empty result
+    state there, and an output subscription answers its own checks
+    (RFC 001 section 8).
+    """
     path = f"/projections/{projection_id}"
     diagnostics: list[Diagnostic] = []
+    if projection.kind not in ("table", "plot", "document"):
+        return diagnostics
     if projection.source is None:
-        if projection_id not in targeted:
+        if targeted is not None and projection_id not in targeted:
             diagnostics.append(
                 _diagnostic(
                     DiagnosticCode.REFERENCE,
@@ -1096,6 +1136,12 @@ def check_projection(
                     " the projection",
                 )
             )
+        return diagnostics
+    if not isinstance(projection.source, SourceReference):
+        # An output subscription of the extension language: a pane's
+        # configured columns are no part of an action's output validity,
+        # and a projection that cannot render a valid result shows a
+        # projection error instead (RFC 001 section 8.2).
         return diagnostics
     reference = projection.source
     source = document.sources.get(reference.sourceId)
@@ -1163,10 +1209,20 @@ def check_projection(
 
 
 def check_binding(binding_id: str, binding: Binding, document: Document) -> list[Diagnostic]:
-    """Check one binding's references and debounce policy."""
+    """Check one binding's references and debounce policy.
+
+    A binding whose event or effect is not a v0.1 shape answers nothing
+    here: the extension language checks its pure-event bindings in
+    :mod:`melt.schema.semantic`, and a `melt/v0.1` document never
+    carries one.
+    """
     path = f"/bindings/{binding_id}"
     diagnostics: list[Diagnostic] = []
     event = binding.event
+    if not isinstance(event, (ParameterChangedEvent, ControlActivateEvent)) or (
+        not isinstance(binding.effect, ActionInvokeEffect)
+    ):
+        return diagnostics
     if isinstance(event, ParameterChangedEvent):
         if event.parameter not in document.parameters:
             diagnostics.append(
@@ -1232,12 +1288,21 @@ def check_binding(binding_id: str, binding: Binding, document: Document) -> list
 
 def check_binding_uniqueness(document: Document) -> list[Diagnostic]:
     """A button has at most one binding; a parameter connects to an action
-    at most once (SPEC.md section 9.2)."""
+    at most once (SPEC.md section 9.2).
+
+    Bindings outside the v0.1 shapes carry their own uniqueness rule in
+    :mod:`melt.schema.semantic` (one writer per event address, RFC 001
+    section 5.2).
+    """
     diagnostics: list[Diagnostic] = []
     button_addresses: dict[tuple[str, str], str] = {}
     parameter_actions: dict[tuple[str, str], str] = {}
     for binding_id, binding in document.bindings.items():
         event = binding.event
+        if not isinstance(event, (ParameterChangedEvent, ControlActivateEvent)) or (
+            not isinstance(binding.effect, ActionInvokeEffect)
+        ):
+            continue
         if isinstance(event, ControlActivateEvent):
             address = (event.projection, event.control)
             first = button_addresses.get(address)
@@ -1383,9 +1448,15 @@ def document_semantic_diagnostics(document: Document) -> list[Diagnostic]:
         diagnostics.extend(check_source(source_id, source))
     for parameter_id, parameter in document.parameters.items():
         diagnostics.extend(check_parameter(parameter_id, parameter))
-    targeted: set[str] = set()
-    for action in document.actions.values():
-        targeted.update(action.targets.values())
+    # The null-source rule of SPEC.md section 8.1 belongs to the v0.1
+    # target contract. The extension language targets nothing, so its
+    # documents pass None and keep a null source an empty result state
+    # (RFC 001 section 8).
+    targeted: "set[str] | None" = None
+    if document.language == LANGUAGE_ID:
+        targeted = set()
+        for action in document.actions.values():
+            targeted.update(getattr(action, "targets", {}).values())
     for action_id, action in document.actions.items():
         diagnostics.extend(check_action(action_id, action, document))
     diagnostics.extend(check_output_groups(document))
@@ -1426,10 +1497,7 @@ def parse_document(data: "str | bytes | bytearray | dict") -> Document:
         document = Document.model_validate(value)
     except ValidationError as error:
         raise MeltDocumentError(
-            [
-                diagnostic_from_pydantic_error(item, DiagnosticCode.SCHEMA)
-                for item in error.errors()
-            ]
+            diagnostics_from_pydantic_errors(error.errors(), DiagnosticCode.SCHEMA)
         ) from error
     diagnostics = document_semantic_diagnostics(document)
     if diagnostics:

@@ -1,0 +1,18 @@
+{
+  "language": "melt/v0.1",
+  "workspaceId": "invalid-demo",
+  "title": "Invalid fixture",
+  "sources": {},
+  "parameters": {
+    "minimum": {
+      "type": "number",
+      "default": 9007199254740993,
+      "nullable": false,
+      "constraints": {"minimum": 0}
+    }
+  },
+  "actions": {},
+  "projections": {},
+  "bindings": {},
+  "layout": {"root": null, "hidden": []}
+}

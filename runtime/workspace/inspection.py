@@ -18,11 +18,13 @@ from typing import Iterable, Mapping, Sequence
 
 from melt.schema.canonical import model_to_wire
 from melt.schema.records import RunRecord, record_to_wire
+from melt.schema.semantic import SEMANTIC_LANGUAGE_ID
 from runtime.compiler.catalog import ActionRegistry, SourceCatalog
 from runtime.compiler.compiler import CompileRequest, compile_document
 from runtime.workspace.mutations import MutationPlan
 from runtime.workspace.state import (
     LAYOUT_PATH,
+    STATE_ENTITY_PATH_PREFIX,
     WorkspaceState,
     entity_path,
 )
@@ -37,7 +39,14 @@ DOCUMENT_COLLECTIONS = (
     "projections",
     "bindings",
 )
-"""The collections of a document an inspection can bound."""
+"""The collections of a v0.1 document an inspection can bound."""
+
+SEMANTIC_DOCUMENT_COLLECTIONS = ("collections", "state")
+"""The collections a `melt/semantic-draft-1` document adds (RFC 001).
+
+They appear in the bounded document and the revision list only when
+the committed document carries them, so a `melt/v0.1` inspection
+answer keeps exactly its v0.1 shape."""
 
 ENTITY_COLLECTIONS = frozenset(DOCUMENT_COLLECTIONS) - {"sources"}
 """The collections the mutation operations address (SPEC.md 12.2)."""
@@ -72,8 +81,10 @@ def current_diagnostics(
 
     Inspection stays readable when a registration or artifact left the
     trusted inputs: the diagnostics name the drift, while the saved
-    projections remain inspectable (SPEC.md sections 7.2 and 14). A
-    healthy workspace compiles cleanly and reports none.
+    projections remain inspectable (SPEC.md sections 7.2 and 14). The
+    stored reference selections of a semantic workspace ride along, so
+    a collection that lost its incarnation is named the same way, and
+    the issued output incarnations ride along with them.
     """
 
     if state.document is None:
@@ -90,6 +101,17 @@ def current_diagnostics(
                 }
                 for parameter_id, stored in state.parameter_states.items()
             },
+            reference_states={
+                state_id: {
+                    "value": None
+                    if stored.value is None
+                    else model_to_wire(stored.value),
+                    "revision": stored.revision,
+                }
+                for state_id, stored in state.reference_states.items()
+            },
+            collection_incarnations=dict(state.collection_incarnations),
+            output_incarnations=dict(state.output_incarnations),
         )
     )
     return [model_to_wire(item) for item in result.diagnostics]
@@ -103,6 +125,7 @@ def snapshot_result(
     collection: "str | None" = None,
     ids: "Iterable[str] | None" = None,
     output_groups: "Mapping[str, Mapping] | None" = None,
+    semantic: "Mapping[str, Mapping] | None" = None,
 ) -> dict:
     """Build the inspection snapshot of one committed state.
 
@@ -113,20 +136,28 @@ def snapshot_result(
     layout tree belong to the unfiltered view only, because no entity
     collection addresses them. ``output_groups`` carries the finished
     result-status map of SPEC.md section 13.5 into the unfiltered view;
-    the service computes it from its scheduling records.
+    the service computes it from its scheduling records. ``semantic``
+    carries the RFC 001 view — collection incarnations and stored
+    reference selections with their resolution — into the unfiltered
+    view of a `melt/semantic-draft-1` workspace.
     """
 
     document = state.document or {}
+    semantic_document = document.get("language") == SEMANTIC_LANGUAGE_ID
     wanted = frozenset(ids) if ids is not None else None
+    document_collections = list(DOCUMENT_COLLECTIONS)
+    if semantic_document:
+        document_collections.extend(SEMANTIC_DOCUMENT_COLLECTIONS)
     included = (
-        frozenset(DOCUMENT_COLLECTIONS) | frozenset(SERVICE_COLLECTIONS)
+        frozenset(document_collections) | frozenset(SERVICE_COLLECTIONS)
         if collection is None
         else {collection}
     )
 
     def _entities(name: str) -> dict:
         entities = dict(document.get(name, {}))
-        if wanted is not None and name in ENTITY_COLLECTIONS:
+        addressable = ENTITY_COLLECTIONS | frozenset(SEMANTIC_DOCUMENT_COLLECTIONS)
+        if wanted is not None and name in addressable:
             entities = {
                 entity_id: value
                 for entity_id, value in entities.items()
@@ -139,8 +170,8 @@ def snapshot_result(
         "workspaceId": document.get("workspaceId"),
         "title": document.get("title"),
     }
-    for name in DOCUMENT_COLLECTIONS:
-        if name in included:
+    for name in document_collections:
+        if name in included and (semantic_document or name in DOCUMENT_COLLECTIONS):
             bounded[name] = _entities(name)
     if collection is None:
         bounded["layout"] = document.get("layout")
@@ -152,6 +183,10 @@ def snapshot_result(
                 revisions[path] = revision
             continue
         collection_name, _, entity_id = path.partition("/")
+        if collection_name == STATE_ENTITY_PATH_PREFIX:
+            # The RFC 001 `state` entity records address their paths
+            # under the reserved `semantic-state` prefix.
+            collection_name = "state"
         if collection_name not in included:
             continue
         if wanted is not None and entity_id not in wanted:
@@ -188,6 +223,10 @@ def snapshot_result(
     if output_groups is not None and collection is None:
         result["outputGroups"] = {
             group_id: dict(entry) for group_id, entry in sorted(output_groups.items())
+        }
+    if semantic is not None and collection is None:
+        result["semantic"] = {
+            name: entry for name, entry in sorted(semantic.items())
         }
     return result
 
@@ -253,12 +292,16 @@ def _invalidated_runs(
     An action definition change, even an equivalent replacement,
     invalidates its admitted runs, and removing a target projection
     invalidates the whole output group's publication (SPEC.md sections
-    12.3 and 13.3). Terminal runs keep their historical disposition and
-    are not reported.
+    12.3 and 13.3). Recreating a parameter invalidates every active run
+    that captured it, because the recreation starts a new identity
+    incarnation while the state revision restarts at one (section 12.3;
+    backlog task T044). Terminal runs keep their historical disposition
+    and are not reported.
     """
 
     invalidated: list[str] = []
     actions = (state.document or {}).get("actions", {})
+    recreated = set(plan.incarnation_bumps)
     for run_id, run in sorted(runs.items()):
         if run.state not in ACTIVE_RUN_STATES:
             continue
@@ -273,7 +316,39 @@ def _invalidated_runs(
             if touch is not None and not touch.exists_after:
                 invalidated.append(run_id)
                 break
+        else:
+            captured_ids = set(run.parameterIds.values())
+            if not captured_ids:
+                # An older record without its id map falls back to the
+                # definitions the action still declares.
+                captured_ids = {
+                    mapping["parameter"]
+                    for mapping in action.get("parameters", {}).values()
+                }
+            if captured_ids & recreated:
+                invalidated.append(run_id)
     return invalidated
+
+
+def _affected_observers(plan: MutationPlan) -> "dict[str, list[str]]":
+    """The observers of every reference state a plan would change.
+
+    Preview identifies the projections whose selector reads a written
+    state entry (RFC 001 section 9). An observer addition alone writes
+    no state, so its preview reports no affected observer.
+    """
+
+    observers: dict[str, list[str]] = {}
+    for state_id in sorted(plan.new_reference_states):
+        for projection_id, projection in sorted(
+            (plan.candidate.get("projections") or {}).items()
+        ):
+            for observed in (projection.get("observe") or {}).values():
+                if (observed or {}).get("state") == state_id:
+                    observers.setdefault(state_id, []).append(
+                        f"projections/{projection_id}"
+                    )
+    return observers
 
 
 def preview_effects(
@@ -289,7 +364,7 @@ def preview_effects(
     response an apply would receive.
     """
 
-    return {
+    result = {
         "diagnostics": [],
         "affectedRecords": plan.changed_records(),
         "controllerReplacements": _controller_replacements(state, plan),
@@ -303,13 +378,31 @@ def preview_effects(
             parameter_id: {"value": stored.value, "revision": stored.revision}
             for parameter_id, stored in sorted(plan.new_states.items())
         },
+        # What each reference state record would become (RFC 001 4):
+        # an assignment or a created entry, never a silent reset.
+        "referenceStateChanges": {
+            state_id: {
+                "value": None
+                if stored.value is None
+                else model_to_wire(stored.value),
+                "revision": stored.revision,
+            }
+            for state_id, stored in sorted(plan.new_reference_states.items())
+        },
     }
+    affected = _affected_observers(plan)
+    if affected:
+        # Only the extension writes reference state, so a `melt/v0.1`
+        # preview keeps its exact v0.1 shape (RFC 001 section 9).
+        result["affectedObservers"] = affected
+    return result
 
 
 __all__ = [
     "ACTIVE_RUN_STATES",
     "DOCUMENT_COLLECTIONS",
     "ENTITY_COLLECTIONS",
+    "SEMANTIC_DOCUMENT_COLLECTIONS",
     "SERVICE_COLLECTIONS",
     "active_run_records",
     "current_diagnostics",

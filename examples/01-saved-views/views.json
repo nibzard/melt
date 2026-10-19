@@ -1,0 +1,59 @@
+[
+  {
+    "op": "entity.create",
+    "collection": "projections",
+    "id": "expenses",
+    "value": {
+      "kind": "table",
+      "title": "Team expenses",
+      "source": {
+        "sourceId": "expenses",
+        "version": 1
+      },
+      "config": {
+        "columns": [
+          "category",
+          "amount"
+        ],
+        "selection": "none"
+      },
+      "controls": []
+    }
+  },
+  {
+    "op": "entity.create",
+    "collection": "projections",
+    "id": "notes",
+    "value": {
+      "kind": "document",
+      "title": "Notes",
+      "source": {
+        "sourceId": "notes",
+        "version": 1
+      },
+      "config": {
+        "format": "markdown"
+      },
+      "controls": []
+    }
+  },
+  {
+    "op": "layout.replace",
+    "value": {
+      "root": {
+        "kind": "split",
+        "axis": "horizontal",
+        "ratio": 0.6,
+        "first": {
+          "kind": "pane",
+          "projection": "expenses"
+        },
+        "second": {
+          "kind": "pane",
+          "projection": "notes"
+        }
+      },
+      "hidden": []
+    }
+  }
+]

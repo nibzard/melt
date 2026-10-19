@@ -80,6 +80,50 @@ availability, and the resolved environment fingerprint immediately
 before the fresh process starts, and a restart marks pending work
 interrupted rather than executing it.
 
+The one execution slot of a workspace (SPEC.md sections 13.1 and 13.5,
+backlog task T035) runs without blocking the framed channel: a launch
+may park its process wait on the service's own execution thread
+(``launch_admitted_run(run_id, wait=False)``) while ``serve`` keeps
+answering every request, including ``run.cancel``. The slot registers
+the owned process handle under the storage lock before the running
+transition commits, so a run the record shows as running always has a
+signalable handle. Cancellation stops scheduling durably — the run
+record moves to ``cancelled`` with its receipt — and signals the owned
+process group, escalating from ``SIGTERM`` to ``SIGKILL`` after the
+configured grace; the report of that escalation rides the cancellation
+result. Closing the service terminates a still-executing owned process
+and concludes its run as interrupted, because quit stops scheduling and
+never leaves work running through a hidden background thread (SPEC.md
+section 14).
+
+The provisional `melt/semantic-draft-1` extension of RFC 001 rides the
+same machinery (backlog task T025). A collection entity creation issues
+an opaque incarnation the client never chose; admission of a collection
+binding reads the pinned table bytes and rejects a key column that
+repeats or nulls a key; ``state.set`` assigns one reference or null
+through the revision-checked mutation transaction, matching the
+declared collection and its current incarnation; and inspection
+resolves every stored selection against the pinned version, reporting
+``resolved``, ``missing``, or ``unavailable`` without rewriting
+anything. Snapshots carry the incarnations and the selections, so a
+reopen restores them without executing project code. A `melt/v0.1`
+workspace refuses the extension operations and fields.
+
+The pane-independent outputs of RFC 001 section 8 ride it too (backlog
+task T027). Creating an extension action issues its stable output
+incarnation; a projection source subscribes by that identity, following
+the current pointer or pinning one published version; the mutation path
+verifies both against service state the document alone cannot know.
+Publication of an extension action checks no targets: eligibility
+depends on the action and its output contract, projections resolve the
+output pointers of the commit sequence they read, and deleting the
+action archives its group's current result inside the same
+transaction. ``workspace.migrate`` performs the explicit v0.1
+migration of section 8.3: it refuses until the workspace is quiesced,
+validates the candidate, saves a database backup, and commits the
+language change in one transaction, so a failure at any step leaves
+`melt/v0.1` current.
+
 The service owns atomic publication too (SPEC.md sections 13.3 to
 13.5). :meth:`WorkspaceService.publish_run` verifies the staged outputs
 of one completed run independently of the runner's report, finalizes
@@ -124,7 +168,11 @@ uncertain Python effects are never rerun. Its report is exposed as
 
 from __future__ import annotations
 
+import copy
+import functools
 import json
+import threading
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Sequence
@@ -148,11 +196,20 @@ from melt.schema.diagnostics import (
     Diagnostic,
     DiagnosticCode,
     MeltSchemaError,
-    diagnostic_from_pydantic_error,
+    diagnostics_from_pydantic_errors,
     sorted_diagnostics,
 )
-from melt.schema.document import Document, document_semantic_diagnostics
+from melt.schema.document import Document
 from melt.schema.limits import DEFAULT_LIMITS, ServiceLimits, limits_wire
+from melt.schema.semantic import (
+    SEMANTIC_LANGUAGE_ID,
+    SemanticDocument,
+    SemanticReference,
+    SemanticState,
+    document_diagnostics,
+    document_model_of,
+    is_subscription_wire,
+)
 from melt.schema.records import (
     RECORD_SCHEMA_VERSION,
     CapturedParameter,
@@ -172,9 +229,20 @@ from runtime.compiler.catalog import (
     CatalogArtifact,
     SourceCatalog,
 )
-from runtime.compiler.compiler import CompileRequest, compile_document
-from runtime.execution import launch_run, materialize_script, write_run_manifest
-from runtime.execution.launcher import MeltLaunchError
+from runtime.compiler.compiler import (
+    CompileRequest,
+    compile_document,
+    reference_collection_error,
+    reference_incarnation_error,
+    renderer_events,
+)
+from runtime.execution import materialize_script, write_run_manifest
+from runtime.execution.launcher import (
+    CANCEL_GRACE_SECONDS,
+    MeltLaunchError,
+    OwnedRunProcess,
+    spawn_run,
+)
 from runtime.storage import PlatformAdapter, WorkspaceStore
 from runtime.storage.errors import WorkspaceFormatError
 from runtime.storage.workspace import HEADER_KIND
@@ -197,6 +265,13 @@ from runtime.workspace.mutations import (
     expectation_diagnostics,
     initial_state_from_document,
     plan_mutation,
+)
+from runtime.workspace.observers import observer_views, renderer_versions
+from runtime.workspace.outputs import (
+    MIGRATION_EXPLANATION,
+    migration_candidate,
+    mint_output_incarnation,
+    output_views,
 )
 from runtime.workspace.permissions import (
     GRANT_KINDS,
@@ -221,12 +296,14 @@ from runtime.workspace.publication import (
     append_output_versions,
     mint_publication_id,
     obsolescence_error,
+    output_source_mapping,
     result_statuses,
     retarget_projections,
     target_ineligibility,
     verify_staged_outputs,
 )
-from runtime.workspace.reader import MeltReaderError, PageQuery, read_table_page
+from runtime.workspace.table_cache import TablePageCache
+from runtime.workspace.reader import PageQuery
 from runtime.workspace.recovery import (
     CorruptRecordNote,
     RecoveryReport,
@@ -255,6 +332,7 @@ from runtime.workspace.scheduling import (
     build_pending_intent,
     build_run_record,
     bump_group_revision,
+    captured_parameter_identity_error,
     changed_output_groups,
     default_clock,
     due_intents,
@@ -267,6 +345,10 @@ from runtime.workspace.scheduling import (
     timestamp_of,
     triggered_actions,
     value_changed_parameters,
+)
+from runtime.workspace.semantic import (
+    semantic_snapshot_view,
+    verify_collection_keys,
 )
 from runtime.workspace.state import (
     ARTIFACT_KIND,
@@ -281,11 +363,14 @@ from runtime.workspace.state import (
     RUN_KIND,
     SNAPSHOT_KIND,
     ParameterStateValue,
+    ReferenceStateValue,
     WorkspaceState,
     entity_path,
     permission_path,
     pointer_key,
     publication_path,
+    reference_state_path,
+    reference_values_equal,
     registration_path,
     run_path,
     source_path,
@@ -305,7 +390,16 @@ SUPPORTED_PROTOCOL_VERSIONS = (1,)
 """The protocol framing versions this service speaks."""
 
 LANGUAGE_VERSION = "melt/v0.1"
-"""The only language version this service compiles."""
+"""The stable language version this service compiles (SPEC.md 1)."""
+
+SUPPORTED_LANGUAGE_VERSIONS = (LANGUAGE_VERSION, SEMANTIC_LANGUAGE_ID)
+"""The language versions this service compiles.
+
+`melt/semantic-draft-1` is the provisional RFC 001 extension: the same
+execution, permission, revision, and recovery contracts with semantic
+collections and nullable reference state added (RFC 001 section 1). It
+is not a stable interchange version, and a `melt/v0.1` document still
+rejects both extension fields."""
 
 REVISION_PRECONDITION_METHODS = frozenset(
     (
@@ -314,11 +408,59 @@ REVISION_PRECONDITION_METHODS = frozenset(
         "source.import",
         "action.invoke",
         "control.activate",
+        "object.select",
+        "selection.clear",
     )
 )
 """The methods whose envelope may carry an expected map (section 12.6)."""
 
 ACTIVE_RUN_STATES = ("queued", "running")
+
+SLOT_JOIN_SECONDS = CANCEL_GRACE_SECONDS + 10.0
+"""How long close waits for the execution thread of a terminated run."""
+
+
+def _serialized(method: Callable[..., Any]) -> Callable[..., Any]:
+    """Run one service entry point under the storage lock.
+
+    The owning storage connection speaks one framed channel to its
+    helper process, and the service predicts each commit sequence from
+    the state it reads, so two threads may interleave neither the
+    channel nor a prediction. Every public entry point that reads state
+    and commits therefore holds ``_storage_lock`` across its whole body
+    (SPEC.md sections 12.1 and 14). The lock is reentrant: handlers and
+    commit helpers acquire it again freely. The one long wait that must
+    not hold it is the process wait of a launched run — the execution
+    slot waits outside the lock so the framed channel keeps answering
+    (SPEC.md sections 13.1 and 13.5).
+    """
+
+    @functools.wraps(method)
+    def wrapper(self, *args: Any, **kwargs: Any) -> Any:
+        with self._storage_lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
+@dataclass
+class _ExecutionSlot:
+    """The one execution slot of the workspace (SPEC.md section 13.1).
+
+    ``owned`` is the process handle the launch registered; ``thread``
+    is set only when the slot drives the process wait on the service's
+    own execution thread. ``finished`` marks a concluded slot, whose
+    ``outcome`` then carries the launch report a non-blocking caller
+    reads through ``wait_for_execution``.
+    """
+
+    run_id: str
+    owned: OwnedRunProcess
+    thread: "threading.Thread | None" = None
+    outcome: "RunLaunchOutcome | None" = None
+    error: "BaseException | None" = None
+    finished: bool = False
+    quitting: bool = False
 
 
 def _utc_now() -> str:
@@ -364,6 +506,16 @@ def _parsed_payload(envelope: CommandEnvelope) -> "Any | MeltCommandError":
         return error
 
 
+@dataclass(frozen=True)
+class _PreparedTablePage:
+    request_id: str
+    commit_sequence: int
+    artifacts: Any
+    artifact: str
+    schema: dict
+    query: PageQuery
+
+
 class WorkspaceService:
     """One open workspace under single-writer ownership."""
 
@@ -387,6 +539,7 @@ class WorkspaceService:
         frame_limit: int | None = None,
         limits: ServiceLimits = DEFAULT_LIMITS,
         clock: "Callable[[], float] | None" = None,
+        cancel_grace_seconds: "float | None" = None,
     ):
         self._store = store
         self._state = state
@@ -416,10 +569,26 @@ class WorkspaceService:
             publications or {}
         )
         self._limits = limits
+        self._table_cache = TablePageCache()
         self._frame_limit = (
             DEFAULT_LIMITS.control_frame_bytes if frame_limit is None else frame_limit
         )
         self._clock = clock or default_clock
+        # One storage lock serializes every entry point that reads
+        # state and commits; the execution slot waits on its process
+        # outside it (see _serialized).
+        self._storage_lock = threading.RLock()
+        # How long a cancellation waits for SIGTERM to stop the owned
+        # process group before it escalates to SIGKILL (SPEC.md 13.5).
+        self._cancel_grace_seconds = (
+            CANCEL_GRACE_SECONDS
+            if cancel_grace_seconds is None
+            else float(cancel_grace_seconds)
+        )
+        # The one execution slot: the owned process of the running run,
+        # parked here before the running transition commits so a
+        # cancellation always finds a signalable handle (SPEC.md 13.5).
+        self._execution: "_ExecutionSlot | None" = None
         self._tokens = TokenStore(state.workspace_id, store.artifacts)
         self._client: "dict | None" = None
         # The startup pass fills this in; direct construction starts
@@ -443,6 +612,7 @@ class WorkspaceService:
         limits: ServiceLimits = DEFAULT_LIMITS,
         node: str | None = None,
         clock: "Callable[[], float] | None" = None,
+        cancel_grace_seconds: "float | None" = None,
     ) -> "WorkspaceService":
         """Take ownership of one workspace and restore its state."""
 
@@ -470,6 +640,7 @@ class WorkspaceService:
             frame_limit=frame_limit,
             limits=limits,
             clock=clock,
+            cancel_grace_seconds=cancel_grace_seconds,
         )
         try:
             service._recovery = service._startup_recovery(restored.corrupt_records)
@@ -479,9 +650,27 @@ class WorkspaceService:
         return service
 
     def close(self) -> None:
-        """Stop the owning connection and release the lock. Idempotent."""
+        """Stop scheduling, terminate owned work, release the lock.
 
-        self._store.close()
+        Quit stops scheduling and terminates the owned worker
+        (SPEC.md section 14): a still-executing project process receives
+        the same escalating group signal a cancellation sends, its slot
+        thread concludes the run as interrupted, and only then does the
+        owning connection stop. Idempotent.
+        """
+
+        slot = self._execution
+        if slot is not None and not slot.finished:
+            slot.quitting = True
+            try:
+                slot.owned.terminate(grace_seconds=self._cancel_grace_seconds)
+            except OSError:  # pragma: no cover - backstop for a dying group
+                slot.owned.kill()
+            if slot.thread is not None:
+                slot.thread.join(timeout=SLOT_JOIN_SECONDS)
+        with self._storage_lock:
+            self._table_cache.close()
+            self._store.close()
 
     def __enter__(self) -> "WorkspaceService":
         return self
@@ -651,6 +840,7 @@ class WorkspaceService:
                 entity_path("actions", action_id)
             ),
             registry_entry_of=self._action_registry.entry,
+            parameter_incarnations=self._state.incarnations,
         )
 
     def run_is_newest_generation(self, run_id: str) -> bool:
@@ -710,6 +900,15 @@ class WorkspaceService:
     def dispatch(
         self, envelope: CommandEnvelope, *, origin: str = "user"
     ) -> CommandResponse:
+        with self._storage_lock:
+            result = self._dispatch_locked(envelope, origin=origin)
+        if isinstance(result, _PreparedTablePage):
+            return self._read_table_page(result)
+        return result
+
+    def _dispatch_locked(
+        self, envelope: CommandEnvelope, *, origin: str = "user"
+    ) -> CommandResponse:
         """Route one parsed envelope to the handler of its method.
 
         Every method except the session handshake addresses the
@@ -752,6 +951,7 @@ class WorkspaceService:
             "workspace.create": self._workspace_create,
             "workspace.inspect": self._workspace_inspect,
             "workspace.subscribe": self._workspace_subscribe,
+            "workspace.migrate": self._workspace_migrate,
             "source.import": self._source_import,
             "action.register": self._action_register,
             "run.cancel": self._run_cancel,
@@ -768,6 +968,10 @@ class WorkspaceService:
             return self._action_invoke(envelope, origin=origin)
         if envelope.method == "control.activate":
             return self._control_activate(envelope, origin=origin)
+        if envelope.method == "object.select":
+            return self._object_select(envelope, origin=origin)
+        if envelope.method == "selection.clear":
+            return self._selection_clear(envelope, origin=origin)
         handler = handlers.get(envelope.method)
         if handler is None:  # pragma: no cover - the method set is closed
             return _rejected(
@@ -807,6 +1011,7 @@ class WorkspaceService:
     # Mutations (SPEC.md sections 12.2, 12.3, 12.5)
     # ------------------------------------------------------------------
 
+    @_serialized
     def apply(
         self, envelope: CommandEnvelope, *, origin: str = "user"
     ) -> CommandResponse:
@@ -852,6 +1057,12 @@ class WorkspaceService:
         )
         if not plan.ok:
             return _rejected(envelope.requestId, *plan.diagnostics)
+        index_errors = self._verify_collection_indexes(plan)
+        if index_errors:
+            return _rejected(envelope.requestId, *index_errors)
+        subscription_errors = self._verify_output_subscriptions(plan)
+        if subscription_errors:
+            return _rejected(envelope.requestId, *subscription_errors)
         admission = None
         if origin == "user":
             # A committed user change reserves its generations in this
@@ -878,6 +1089,7 @@ class WorkspaceService:
             admission=admission,
         )
 
+    @_serialized
     def preview(self, envelope: CommandEnvelope) -> CommandResponse:
         """Answer one ``workspace.preview`` dry run without writing.
 
@@ -919,6 +1131,12 @@ class WorkspaceService:
         )
         if not plan.ok:
             return _rejected(envelope.requestId, *plan.diagnostics)
+        index_errors = self._verify_collection_indexes(plan)
+        if index_errors:
+            return _rejected(envelope.requestId, *index_errors)
+        subscription_errors = self._verify_output_subscriptions(plan)
+        if subscription_errors:
+            return _rejected(envelope.requestId, *subscription_errors)
         result = preview_effects(self._state, plan, self._runs)
         return OkResponse(
             requestId=envelope.requestId,
@@ -927,6 +1145,7 @@ class WorkspaceService:
             result=result,
         )
 
+    @_serialized
     def create_workspace(
         self, document: "dict | Document", request_id: str
     ) -> CommandResponse:
@@ -965,17 +1184,14 @@ class WorkspaceService:
                 ),
             )
         try:
-            parsed = Document.model_validate(wire)
+            parsed = document_model_of(wire)
         except ValidationError as error:
             return _rejected(
                 request_id,
                 *sorted_diagnostics(
-                    [
-                        diagnostic_from_pydantic_error(
-                            item, DiagnosticCode.SCHEMA
-                        )
-                        for item in error.errors()
-                    ]
+                    diagnostics_from_pydantic_errors(
+                        error.errors(), DiagnosticCode.SCHEMA
+                    )
                 ),
             )
         diagnostics: list[Diagnostic] = []
@@ -1007,7 +1223,32 @@ class WorkspaceService:
                     " scripts through action.register",
                 )
             )
-        diagnostics.extend(document_semantic_diagnostics(parsed))
+        if isinstance(parsed, SemanticDocument):
+            # The extension maps reference imported sources, so they
+            # start empty exactly as sources and actions do; the
+            # collections arrive through revision-checked mutations
+            # after the imports they pin (RFC 001 sections 3.1 and 4).
+            if parsed.collections:
+                diagnostics.append(
+                    _diagnostic(
+                        DiagnosticCode.SCHEMA,
+                        "/collections",
+                        "workspace.create requires empty collections;"
+                        " create them through workspace.apply after the"
+                        " imports they pin",
+                    )
+                )
+            if parsed.state:
+                diagnostics.append(
+                    _diagnostic(
+                        DiagnosticCode.SCHEMA,
+                        "/state",
+                        "workspace.create requires empty state; declare"
+                        " reference state through workspace.apply after"
+                        " its collection exists",
+                    )
+                )
+        diagnostics.extend(document_diagnostics(parsed))
         result = compile_document(
             CompileRequest(
                 document=parsed,
@@ -1091,6 +1332,134 @@ class WorkspaceService:
             )
         return parse_response(stored["response"])
 
+    def _verify_collection_indexes(self, plan: MutationPlan) -> list[Diagnostic]:
+        """Verify the key column of every collection the plan binds.
+
+        The service verifies the index when it admits a collection
+        binding: it reads the pinned table artifact and checks that the
+        key column holds unique, non-null strings. A duplicate or
+        invalid key rejects the update, and the workspace keeps its
+        previous definitions (RFC 001 section 3.1). The compiler has
+        already checked the declared schema; this pass checks the bytes.
+        """
+
+        errors: list[Diagnostic] = []
+        document = plan.candidate
+        for record, touch in sorted(plan.entity_touches.items()):
+            collection_name, _, collection_id = record.partition("/")
+            if collection_name != "collections" or not touch.exists_after:
+                continue
+            definition = (document.get("collections") or {}).get(collection_id)
+            if definition is None:
+                continue
+            source = (document.get("sources") or {}).get(
+                definition["source"]["sourceId"]
+            )
+            version = (source or {}).get("versions", {}).get(
+                str(definition["source"]["version"])
+            )
+            if source is None or version is None:
+                # The compiler already reported the dangling pin.
+                continue
+            path = f"/collections/{collection_id}"
+            try:
+                payload = self._store.artifacts.read(version["artifact"])
+            except OSError as error:
+                errors.append(
+                    _diagnostic(
+                        DiagnosticCode.ARTIFACT,
+                        f"{path}/source",
+                        f"the pinned artifact is unreadable: {error}",
+                        hint="Report the missing artifact individually;"
+                        " the workspace keeps its previous definitions",
+                    )
+                )
+                continue
+            errors.extend(
+                verify_collection_keys(
+                    payload, version["schema"], definition["key"], path
+                )
+            )
+        return sorted_diagnostics(errors)
+
+    def _verify_output_subscriptions(self, plan: MutationPlan) -> list[Diagnostic]:
+        """Verify the output subscriptions of a candidate (RFC 001 8.1).
+
+        The service map of issued output incarnations is complete by
+        construction, so this pass also rejects a subscription to an
+        action with no incarnation — something a service-less compile
+        cannot know — and verifies that a pinned subscription freezes
+        a version the output's stable logical source actually holds.
+        The compiler has already checked the action, output, and kind
+        references of the candidate document.
+        """
+
+        document = plan.candidate
+        if (document or {}).get("language") != SEMANTIC_LANGUAGE_ID:
+            return []
+        errors: list[Diagnostic] = []
+        incarnations = plan.candidate_output_incarnations
+        mapping = output_source_mapping(document, self._runs)
+        for projection_id, projection in sorted(
+            (document.get("projections") or {}).items()
+        ):
+            source = projection.get("source")
+            if not is_subscription_wire(source):
+                continue
+            identity = source["actionOutput"]
+            path = f"/projections/{projection_id}/source"
+            current = incarnations.get(identity["action"])
+            if current is None:
+                errors.append(
+                    _diagnostic(
+                        DiagnosticCode.CONFLICT,
+                        f"{path}/actionOutput/incarnation",
+                        f"action {identity['action']!r} holds no current"
+                        " output incarnation; the service has not"
+                        " issued one",
+                    )
+                )
+            elif current != identity["incarnation"]:
+                errors.append(
+                    _diagnostic(
+                        DiagnosticCode.CONFLICT,
+                        f"{path}/actionOutput/incarnation",
+                        f"subscription carries incarnation"
+                        f" {identity['incarnation']!r}, but action"
+                        f" {identity['action']!r} currently holds"
+                        f" {current!r}; deleting and recreating an action"
+                        " does not attach old subscribers to a new"
+                        " calculation (RFC 001 section 8.1)",
+                        hint="Migrate or remove the subscriber in the"
+                        " same transaction that recreates the action.",
+                    )
+                )
+            if source.get("follow") == "pinned":
+                version = source.get("version")
+                source_id = mapping.get(
+                    (identity["action"], identity["output"])
+                )
+                versions = (
+                    (document.get("sources") or {})
+                    .get(source_id, {})
+                    .get("versions")
+                    if source_id is not None
+                    else None
+                ) or {}
+                if source_id is None or str(version) not in versions:
+                    errors.append(
+                        _diagnostic(
+                            DiagnosticCode.REFERENCE,
+                            f"{path}/version",
+                            "the output holds no published source"
+                            f" version {version!r} to pin",
+                            hint="Pin a version the output's stable"
+                            " logical source carries; inspection lists"
+                            " the versions of every source.",
+                        )
+                    )
+        return sorted_diagnostics(errors)
+
     def _commit(
         self,
         request_id: str,
@@ -1132,13 +1501,15 @@ class WorkspaceService:
         scheduling = AdmissionRecords(
             groups=[*scheduling.groups, *self._group_revision_bumps(plan.candidate)],
             intents=list(scheduling.intents),
-            runs=list(scheduling.runs),
+            runs=[*scheduling.runs, *self._invalidated_current_runs(plan)],
         )
         changed = sorted(set(plan.changed_records() + scheduling.changed_paths()))
         predicted = self._state.commit_sequence + 1
         new_revisions = plan.new_revisions(self._state)
         for parameter_id, state_value in plan.new_states.items():
             new_revisions[state_path(parameter_id)] = state_value.revision
+        for state_id, state_value in plan.new_reference_states.items():
+            new_revisions[reference_state_path(state_id)] = state_value.revision
 
         entity_revisions = dict(self._state.entity_revisions)
         for path in plan.entity_touches:
@@ -1154,6 +1525,20 @@ class WorkspaceService:
         parameter_states.update(plan.new_states)
         incarnations = dict(self._state.incarnations)
         incarnations.update(plan.incarnation_bumps)
+        reference_states = {
+            state_id: state
+            for state_id, state in self._state.reference_states.items()
+            if state_id not in plan.removed_reference_states
+        }
+        reference_states.update(plan.new_reference_states)
+        collection_incarnations = dict(self._state.collection_incarnations)
+        collection_incarnations.update(plan.collection_incarnation_mints)
+        for collection_id in plan.collection_incarnation_removals:
+            collection_incarnations.pop(collection_id, None)
+        output_incarnations = dict(self._state.output_incarnations)
+        output_incarnations.update(plan.output_incarnation_mints)
+        for action_id in plan.output_incarnation_removals:
+            output_incarnations.pop(action_id, None)
         new_state = WorkspaceState(
             workspace_id=self._state.workspace_id,
             epoch=self._state.epoch,
@@ -1161,10 +1546,13 @@ class WorkspaceService:
             # Store the document in its model-normalized wire form, the
             # same form a reload reproduces, so the canonical document
             # hash stays stable across restarts (SPEC.md section 4.2).
-            document=model_to_wire(Document.model_validate(plan.candidate)),
+            document=model_to_wire(document_model_of(plan.candidate)),
             entity_revisions=entity_revisions,
             parameter_states=parameter_states,
             incarnations=incarnations,
+            collection_incarnations=collection_incarnations,
+            output_incarnations=output_incarnations,
+            reference_states=reference_states,
         )
         if result_of is None:
             result = {
@@ -1230,6 +1618,50 @@ class WorkspaceService:
                     )
                 )
         return bumps
+
+    def _invalidated_current_runs(self, plan: MutationPlan) -> list[RunRecord]:
+        """The current runs a plan invalidates by deleting their action.
+
+        Deleting the action invalidates the current publication of its
+        output identity (RFC 001 section 8.2): the retained result
+        archives as superseded history inside the same transaction, so a
+        recreated action — another incarnation — starts from no current
+        pointer and its subscribers resolve empty until a new
+        publication lands. Removing the last subscriber alone never
+        reaches here, and a `melt/v0.1` workspace keeps its v0.1
+        behavior (RFC 001 section 8.3).
+
+        The runs are the action's own, keyed by owner rather than by the
+        group name the action last held: a run keeps the group it was
+        admitted under, so an action that moved to another group before
+        its deletion still has its current runs retired here (backlog
+        task T045).
+        """
+
+        if plan.candidate.get("language") != SEMANTIC_LANGUAGE_ID:
+            return []
+        now = _utc_now()
+        invalidated: list[RunRecord] = []
+        for record, touch in sorted(plan.entity_touches.items()):
+            collection, _, action_id = record.partition("/")
+            if collection != "actions":
+                continue
+            # A pure delete removes the identity; a delete-and-create
+            # pair in one transaction recreates it under another
+            # incarnation. Both invalidate; a plain replacement, which
+            # keeps the identity and its incarnation, does not.
+            recreated = touch.created and touch.existed_before
+            if touch.exists_after and not recreated:
+                continue
+            invalidated.extend(
+                self._runs[run_id].model_copy(
+                    update={"disposition": SUPERSEDED, "updatedAt": now}
+                )
+                for run_id in sorted(self._runs)
+                if self._runs[run_id].actionId == action_id
+                and self._runs[run_id].disposition == CURRENT
+            )
+        return invalidated
 
     def _scheduling_records(
         self, scheduling: AdmissionRecords
@@ -1405,25 +1837,53 @@ class WorkspaceService:
                     f" {list(SUPPORTED_PROTOCOL_VERSIONS)}",
                 ),
             )
-        if LANGUAGE_VERSION not in parsed.languageVersions:
+        offered = set(parsed.languageVersions)
+        supported = set(SUPPORTED_LANGUAGE_VERSIONS)
+        if not offered & supported:
             return _rejected(
                 envelope.requestId,
                 _diagnostic(
                     DiagnosticCode.VERSION,
                     "/payload/languageVersions",
                     "no common language version; this service compiles"
-                    f" {LANGUAGE_VERSION!r}",
+                    f" {list(SUPPORTED_LANGUAGE_VERSIONS)}",
                 ),
             )
+        # A stored document keeps its language: a client that cannot
+        # speak it cannot mutate or render it, and the handshake says
+        # so instead of silently downgrading the workspace.
+        workspace_language = self._state.language
+        if workspace_language is not None and workspace_language not in offered:
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.VERSION,
+                    "/payload/languageVersions",
+                    f"this workspace stores language"
+                    f" {workspace_language!r}, which the client does not"
+                    " speak",
+                ),
+            )
+        # A workspace without a document keeps the stable language as
+        # the negotiated default, exactly as v0.1 always did; the
+        # document a `workspace.create` brings decides the language.
+        if workspace_language is None:
+            selected_language = (
+                LANGUAGE_VERSION
+                if LANGUAGE_VERSION in offered
+                else sorted(offered & supported)[-1]
+            )
+        else:
+            selected_language = workspace_language
         selected = common[-1]
         self._client = {
             "clientVersion": parsed.clientVersion,
             "protocolVersion": selected,
-            "language": LANGUAGE_VERSION,
+            "language": selected_language,
         }
         result = {
             "protocolVersion": selected,
-            "language": LANGUAGE_VERSION,
+            "language": selected_language,
             "serverVersion": SERVICE_IDENTIFIER,
             "clientVersion": parsed.clientVersion,
             "epoch": self._state.epoch,
@@ -1483,6 +1943,35 @@ class WorkspaceService:
             )
         )
         diagnostics.sort(key=lambda item: (item.get("path", ""), item.get("code", "")))
+        semantic = (
+            semantic_snapshot_view(self._state, self._store.artifacts.read)
+            if parsed.collection is None
+            and self._state.language == SEMANTIC_LANGUAGE_ID
+            else None
+        )
+        if semantic is not None:
+            # The observer views of RFC 001 section 9: what each
+            # projection currently shows through its selector slot, and
+            # the renderer version each projection pinned.
+            semantic["observers"] = observer_views(
+                self._state.document,
+                self._state.collection_incarnations,
+                self._state.reference_states,
+                self._store.artifacts.read,
+            )
+            semantic["renderers"] = renderer_versions(self._state.document)
+            # The subscription view of RFC 001 sections 8.1 and 9: the
+            # stable output identity of every action, the current
+            # pointer of every output, and every subscriber's
+            # resolution from the same commit sequence this read
+            # observed.
+            semantic["outputs"] = output_views(
+                self._state.document,
+                self._runs,
+                self._state.output_incarnations,
+                output_source_mapping(self._state.document, self._runs),
+                self._state.entity_revisions,
+            )
         result = snapshot_result(
             self._state,
             self._runs,
@@ -1490,6 +1979,7 @@ class WorkspaceService:
             collection=parsed.collection,
             ids=parsed.ids,
             output_groups=self.output_group_status(),
+            semantic=semantic,
         )
         if parsed.collection is None:
             result["recovery"] = self._recovery.wire()
@@ -1526,6 +2016,262 @@ class WorkspaceService:
             commitSequence=self._state.commit_sequence,
             result=result,
         )
+
+    # ------------------------------------------------------------------
+    # The explicit v0.1 migration (RFC 001 section 8.3)
+    # ------------------------------------------------------------------
+
+    def _workspace_migrate(self, envelope: CommandEnvelope) -> CommandResponse:
+        """Route one explicit language migration request.
+
+        ``dryRun`` previews the same migration without writing, without
+        storing a receipt, and without saving a backup; the real
+        migration stores its durable request receipt exactly as every
+        other admission does (SPEC.md section 12.5).
+        """
+
+        parsed = _parsed_payload(envelope)
+        if isinstance(parsed, MeltCommandError):
+            return _rejected(envelope.requestId, *parsed.diagnostics)
+        if parsed.dryRun:
+            return self.preview_migration(envelope.requestId)
+        payload_hash = canonical_hash(model_to_wire(envelope))
+        replay = self._replay_or_reject(envelope.requestId, payload_hash)
+        if replay is not None:
+            return replay
+        return self.migrate_workspace(
+            envelope.requestId, envelope.method, payload_hash
+        )
+
+    def _plan_migration(self) -> "tuple[dict, list[dict], list[Diagnostic]]":
+        """Plan the migration without writing anything.
+
+        Returns the candidate, the subscriptions it creates, and the
+        diagnostics that refuse it. A refused plan changed nothing: the
+        workspace keeps `melt/v0.1` current with its saved definitions
+        intact (RFC 001 section 8.3).
+        """
+
+        if not self._state.present:
+            return [], [], [
+                _diagnostic(
+                    DiagnosticCode.REFERENCE,
+                    "/workspaceId",
+                    f"workspace {self._state.workspace_id!r} holds no"
+                    " document; there is nothing to migrate",
+                )
+            ]
+        language = self._state.language
+        if language != LANGUAGE_VERSION:
+            return [], [], [
+                _diagnostic(
+                    DiagnosticCode.VERSION,
+                    "/language",
+                    f"this workspace stores language {language!r};"
+                    f" the migration starts from {LANGUAGE_VERSION!r}",
+                    hint="The extension workspace is already current; a"
+                    " later accepted version needs its own migration"
+                    " path.",
+                )
+            ]
+        active = [
+            run.runId
+            for run in sorted(self._runs.values(), key=lambda item: item.runId)
+            if run.state in ACTIVE_RUN_STATES
+        ]
+        if active:
+            return [], [], [
+                _diagnostic(
+                    DiagnosticCode.CONFLICT,
+                    "/runs",
+                    f"run {active[0]!r} is still active; quiesce active"
+                    " runs before the migration",
+                    hint="Publish or cancel the active runs, then retry"
+                    " the migration (RFC 001 section 8.3).",
+                )
+            ]
+        waiting = sorted(
+            group
+            for group, intent in self._pending_intents.items()
+            if intent.status in ("pending", "approvalRequired")
+        )
+        if waiting:
+            return [], [], [
+                _diagnostic(
+                    DiagnosticCode.CONFLICT,
+                    "/intents",
+                    f"output group {waiting[0]!r} still holds a pending"
+                    " request; quiesce active runs before the migration",
+                    hint="Let the pending request dispatch and settle,"
+                    " then retry the migration (RFC 001 section 8.3).",
+                )
+            ]
+        document = self._state.document
+        incarnations = {
+            action_id: mint_output_incarnation()
+            for action_id in sorted(document.get("actions", {}))
+        }
+        candidate, subscriptions = migration_candidate(document, incarnations)
+        result = compile_document(
+            CompileRequest(
+                document=candidate,
+                source_catalog=self._source_catalog,
+                action_registry=self._action_registry,
+                parameter_states={
+                    parameter_id: {
+                        "value": stored.value,
+                        "revision": stored.revision,
+                    }
+                    for parameter_id, stored in self._state.parameter_states.items()
+                },
+                output_incarnations=incarnations,
+            )
+        )
+        if not result.ok:
+            return candidate, subscriptions, list(result.diagnostics)
+        return candidate, subscriptions, []
+
+    def _migration_effects(
+        self, candidate: dict, subscriptions: "list[dict]"
+    ) -> dict:
+        """The effect report a planned migration preview returns."""
+
+        from melt.schema.canonical import document_hash
+
+        return {
+            "diagnostics": [],
+            "fromLanguage": LANGUAGE_VERSION,
+            "toLanguage": SEMANTIC_LANGUAGE_ID,
+            "changedRecords": sorted(
+                [f"actions/{entry['action']}" for entry in subscriptions]
+                + [
+                    f"projections/{entry['projection']}"
+                    for entry in subscriptions
+                ]
+            ),
+            "subscriptions": [dict(entry) for entry in subscriptions],
+            "explanation": MIGRATION_EXPLANATION,
+            "candidateHash": document_hash(candidate),
+        }
+
+    def preview_migration(self, request_id: str) -> CommandResponse:
+        """Preview the migration without writing (RFC 001 8.3).
+
+        The preview reserves no revision, stores no receipt, saves no
+        backup, and grants no permission. Its report explains that pane
+        removal no longer invalidates output publication.
+        """
+
+        candidate, subscriptions, diagnostics = self._plan_migration()
+        if diagnostics:
+            return _rejected(request_id, *sorted_diagnostics(diagnostics))
+        result = self._migration_effects(candidate, subscriptions)
+        return OkResponse(
+            requestId=request_id,
+            ok=True,
+            commitSequence=self._state.commit_sequence,
+            result=result,
+        )
+
+    @_serialized
+    def migrate_workspace(
+        self, request_id: str, method: str, payload_hash: str
+    ) -> CommandResponse:
+        """Commit the explicit language change atomically (RFC 001 8.3).
+
+        The order is fixed: quiesce active runs, validate the new
+        document, save a backup of the committed database, and commit
+        the language change in one transaction. A failure at any step
+        leaves `melt/v0.1` current with its saved definitions, state,
+        and history intact. The migration preserves source versions,
+        projection IDs, parameter values, and layout; every action
+        drops its targets and every former target becomes a following
+        subscription that resolves the same saved output.
+        """
+
+        candidate, subscriptions, diagnostics = self._plan_migration()
+        if diagnostics:
+            return _rejected(request_id, *sorted_diagnostics(diagnostics))
+
+        # Save the backup before anything commits. An operational
+        # failure here aborts the migration with v0.1 still current.
+        try:
+            backup = self._store.write_backup(
+                f"pre-migration-{self._state.commit_sequence}"
+            )
+        except OSError as error:
+            return _rejected(
+                request_id,
+                _diagnostic(
+                    DiagnosticCode.ARTIFACT,
+                    "/backup",
+                    f"saving the pre-migration backup failed"
+                    f" operationally: {error}",
+                    hint="Free disk space and retry; nothing was"
+                    " committed and melt/v0.1 stays current (RFC 001"
+                    " section 8.3).",
+                ),
+            )
+
+        entity_revisions = dict(self._state.entity_revisions)
+        changed: list[str] = []
+        for record in sorted(
+            {
+                record
+                for entry in subscriptions
+                for record in (
+                    f"actions/{entry['action']}",
+                    f"projections/{entry['projection']}",
+                )
+            }
+        ):
+            # Each changed record increments its own revision exactly
+            # once per transaction, even when several subscriptions
+            # touch the same action (SPEC.md section 12.5).
+            entity_revisions[record] = entity_revisions.get(record, 0) + 1
+            changed.append(record)
+        normalized = model_to_wire(document_model_of(candidate))
+        # The migration issues the stable output identity of every
+        # action it converts; every other committed field — including
+        # the extension maps a v0.1 workspace holds empty — carries
+        # forward unchanged (RFC 001 section 8.3).
+        output_incarnations = dict(self._state.output_incarnations)
+        for entry in subscriptions:
+            output_incarnations[entry["action"]] = entry["incarnation"]
+        new_state = self._state.advanced(
+            commit_sequence=self._state.commit_sequence + 1,
+            document=normalized,
+            entity_revisions=entity_revisions,
+            output_incarnations=output_incarnations,
+        )
+        result = self._migration_effects(candidate, subscriptions)
+        result["backup"] = {"path": str(backup), "bytes": backup.stat().st_size}
+        # Targets dropped from a group changed its publication contract,
+        # so its record revision advances exactly as a mutation would
+        # (SPEC.md section 13.3); the quiesced runs hold none.
+        groups = self._group_revision_bumps(normalized)
+        active = tuple(
+            record_to_wire(item) for item in active_run_records(self._runs)
+        )
+        response = self._append_transaction(
+            request_id,
+            method,
+            payload_hash,
+            new_state,
+            changed=sorted(set(changed)),
+            result=result,
+            leading_records=[
+                (
+                    SNAPSHOT_KIND,
+                    _snapshot_wire(
+                        new_state, self._state.commit_sequence, active
+                    ),
+                )
+            ],
+            trailing_records=self._scheduling_records(AdmissionRecords(groups=groups)),
+        )
+        self._adopt_scheduling(AdmissionRecords(groups=groups))
+        return response
 
     # ------------------------------------------------------------------
     # Source import (SPEC.md sections 5, 12.6)
@@ -1608,6 +2354,16 @@ class WorkspaceService:
                     }
                     for parameter_id, stored in self._state.parameter_states.items()
                 },
+                reference_states={
+                    state_id: {
+                        "value": None
+                        if stored.value is None
+                        else model_to_wire(stored.value),
+                        "revision": stored.revision,
+                    }
+                    for state_id, stored in self._state.reference_states.items()
+                },
+                collection_incarnations=dict(self._state.collection_incarnations),
             )
         )
         if not result.ok:
@@ -1616,16 +2372,12 @@ class WorkspaceService:
         entity_revisions = dict(self._state.entity_revisions)
         new_revision = self._state.current_revision(record) + 1
         entity_revisions[record] = new_revision
-        new_state = WorkspaceState(
-            workspace_id=self._state.workspace_id,
-            epoch=self._state.epoch,
+        new_state = self._state.advanced(
             commit_sequence=self._state.commit_sequence + 1,
             # The normalized wire form keeps the canonical document hash
             # stable across restarts (SPEC.md section 4.2).
-            document=model_to_wire(Document.model_validate(candidate)),
+            document=model_to_wire(document_model_of(candidate)),
             entity_revisions=entity_revisions,
-            parameter_states=dict(self._state.parameter_states),
-            incarnations=dict(self._state.incarnations),
         )
         active = tuple(record_to_wire(run) for run in active_run_records(self._runs))
         trailing: list[tuple[str, dict]] = []
@@ -1768,16 +2520,12 @@ class WorkspaceService:
         record_path = registration_path(registration_id)
         entity_revisions = dict(self._state.entity_revisions)
         entity_revisions[record_path] = revision
-        new_state = WorkspaceState(
-            workspace_id=self._state.workspace_id,
-            epoch=self._state.epoch,
+        new_state = self._state.advanced(
             commit_sequence=self._state.commit_sequence + 1,
             # Registration touches no document record; the committed
             # document passes through unchanged.
             document=self._state.document,
             entity_revisions=entity_revisions,
-            parameter_states=dict(self._state.parameter_states),
-            incarnations=dict(self._state.incarnations),
         )
         active = tuple(record_to_wire(run) for run in active_run_records(self._runs))
         result = _registration_result(record, environment, created=True)
@@ -1931,6 +2679,317 @@ class WorkspaceService:
             action_not_found_path=f"/bindings/{binding_id}/effect/action",
         )
 
+    # ------------------------------------------------------------------
+    # Pure renderer events (RFC 001 section 5, backlog task T026)
+    # ------------------------------------------------------------------
+
+    def _object_select(
+        self, envelope: CommandEnvelope, *, origin: str = "user"
+    ) -> CommandResponse:
+        """Route one ``object.select`` gesture through its binding.
+
+        The payload carries the one semantic reference the gesture
+        selected. The handler is pure (RFC 001 sections 2 and 5.3): it
+        checks the event against the committed plan, commits the state
+        change with its receipt, and launches nothing.
+        """
+
+        parsed = _parsed_payload(envelope)
+        object_ref = (
+            None if isinstance(parsed, MeltCommandError) else parsed.objectRef
+        )
+        return self._renderer_event(
+            envelope,
+            origin=origin,
+            event_name="object.select",
+            object_ref=object_ref,
+        )
+
+    def _selection_clear(
+        self, envelope: CommandEnvelope, *, origin: str = "user"
+    ) -> CommandResponse:
+        """Route one ``selection.clear`` gesture through its binding.
+
+        Clear carries no object data; the bound assignment writes the
+        typed null literal (RFC 001 section 5.1).
+        """
+
+        return self._renderer_event(
+            envelope,
+            origin=origin,
+            event_name="selection.clear",
+            object_ref=None,
+        )
+
+    def _renderer_event(
+        self,
+        envelope: CommandEnvelope,
+        *,
+        origin: str,
+        event_name: str,
+        object_ref: "Any | None",
+    ) -> CommandResponse:
+        """Commit one pure renderer event (RFC 001 sections 5.1-5.3).
+
+        The revision guards ride the envelope's ``expected`` map, which
+        the client builds from a fresh inspection: the target state
+        record, the projection definition, the binding at the event
+        address, and the displayed source and collection records. A
+        stale source or collection revision therefore rejects the event
+        even when its key still exists — the host refreshes and asks
+        for a new gesture instead of replaying user intent against
+        changed data.
+
+        The commit stores the state change, its notification, and the
+        request receipt together. A pure transition reads trusted
+        metadata and typed values only: it launches no Python process,
+        calls no model, and executes no renderer extension. The state
+        assignment emits no further user event, so observers update and
+        nothing recurses (RFC 001 section 5.2).
+        """
+
+        payload_hash = canonical_hash(model_to_wire(envelope))
+        replay = self._replay_or_reject(envelope.requestId, payload_hash)
+        if replay is not None:
+            return replay
+        parsed = _parsed_payload(envelope)
+        if isinstance(parsed, MeltCommandError):
+            return _rejected(envelope.requestId, *parsed.diagnostics)
+        if not self._state.present:
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.REFERENCE,
+                    "/workspaceId",
+                    f"workspace {self._state.workspace_id!r} holds no"
+                    " document; create the workspace before sending a"
+                    " renderer event",
+                ),
+            )
+        if self._state.language != SEMANTIC_LANGUAGE_ID:
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.VERSION,
+                    "/method",
+                    f"the {event_name!r} renderer events belong to"
+                    f" {SEMANTIC_LANGUAGE_ID!r}; this workspace stores"
+                    f" {self._state.language!r}",
+                ),
+            )
+        document = self._state.document
+        projection = document["projections"].get(parsed.projectionId)
+        if projection is None:
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.REFERENCE,
+                    "/payload/projectionId",
+                    f"projection {parsed.projectionId!r} does not exist",
+                ),
+            )
+        if event_name not in renderer_events(projection["kind"], document):
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.TYPE,
+                    "/payload/projectionId",
+                    f"the renderer of projection {parsed.projectionId!r}"
+                    f" declares no {event_name!r} event",
+                ),
+            )
+        matching = sorted(
+            (
+                binding_id,
+                binding,
+            )
+            for binding_id, binding in document["bindings"].items()
+            if binding["event"]["kind"] == event_name
+            and binding["event"]["projection"] == parsed.projectionId
+        )
+        event_id = "evt-" + uuid.uuid4().hex[:16]
+        # The guards every event of this projection carries: its
+        # definition revision, the displayed source revision, and the
+        # collection revision (RFC 001 sections 5.1 and 5.3).
+        required = [entity_path("projections", parsed.projectionId)]
+        projection_source = projection.get("source")
+        if projection_source is not None:
+            required.append(source_path(projection_source["sourceId"]))
+        required.append(entity_path("collections", projection["collection"]))
+        if not matching:
+            diagnostics = expectation_diagnostics(
+                self._state, dict(envelope.expected or {}), required
+            )
+            if diagnostics:
+                return _rejected(envelope.requestId, *sorted_diagnostics(diagnostics))
+            result = {
+                "status": "no-op",
+                "eventId": event_id,
+                "event": event_name,
+                "origin": origin,
+                "projection": parsed.projectionId,
+                "reason": "no binding connects this event address to a"
+                " state record",
+            }
+            return self._commit_receipted(
+                envelope.requestId, envelope.method, payload_hash, result
+            )
+
+        binding_id, binding = matching[0]
+        effect = binding["effect"]
+        if effect["kind"] != "state.set":
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.TYPE,
+                    f"/bindings/{binding_id}/effect",
+                    "a pure renderer event binds only a state.set effect"
+                    " (RFC 001 section 5.2)",
+                ),
+            )
+        target = effect["target"]
+        definition = document["state"].get(target)
+        if definition is None:
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.REFERENCE,
+                    f"/bindings/{binding_id}/effect/target",
+                    f"binding writes unknown state {target!r}",
+                ),
+            )
+        selector = effect["value"]
+        if "eventField" in selector:
+            if event_name != "object.select" or object_ref is None:
+                return _rejected(
+                    envelope.requestId,
+                    _diagnostic(
+                        DiagnosticCode.TYPE,
+                        f"/bindings/{binding_id}/effect/value",
+                        f"the {event_name!r} event declares no field"
+                        f" {selector.get('eventField')!r}",
+                    ),
+                )
+            value: "SemanticReference | None" = object_ref
+        else:
+            value = None
+
+        if value is not None:
+            if value.collection != projection["collection"]:
+                return _rejected(
+                    envelope.requestId,
+                    _diagnostic(
+                        DiagnosticCode.TYPE,
+                        "/payload/objectRef",
+                        f"reference names collection {value.collection!r}"
+                        f" but the projection selects"
+                        f" {projection['collection']!r}",
+                    ),
+                )
+        required.extend(
+            [reference_state_path(target), entity_path("bindings", binding_id)]
+        )
+        diagnostics = expectation_diagnostics(
+            self._state, dict(envelope.expected or {}), required
+        )
+        if diagnostics:
+            return _rejected(envelope.requestId, *sorted_diagnostics(diagnostics))
+
+        current = self._state.reference_states.get(target)
+        if current is None:
+            return _rejected(
+                envelope.requestId,
+                _diagnostic(
+                    DiagnosticCode.STATE_MIGRATION,
+                    f"/state/{target}",
+                    f"state {target!r} holds no stored record",
+                ),
+            )
+        if value is not None:
+            entry = SemanticState.model_validate(definition)
+            message = reference_collection_error(entry, value)
+            if message is not None:
+                return _rejected(
+                    envelope.requestId,
+                    _diagnostic(
+                        DiagnosticCode.TYPE, "/payload/objectRef", message
+                    ),
+                )
+            message = reference_incarnation_error(
+                value, self._state.collection_incarnations
+            )
+            if message is not None:
+                return _rejected(
+                    envelope.requestId,
+                    _diagnostic(
+                        DiagnosticCode.CONFLICT, "/payload/objectRef", message
+                    ),
+                )
+
+        changed: list[str] = []
+        reference_states = dict(self._state.reference_states)
+        revision = current.revision
+        if not reference_values_equal(value, current.value):
+            revision = current.revision + 1
+            reference_states[target] = ReferenceStateValue(
+                value=value, revision=revision
+            )
+            changed.append(reference_state_path(target))
+        new_state = self._state.advanced(
+            commit_sequence=self._state.commit_sequence + 1,
+            document=self._state.document,
+            reference_states=reference_states,
+        )
+        result = {
+            "status": "committed" if changed else "no-op",
+            "eventId": event_id,
+            "event": event_name,
+            "origin": origin,
+            "projection": parsed.projectionId,
+            "binding": binding_id,
+            "state": target,
+            "value": None
+            if value is None
+            else {
+                "collection": value.collection,
+                "incarnation": value.incarnation,
+                "key": value.key,
+            },
+            "stateRevision": revision,
+            "changedRecords": changed,
+            # Every projection whose observer reads the written record;
+            # the dependency plan of RFC 001 section 9 drives these.
+            "observers": sorted(
+                projection_id
+                for projection_id, candidate in sorted(
+                    document["projections"].items()
+                )
+                for observed in (
+                    (candidate.get("observe") or {}).values()
+                )
+                if (observed or {}).get("state") == target
+            ),
+        }
+        if not changed:
+            result["reason"] = "the stored value is already this reference"
+        active = tuple(record_to_wire(run) for run in active_run_records(self._runs))
+        return self._append_transaction(
+            envelope.requestId,
+            envelope.method,
+            payload_hash,
+            new_state,
+            changed=changed,
+            result=result,
+            leading_records=[
+                (
+                    SNAPSHOT_KIND,
+                    _snapshot_wire(
+                        new_state, self._state.commit_sequence, active
+                    ),
+                )
+            ],
+        )
+
     def _action_invoke(
         self, envelope: CommandEnvelope, *, origin: str = "user"
     ) -> CommandResponse:
@@ -1992,6 +3051,7 @@ class WorkspaceService:
         self,
         action: Mapping,
         new_states: "Mapping[str, ParameterStateValue] | None" = None,
+        new_incarnations: "Mapping[str, int] | None" = None,
     ) -> dict:
         """Return the parameter values an admission of this action captures.
 
@@ -2000,9 +3060,15 @@ class WorkspaceService:
         values and revisions ride with the intent, so the approval shows
         exactly what would run. A mutation-triggered admission passes
         the states its own transaction is committing, so coalesced
-        bindings capture the final values (section 13.1).
+        bindings capture the final values (section 13.1), and the
+        incarnations the same transaction mints, so a recreated
+        parameter is captured under the identity the transaction is
+        committing rather than the one the committed state still held.
         """
 
+        incarnations = self._state.incarnations
+        if new_incarnations is not None:
+            incarnations = {**incarnations, **new_incarnations}
         captured: dict = {}
         for name, mapping in sorted(action.get("parameters", {}).items()):
             parameter_id = mapping["parameter"]
@@ -2015,6 +3081,7 @@ class WorkspaceService:
                 "parameter": parameter_id,
                 "value": None if stored is None else stored.value,
                 "stateRevision": 0 if stored is None else stored.revision,
+                "stateIncarnation": incarnations.get(parameter_id, 1),
             }
         return captured
 
@@ -2043,7 +3110,9 @@ class WorkspaceService:
         generation: int,
         *,
         new_states: "Mapping[str, ParameterStateValue] | None" = None,
+        new_incarnations: "Mapping[str, int] | None" = None,
         action_revision: "int | None" = None,
+        output_incarnations: "Mapping[str, str] | None" = None,
     ) -> "InvocationSnapshot | Diagnostic":
         """Capture the invocation snapshot of one admission (section 7.3).
 
@@ -2052,7 +3121,14 @@ class WorkspaceService:
         resolved environment fingerprint: a committed registration
         always carries both, and a fixture registry entry may cite them.
         ``action_revision`` overrides the committed revision for an
-        admission planned inside a transaction that replaces the action.
+        admission planned inside a transaction that replaces the action;
+        ``new_incarnations`` carries the identity incarnations such a
+        transaction mints, so the captured identity matches the state
+        the same transaction commits (SPEC.md section 12.3).
+        ``output_incarnations`` carries the stable output identities the
+        transaction commits, so a run admitted beside the action that
+        created it captures the incarnation the same transaction issues
+        rather than none (RFC 001 section 8.1).
         """
 
         registration_id = action["implementation"]["registrationId"]
@@ -2069,7 +3145,12 @@ class WorkspaceService:
                 hint="Register the script through action.register, or"
                 " cite its admission facts in the trusted registry.",
             )
-        captured = self._captured_parameters(action, new_states)
+        captured = self._captured_parameters(
+            action, new_states, new_incarnations
+        )
+        issued = dict(self._state.output_incarnations)
+        if output_incarnations is not None:
+            issued.update(output_incarnations)
         return InvocationSnapshot(
             action_id=action_id,
             action_revision=(
@@ -2077,6 +3158,7 @@ class WorkspaceService:
                 if action_revision is None
                 else action_revision
             ),
+            output_incarnation=issued.get(action_id),
             registration_id=registration_id,
             registration_revision=registration.revision,
             script_artifact=script_artifact,
@@ -2086,7 +3168,9 @@ class WorkspaceService:
             generation=generation,
             parameters={
                 name: CapturedParameter(
-                    value=item["value"], revision=item["stateRevision"]
+                    value=item["value"],
+                    revision=item["stateRevision"],
+                    incarnation=item["stateIncarnation"],
                 )
                 for name, item in captured.items()
             },
@@ -2134,8 +3218,10 @@ class WorkspaceService:
                 now_epoch=now_epoch,
                 records=records,
                 new_states=plan.new_states,
+                new_incarnations=plan.incarnation_bumps,
                 group_view=group_view,
                 action_revision=action_revisions.get(action_id),
+                output_incarnations=plan.candidate_output_incarnations,
             )
         return records
 
@@ -2149,8 +3235,10 @@ class WorkspaceService:
         now_epoch: float,
         records: AdmissionRecords,
         new_states: "Mapping[str, ParameterStateValue] | None" = None,
+        new_incarnations: "Mapping[str, int] | None" = None,
         group_view: "Mapping[str, OutputGroupRecord] | None" = None,
         action_revision: "int | None" = None,
+        output_incarnations: "Mapping[str, str] | None" = None,
     ) -> "PendingIntentRecord | None":
         """Plan one admission into the given record set.
 
@@ -2185,7 +3273,9 @@ class WorkspaceService:
             group.revision,
             generation,
             new_states=new_states,
+            new_incarnations=new_incarnations,
             action_revision=action_revision,
+            output_incarnations=output_incarnations,
         )
         if isinstance(snapshot_or_error, Diagnostic):
             # The registration carries no admission facts, so the
@@ -2363,6 +3453,7 @@ class WorkspaceService:
                 "parameter": intent.parameterIds.get(name, name),
                 "value": intent.parameters[name].value,
                 "stateRevision": intent.parameters[name].revision,
+                "stateIncarnation": intent.parameters[name].incarnation,
             }
         return {
             "intentRef": intent.intentRef,
@@ -2411,6 +3502,7 @@ class WorkspaceService:
     # Debounce dispatch and launch (SPEC.md sections 9.3, 13.1, 13.2)
     # ------------------------------------------------------------------
 
+    @_serialized
     def dispatch_due_intents(
         self, now_epoch: "float | None" = None
     ) -> list[dict]:
@@ -2438,13 +3530,20 @@ class WorkspaceService:
     def _intent_definition_error(
         self, intent: PendingIntentRecord
     ) -> "Diagnostic | None":
-        """Recheck the definitions one due intent captured."""
+        """Recheck the definitions one due intent captured.
+
+        The identity half is part of the dispatch recheck: a parameter
+        recreated since the intent captured it cannot satisfy the
+        captured identity, so the intent expires instead of minting a
+        run that would launch and publish against a retired identity
+        (SPEC.md sections 9.3 and 12.3).
+        """
 
         def _group_revision(group_id: str) -> int:
             group = self._output_groups.get(group_id)
             return 0 if group is None else group.revision
 
-        return intent_definition_error(
+        stale = intent_definition_error(
             document=self._state.document,
             action_revision_of=lambda action_id: self._state.current_revision(
                 entity_path("actions", action_id)
@@ -2452,6 +3551,16 @@ class WorkspaceService:
             registry_entry_of=self._action_registry.entry,
             group_revision_of=_group_revision,
             intent=intent,
+        )
+        if stale is not None:
+            return stale
+        return captured_parameter_identity_error(
+            document=self._state.document,
+            parameter_states=self._state.parameter_states,
+            parameter_incarnations=self._state.incarnations,
+            action_id=intent.actionId,
+            parameter_ids=intent.parameterIds,
+            parameters=intent.parameters,
         )
 
     def _dispatch_one_intent(
@@ -2647,7 +3756,9 @@ class WorkspaceService:
     # Launch (SPEC.md sections 13.1 and 13.2)
     # ------------------------------------------------------------------
 
-    def launch_admitted_run(self, run_id: str) -> RunLaunchOutcome:
+    def launch_admitted_run(
+        self, run_id: str, *, wait: bool = True
+    ) -> RunLaunchOutcome:
         """Launch one admitted run through its fresh process.
 
         The pre-launch rechecks run immediately before the process
@@ -2658,188 +3769,281 @@ class WorkspaceService:
         revoked grant additionally requests cancellation of the run.
         The child environment is credential-free by construction of the
         launcher (section 15.1).
+
+        The default call waits for the process and answers its terminal
+        outcome, which is the shape a driving host uses.
+        ``wait=False`` parks the process wait on the service's own
+        execution thread instead: the call answers ``running``
+        immediately, the framed channel keeps answering every request
+        while the project process executes, and ``wait_for_execution``
+        delivers the terminal outcome (SPEC.md sections 13.1 and 13.5).
+        Both shapes register the owned process handle before the
+        running transition commits, so a cancellation can always signal
+        the group.
         """
 
-        run = self._runs.get(run_id)
-        if run is None:
-            raise permission_error(
-                f"run {run_id!r} does not exist",
-                "/runId",
-                code=DiagnosticCode.REFERENCE,
+        prepared = self._prepare_launch(run_id)
+        if isinstance(prepared, RunLaunchOutcome):
+            return prepared
+        slot = prepared
+        if not wait:
+            slot.thread = threading.Thread(
+                target=self._drive_execution_slot,
+                args=(slot,),
+                name=f"melt-execution-{run_id}",
+                daemon=True,
             )
-        if run.state != "queued":
+            slot.thread.start()
             return RunLaunchOutcome(
                 run_id=run_id,
-                launched=False,
-                state=run.state,
-                refusal=(
-                    _diagnostic(
-                        DiagnosticCode.CONFLICT,
-                        "/runId",
-                        f"run {run_id!r} is {run.state!r}; only a queued"
-                        " run can launch",
-                    ),
-                ),
+                launched=True,
+                state="running",
+                manifest_path=str(slot.owned.manifest_path),
+                stdout_path=str(slot.owned.stdout_path),
+                stderr_path=str(slot.owned.stderr_path),
             )
-        running = [
-            other for other in self._runs.values() if other.state == "running"
-        ]
-        if running:
-            return RunLaunchOutcome(
-                run_id=run_id,
-                launched=False,
-                state=run.state,
-                refusal=(
-                    _diagnostic(
-                        DiagnosticCode.CONFLICT,
-                        "/runId",
-                        f"workspace already executes run"
-                        f" {sorted(running)[0].runId!r}; only one project"
-                        " execution runs at a time per workspace"
-                        " (SPEC.md section 13.1)",
-                    ),
-                ),
-            )
-        refusal = self._launch_recheck_error(run)
-        if refusal is not None:
-            return RunLaunchOutcome(
-                run_id=run_id,
-                launched=False,
-                state=run.state,
-                refusal=(refusal,),
-            )
-        decision = self.execution_authority_for_run(run_id, at="launch")
-        if not decision.granted:
-            if revocation_blocks(decision):
-                cancelled = run.model_copy(
-                    update={
-                        "state": "cancelled",
-                        "updatedAt": _utc_now(),
-                    }
-                )
-                self._commit_scheduling(AdmissionRecords(runs=[cancelled]))
-                return RunLaunchOutcome(
-                    run_id=run_id,
-                    launched=False,
-                    state="cancelled",
-                    refusal=(
-                        _diagnostic(
-                            DiagnosticCode.PERMISSION,
-                            "/permissionDecision",
-                            f"the grant that admitted run {run_id!r} was"
-                            " revoked; the launch was refused and the run"
-                            " was cancelled (SPEC.md sections 13.5 and"
-                            " 15.1)",
-                        ),
-                    ),
-                )
-            return RunLaunchOutcome(
-                run_id=run_id,
-                launched=False,
-                state=run.state,
-                refusal=(
-                    _diagnostic(
-                        DiagnosticCode.PERMISSION,
-                        "/permissionDecision",
-                        f"run {run_id!r} lost its execution permission:"
-                        f" {decision.reason}; the run waits for a host"
-                        " approval (SPEC.md sections 13.1 and 15.1)",
-                    ),
-                ),
-            )
+        result = slot.owned.wait()
+        with self._storage_lock:
+            return self._conclude_launch(slot, result)
 
-        registration = self._registrations[run.registrationId]
-        layout = self._store.layout
-        staging = layout.staging_directory(run.runId)
-        try:
-            script_bytes = self._store.artifacts.read(registration.script.artifact)
-        except OSError as error:
-            return RunLaunchOutcome(
-                run_id=run_id,
-                launched=False,
-                state=run.state,
-                refusal=(
-                    _diagnostic(
-                        DiagnosticCode.ARTIFACT,
-                        "/scriptArtifact",
-                        f"the captured script artifact of run {run_id!r}"
-                        f" is unreadable: {error}",
-                    ),
-                ),
-            )
-        inputs: dict[str, str] = {}
-        for name, reference in sorted(run.inputs.items()):
-            version = (
-                (self._state.document or {})
-                .get("sources", {})
-                .get(reference.sourceId, {})
-                .get("versions", {})
-                .get(str(reference.version))
-            )
-            if version is None:
+    def _prepare_launch(
+        self, run_id: str
+    ) -> "_ExecutionSlot | RunLaunchOutcome":
+        """Run every pre-launch recheck, spawn, and claim the slot.
+
+        The whole preparation holds the storage lock: the rechecks read
+        committed state, the spawn and the running transition commit,
+        and the slot registration precedes that commit, so no request
+        can observe a running run without its signalable handle
+        (SPEC.md sections 13.1 and 13.5).
+        """
+
+        with self._storage_lock:
+            run = self._runs.get(run_id)
+            if run is None:
+                raise permission_error(
+                    f"run {run_id!r} does not exist",
+                    "/runId",
+                    code=DiagnosticCode.REFERENCE,
+                )
+            if run.state != "queued":
                 return RunLaunchOutcome(
                     run_id=run_id,
                     launched=False,
                     state=run.state,
                     refusal=(
                         _diagnostic(
-                            DiagnosticCode.REFERENCE,
-                            f"/inputs/{name}",
-                            f"captured input {name!r} cites source"
-                            f" {reference.sourceId!r} version"
-                            f" {reference.version}, which the saved"
-                            " document no longer holds",
+                            DiagnosticCode.CONFLICT,
+                            "/runId",
+                            f"run {run_id!r} is {run.state!r}; only a"
+                            " queued run can launch",
                         ),
                     ),
                 )
-            inputs[name] = str(
-                self._store.artifacts.path_for(version["artifact"])
-            )
-        script_path = materialize_script(staging, script_bytes)
-        manifest = build_manifest(
-            run_id=run.runId,
-            workspace_id=self._state.workspace_id,
-            action_id=run.actionId,
-            script_path=script_path,
-            parameters={
-                name: captured.value
-                for name, captured in run.parameters.items()
-            },
-            inputs=inputs,
-            outputs=dict(registration.outputs),
-            staging_directory=staging,
-        )
-        write_run_manifest(staging, manifest)
-        self._transition_run(run, "running")
-        try:
-            result = launch_run(
-                manifest, log_directory=layout.log_directory(run.runId)
-            )
-        except (MeltLaunchError, OSError) as error:
-            failed = self._runs[run_id].model_copy(
-                update={"state": "failed", "updatedAt": _utc_now()}
-            )
-            self._commit_scheduling(AdmissionRecords(runs=[failed]))
-            return RunLaunchOutcome(
-                run_id=run_id,
-                launched=False,
-                state="failed",
-                refusal=(
-                    _diagnostic(
-                        DiagnosticCode.REFERENCE,
-                        "/manifest",
-                        f"the launch of run {run_id!r} failed"
-                        f" operationally: {error}",
+            running = [
+                other
+                for other in self._runs.values()
+                if other.state == "running"
+            ]
+            if running:
+                return RunLaunchOutcome(
+                    run_id=run_id,
+                    launched=False,
+                    state=run.state,
+                    refusal=(
+                        _diagnostic(
+                            DiagnosticCode.CONFLICT,
+                            "/runId",
+                            f"workspace already executes run"
+                            f" {sorted(running)[0].runId!r}; only one"
+                            " project execution runs at a time per"
+                            " workspace (SPEC.md section 13.1)",
+                        ),
                     ),
-                ),
+                )
+            refusal = self._launch_recheck_error(run)
+            if refusal is not None:
+                return RunLaunchOutcome(
+                    run_id=run_id,
+                    launched=False,
+                    state=run.state,
+                    refusal=(refusal,),
+                )
+            decision = self.execution_authority_for_run(run_id, at="launch")
+            if not decision.granted:
+                if revocation_blocks(decision):
+                    cancelled = run.model_copy(
+                        update={
+                            "state": "cancelled",
+                            "updatedAt": _utc_now(),
+                        }
+                    )
+                    self._commit_scheduling(
+                        AdmissionRecords(runs=[cancelled])
+                    )
+                    return RunLaunchOutcome(
+                        run_id=run_id,
+                        launched=False,
+                        state="cancelled",
+                        refusal=(
+                            _diagnostic(
+                                DiagnosticCode.PERMISSION,
+                                "/permissionDecision",
+                                f"the grant that admitted run {run_id!r}"
+                                " was revoked; the launch was refused and"
+                                " the run was cancelled (SPEC.md sections"
+                                " 13.5 and 15.1)",
+                            ),
+                        ),
+                    )
+                return RunLaunchOutcome(
+                    run_id=run_id,
+                    launched=False,
+                    state=run.state,
+                    refusal=(
+                        _diagnostic(
+                            DiagnosticCode.PERMISSION,
+                            "/permissionDecision",
+                            f"run {run_id!r} lost its execution"
+                            f" permission: {decision.reason}; the run"
+                            " waits for a host approval (SPEC.md sections"
+                            " 13.1 and 15.1)",
+                        ),
+                    ),
+                )
+
+            registration = self._registrations[run.registrationId]
+            layout = self._store.layout
+            staging = layout.staging_directory(run.runId)
+            try:
+                script_bytes = self._store.artifacts.read(
+                    registration.script.artifact
+                )
+            except OSError as error:
+                return RunLaunchOutcome(
+                    run_id=run_id,
+                    launched=False,
+                    state=run.state,
+                    refusal=(
+                        _diagnostic(
+                            DiagnosticCode.ARTIFACT,
+                            "/scriptArtifact",
+                            f"the captured script artifact of run"
+                            f" {run_id!r} is unreadable: {error}",
+                        ),
+                    ),
+                )
+            inputs: dict[str, str] = {}
+            for name, reference in sorted(run.inputs.items()):
+                version = (
+                    (self._state.document or {})
+                    .get("sources", {})
+                    .get(reference.sourceId, {})
+                    .get("versions", {})
+                    .get(str(reference.version))
+                )
+                if version is None:
+                    return RunLaunchOutcome(
+                        run_id=run_id,
+                        launched=False,
+                        state=run.state,
+                        refusal=(
+                            _diagnostic(
+                                DiagnosticCode.REFERENCE,
+                                f"/inputs/{name}",
+                                f"captured input {name!r} cites source"
+                                f" {reference.sourceId!r} version"
+                                f" {reference.version}, which the saved"
+                                " document no longer holds",
+                            ),
+                        ),
+                    )
+                inputs[name] = str(
+                    self._store.artifacts.path_for(version["artifact"])
+                )
+            script_path = materialize_script(staging, script_bytes)
+            manifest = build_manifest(
+                run_id=run.runId,
+                workspace_id=self._state.workspace_id,
+                action_id=run.actionId,
+                script_path=script_path,
+                parameters={
+                    name: captured.value
+                    for name, captured in run.parameters.items()
+                },
+                inputs=inputs,
+                outputs=dict(registration.outputs),
+                staging_directory=staging,
             )
-        state = "succeeded" if result.complete else "failed"
-        finished = self._runs[run_id].model_copy(
-            update={"state": state, "updatedAt": _utc_now()}
-        )
-        self._commit_scheduling(AdmissionRecords(runs=[finished]))
+            write_run_manifest(staging, manifest)
+            try:
+                owned = spawn_run(
+                    manifest,
+                    log_directory=layout.log_directory(run.runId),
+                    log_limit=self._limits.run_log_bytes_per_stream,
+                )
+            except (MeltLaunchError, OSError) as error:
+                failed = self._runs[run_id].model_copy(
+                    update={"state": "failed", "updatedAt": _utc_now()}
+                )
+                self._commit_scheduling(AdmissionRecords(runs=[failed]))
+                return RunLaunchOutcome(
+                    run_id=run_id,
+                    launched=False,
+                    state="failed",
+                    refusal=(
+                        _diagnostic(
+                            DiagnosticCode.REFERENCE,
+                            "/manifest",
+                            f"the launch of run {run_id!r} failed"
+                            f" operationally: {error}",
+                        ),
+                    ),
+                )
+            slot = _ExecutionSlot(run_id=run_id, owned=owned)
+            self._execution = slot
+            self._transition_run(run, "running")
+            return slot
+
+    def _drive_execution_slot(self, slot: "_ExecutionSlot") -> None:
+        """Wait one parked launch out and conclude it durably."""
+
+        try:
+            result = slot.owned.wait()
+            with self._storage_lock:
+                slot.outcome = self._conclude_launch(slot, result)
+        except BaseException as error:  # pragma: no cover - slot backstop
+            slot.error = error
+            slot.finished = True
+
+    def _conclude_launch(
+        self, slot: "_ExecutionSlot", result
+    ) -> RunLaunchOutcome:
+        """Commit the terminal run state of one finished process.
+
+        The caller holds the storage lock. A run whose record already
+        moved to ``cancelled`` — the cancellation transaction landed
+        first — or to ``interrupted`` keeps that state; the process's
+        real exit code rides the launch outcome, never a rewritten
+        honest record (SPEC.md section 13.5).
+        """
+
+        run = self._runs.get(slot.run_id)
+        if run is not None and run.state in ACTIVE_RUN_STATES:
+            if slot.quitting:
+                state = "interrupted"
+            else:
+                state = "succeeded" if result.complete else "failed"
+            finished = run.model_copy(
+                update={"state": state, "updatedAt": _utc_now()}
+            )
+            self._commit_scheduling(AdmissionRecords(runs=[finished]))
+        else:
+            state = "unknown" if run is None else run.state
+        if self._execution is slot:
+            slot.finished = True
         return RunLaunchOutcome(
-            run_id=run_id,
+            run_id=slot.run_id,
             launched=True,
             state=state,
             exit_code=result.exit_code,
@@ -2850,7 +4054,17 @@ class WorkspaceService:
         )
 
     def _launch_recheck_error(self, run: RunRecord) -> "Diagnostic | None":
-        """Recheck registration and environment before one launch."""
+        """Recheck registration, environment, and identity at launch.
+
+        The pre-launch identity recheck refuses a run whose captured
+        parameter identity a later transaction retired: a recreated
+        parameter is a new identity even under the same name, value,
+        and state revision (SPEC.md section 12.3), so launching would
+        execute a snapshot the workspace can no longer publish. A
+        refused launch never reports failure as successful completion
+        (section 13.1); the run keeps waiting for a cancellation or a
+        newer generation, exactly like any other refused recheck.
+        """
 
         entry = self._action_registry.entry(run.registrationId)
         if entry is None:
@@ -2900,7 +4114,14 @@ class WorkspaceService:
                 " environment repair is a separate operation"
                 " (SPEC.md sections 13.1 and 14)",
             )
-        return None
+        return captured_parameter_identity_error(
+            document=self._state.document,
+            parameter_states=self._state.parameter_states,
+            parameter_incarnations=self._state.incarnations,
+            action_id=run.actionId,
+            parameter_ids=run.parameterIds,
+            parameters=run.parameters,
+        )
 
     def _transition_run(self, run: RunRecord, state: str) -> None:
         """Record one run state transition durably."""
@@ -2935,10 +4156,50 @@ class WorkspaceService:
             return None
         return self.launch_admitted_run(queued[0])
 
+    @property
+    def execution_run_id(self) -> "str | None":
+        """The run that occupies the execution slot, or None.
+
+        The slot exists from the spawn until the terminal state commits,
+        so a host that reads this while a project process executes sees
+        the run it may cancel by identifier (SPEC.md section 13.1).
+        """
+
+        with self._storage_lock:
+            slot = self._execution
+            if slot is None or slot.finished:
+                return None
+            return slot.run_id
+
+    def wait_for_execution(
+        self, timeout: "float | None" = None
+    ) -> "RunLaunchOutcome | None":
+        """Deliver the outcome of a parked launch, when it finished.
+
+        Answers the outcome of the run launched with ``wait=False`` once
+        its execution thread concluded it; None while the process still
+        executes or when no parked launch exists. A slot whose execution
+        thread failed raises the failure it recorded.
+        """
+
+        with self._storage_lock:
+            slot = self._execution
+            if slot is None:
+                return None
+        thread = slot.thread
+        if thread is not None:
+            thread.join(timeout=timeout)
+            if thread.is_alive():
+                return None
+        if slot.error is not None:
+            raise slot.error
+        return slot.outcome
+
     # ------------------------------------------------------------------
     # Atomic publication (SPEC.md sections 13.3, 13.4, 13.5)
     # ------------------------------------------------------------------
 
+    @_serialized
     def publish_run(self, run_id: str) -> PublicationOutcome:
         """Publish one completed run inside one owning transaction.
 
@@ -3099,9 +4360,14 @@ class WorkspaceService:
             )
         targets_broken = (
             None
-            if action is None
+            if action is None or action.get("targets") is None
             else target_ineligibility(document, run.actionId, action)
         )
+        # The extension action carries no targets, so pane existence is
+        # no part of its eligibility: hiding, closing, or removing a
+        # projection neither cancels the run nor invalidates its
+        # outputs. The action, registration, group, parameter, and
+        # input checks above carry the whole contract (RFC 001 8.2).
         if targets_broken is not None:
             return self._conclude_publication(
                 run,
@@ -3116,6 +4382,7 @@ class WorkspaceService:
             registration_entry=entry,
             group=group,
             parameter_states=self._state.parameter_states,
+            parameter_incarnations=self._state.incarnations,
             action_revision_of=lambda action_id: self._state.current_revision(
                 entity_path("actions", action_id)
             ),
@@ -3138,13 +4405,19 @@ class WorkspaceService:
         if become_current:
             candidate = retarget_projections(candidate, action, references)
             now = _utc_now()
+            # The run this publication concludes replaces the current
+            # result of its own output identity: the owning action's
+            # earlier current run, whichever group name it held when it
+            # was admitted. Another action's current run keeps its
+            # pointer even when it shares the group name (RFC 001
+            # section 8.1, backlog task T045).
             superseded_currents = [
                 self._runs[run_id].model_copy(
                     update={"disposition": SUPERSEDED, "updatedAt": now}
                 )
                 for run_id in sorted(self._runs)
                 if run_id != run.runId
-                and self._runs[run_id].outputGroup == run.outputGroup
+                and self._runs[run_id].actionId == run.actionId
                 and self._runs[run_id].disposition == CURRENT
             ]
         compile_result = compile_document(
@@ -3159,6 +4432,17 @@ class WorkspaceService:
                     }
                     for parameter_id, stored in self._state.parameter_states.items()
                 },
+                reference_states={
+                    state_id: {
+                        "value": None
+                        if stored.value is None
+                        else model_to_wire(stored.value),
+                        "revision": stored.revision,
+                    }
+                    for state_id, stored in self._state.reference_states.items()
+                },
+                collection_incarnations=dict(self._state.collection_incarnations),
+                output_incarnations=dict(self._state.output_incarnations),
             )
         )
         if not compile_result.ok:
@@ -3188,14 +4472,37 @@ class WorkspaceService:
         Cancellation stops scheduling and signals the owned process
         group; a run that already reached a terminal state keeps it,
         because a finished process is reported honestly (SPEC.md
-        section 13.5).
+        section 13.5). A process that somehow still executes receives
+        the same escalating group signal ``run.cancel`` sends.
         """
 
         if run.state not in ACTIVE_RUN_STATES:
             return run
+        self._signal_owned_run(run.runId)
         return run.model_copy(
             update={"state": "cancelled", "updatedAt": _utc_now()}
         )
+
+    def _signal_owned_run(self, run_id: str) -> "dict | None":
+        """Signal the owned process group of one run (SPEC.md 13.5).
+
+        Delivers ``SIGTERM`` to the whole process group of the run that
+        occupies the execution slot and escalates to ``SIGKILL`` after
+        the configured grace. Answers the signal report, or None when
+        this service owns no live process for the run — a queued run, a
+        run another service instance owned, or a process that already
+        exited. The bounded grace of an escalation is the longest this
+        call holds up its caller.
+        """
+
+        with self._storage_lock:
+            slot = self._execution
+            if slot is None or slot.run_id != run_id or slot.finished:
+                return None
+            owned = slot.owned
+        if not owned.alive:
+            return None
+        return owned.terminate(grace_seconds=self._cancel_grace_seconds)
 
     def _publication_catalog(
         self, verified: "Mapping[str, VerifiedOutput]"
@@ -3284,7 +4591,7 @@ class WorkspaceService:
             changed.append(run_path(other.runId))
         document = self._state.document
         if candidate is not None:
-            normalized = model_to_wire(Document.model_validate(candidate))
+            normalized = model_to_wire(document_model_of(candidate))
             for name, ref in sorted(references.items()):
                 record = source_path(ref["sourceId"])
                 entity_revisions[record] = (
@@ -3305,14 +4612,13 @@ class WorkspaceService:
                     )
                     changed.append(record)
             document = normalized
-        new_state = WorkspaceState(
-            workspace_id=self._state.workspace_id,
-            epoch=self._state.epoch,
+        new_state = self._state.advanced(
             commit_sequence=self._state.commit_sequence + 1,
             document=document,
             entity_revisions=entity_revisions,
-            parameter_states=dict(self._state.parameter_states),
-            incarnations=dict(self._state.incarnations),
+            # The extension state survives a publication unchanged: the
+            # maps belong to the workspace, not to the published result
+            # (RFC 001 sections 3 to 8).
         )
 
         runs_view = dict(self._runs)
@@ -3432,7 +4738,11 @@ class WorkspaceService:
         queued or running run moves to ``cancelled`` in one durable
         transaction with its receipt; a run that already reached a
         terminal state answers its current state with a matching
-        cancellation status and changes nothing.
+        cancellation status and changes nothing. A run whose process
+        this service still owns is signalled first — the whole owned
+        process group, ``SIGTERM`` then ``SIGKILL`` after the grace —
+        and the report of that signal rides the result, so scheduling
+        stops and the process stops together.
         """
 
         payload_hash = canonical_hash(model_to_wire(envelope))
@@ -3453,13 +4763,17 @@ class WorkspaceService:
                 ),
             )
         if run.state in ACTIVE_RUN_STATES:
+            signal = self._signal_owned_run(run.runId)
             cancelled = run.model_copy(
                 update={"state": "cancelled", "updatedAt": _utc_now()}
             )
+            cancellation = {"status": "cancelled"}
+            if signal is not None:
+                cancellation["signal"] = signal
             result = {
                 "runId": run.runId,
                 "state": cancelled.state,
-                "cancellation": {"status": "cancelled"},
+                "cancellation": cancellation,
             }
             return self._commit_receipted(
                 envelope.requestId,
@@ -3475,6 +4789,13 @@ class WorkspaceService:
             "state": run.state,
             "cancellation": {"status": status},
         }
+        if run.state == "cancelled":
+            # Idempotent: a cancellation whose process somehow still
+            # lives — the grace expired against a hostile script and a
+            # retry arrived — signals the group again.
+            signal = self._signal_owned_run(run.runId)
+            if signal is not None:
+                result["cancellation"]["signal"] = signal
         return self._commit_receipted(
             envelope.requestId, envelope.method, payload_hash, result
         )
@@ -3507,7 +4828,7 @@ class WorkspaceService:
     # Trusted table paging (SPEC.md sections 8.2 and 12.7)
     # ------------------------------------------------------------------
 
-    def _table_page(self, envelope: CommandEnvelope) -> CommandResponse:
+    def _table_page(self, envelope: CommandEnvelope) -> "CommandResponse | _PreparedTablePage":
         """Answer one bounded table page (SPEC.md section 12.7).
 
         The request names an immutable source reference. The service
@@ -3567,22 +4888,6 @@ class WorkspaceService:
                     f" {parsed.source.version}",
                 ),
             )
-        try:
-            payload = self._store.artifacts.read(version["artifact"])
-        except OSError as error:
-            return _rejected(
-                envelope.requestId,
-                _diagnostic(
-                    DiagnosticCode.ARTIFACT,
-                    "/payload/source",
-                    f"the artifact of source"
-                    f" {parsed.source.sourceId!r} version"
-                    f" {parsed.source.version} is unreadable: {error}",
-                    hint="Report the missing artifact individually;"
-                    " saved projections stay readable (SPEC.md section"
-                    " 14).",
-                ),
-            )
         query = PageQuery(
             source=model_to_wire(parsed.source),
             sort=[model_to_wire(key) for key in parsed.sort],
@@ -3590,15 +4895,39 @@ class WorkspaceService:
             offset=parsed.offset,
             limit=parsed.limit,
         )
-        page, errors = read_table_page(
-            payload, version["schema"], query, limits=self._limits
+        return _PreparedTablePage(
+            envelope.requestId, self._state.commit_sequence,
+            self._store.artifacts, version["artifact"],
+            copy.deepcopy(version["schema"]), query,
         )
+
+    def _read_table_page(self, request: "_PreparedTablePage") -> CommandResponse:
+        """Read the captured immutable version without the storage lock."""
+        try:
+            page, errors = self._table_cache.read(
+                request.artifacts, request.artifact,
+                request.schema, request.query, limits=self._limits
+            )
+        except OSError as error:
+            return _rejected(
+                request.request_id,
+                _diagnostic(
+                    DiagnosticCode.ARTIFACT,
+                    "/payload/source",
+                    f"the artifact of source"
+                    f" {request.query.source['sourceId']!r} version"
+                    f" {request.query.source['version']} is unreadable: {error}",
+                    hint="Report the missing artifact individually;"
+                    " saved projections stay readable (SPEC.md section"
+                    " 14).",
+                ),
+            )
         if errors is not None:
-            return _rejected(envelope.requestId, *sorted_diagnostics(errors))
+            return _rejected(request.request_id, *sorted_diagnostics(errors))
         return OkResponse(
-            requestId=envelope.requestId,
+            requestId=request.request_id,
             ok=True,
-            commitSequence=self._state.commit_sequence,
+            commitSequence=request.commit_sequence,
             result=page,
         )
 
@@ -3606,6 +4935,7 @@ class WorkspaceService:
     # Host permission operations (SPEC.md sections 12.6 and 15.1)
     # ------------------------------------------------------------------
 
+    @_serialized
     def grant_execution_permission(
         self,
         *,
@@ -3725,6 +5055,7 @@ class WorkspaceService:
             and (grant.generation is None or grant.generation == intent.generation)
         )
 
+    @_serialized
     def revoke_execution_permission(
         self, grant_id: str, *, revoked_by: str
     ) -> PermissionGrantRecord:
@@ -4040,7 +5371,7 @@ def _load_state(store: WorkspaceStore) -> RestoredState:
     pending_intents: dict[str, PendingIntentRecord] = {}
     publications: dict[str, PublicationRecord] = {}
     corrupt: list[CorruptRecordNote] = []
-    for record in store.records():
+    for record in store.take_opening_records():
         if record.kind == HEADER_KIND:
             # The workspace header belongs to the storage layer and is
             # negotiated there, not loaded here.
@@ -4130,6 +5461,14 @@ def _load_state(store: WorkspaceStore) -> RestoredState:
                 for parameter_id, stored in snapshot.parameterStates.items()
             },
             incarnations=dict(snapshot.incarnations),
+            collection_incarnations=dict(snapshot.collectionIncarnations),
+            output_incarnations=dict(snapshot.outputIncarnations),
+            reference_states={
+                state_id: ReferenceStateValue(
+                    value=stored.value, revision=stored.revision
+                )
+                for state_id, stored in snapshot.referenceStates.items()
+            },
         )
     return RestoredState(
         state=state,
@@ -4156,12 +5495,12 @@ def _check_snapshot_language(workspace_id: str, record) -> None:
     """
 
     language = record.data.get("language") if isinstance(record.data, dict) else None
-    if language is not None and language != LANGUAGE_VERSION:
+    if language is not None and language not in SUPPORTED_LANGUAGE_VERSIONS:
         raise WorkspaceFormatError(
             workspace_id,
             "the committed snapshot stores language"
             f" {language!r}, but this service compiles"
-            f" {LANGUAGE_VERSION!r}",
+            f" {list(SUPPORTED_LANGUAGE_VERSIONS)}",
         )
 
 
@@ -4203,7 +5542,7 @@ def _snapshot_wire(
         "recordType": "snapshot",
         "schemaVersion": RECORD_SCHEMA_VERSION,
         "workspaceId": state.workspace_id,
-        "language": "melt/v0.1",
+        "language": state.language or LANGUAGE_VERSION,
         "epoch": state.epoch,
         "commitSequence": observed_sequence,
         "document": state.document,
@@ -4219,6 +5558,20 @@ def _snapshot_wire(
             for parameter_id, stored in state.parameter_states.items()
         },
         "incarnations": dict(state.incarnations),
+        "collectionIncarnations": dict(state.collection_incarnations),
+        "outputIncarnations": dict(state.output_incarnations),
+        "referenceStates": {
+            state_id: {
+                "recordType": "referenceState",
+                "schemaVersion": RECORD_SCHEMA_VERSION,
+                "stateId": state_id,
+                "value": None
+                if stored.value is None
+                else model_to_wire(stored.value),
+                "revision": stored.revision,
+            }
+            for state_id, stored in state.reference_states.items()
+        },
         "activeRuns": list(active_runs),
         "diagnostics": [],
     }

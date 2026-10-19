@@ -44,12 +44,17 @@ PARQUET_MAGIC = b"PAR1"
 
 CAPTURE_KINDS = {
     "application/vnd.apache.parquet": "table",
+    "application/vnd.melt.graph+json": "graph",
     "image/png": "image",
     "text/plain": "text",
     "text/markdown": "text",
     "text/x-python": "script",
 }
-"""The media types a capture accepts, with the source kind it yields."""
+"""The media types a capture accepts, with the source kind it yields.
+
+The graph media type belongs to `melt/semantic-draft-1` (RFC 001
+section 7.1); capturing graph bytes works in either language, but a
+graph source enters only an extension document."""
 
 
 class MeltTokenError(MeltSchemaError):
@@ -100,6 +105,17 @@ def _validate_bytes(payload: bytes, kind: str) -> None:
     elif kind == "image":
         if not payload.startswith(PNG_SIGNATURE):
             fail("png bytes must start with the PNG signature")
+    elif kind == "graph":
+        import json
+
+        try:
+            value = json.loads(payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            fail(
+                f"graph bytes must be one UTF-8 JSON object: {error}",
+            )
+        if not isinstance(value, dict):
+            fail("graph bytes must encode one JSON object")
     else:
         try:
             payload.decode("utf-8")

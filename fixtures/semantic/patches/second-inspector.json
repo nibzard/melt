@@ -1,0 +1,34 @@
+[
+  {
+    "op": "entity.create",
+    "collection": "projections",
+    "id": "risk-inspector",
+    "value": {
+      "kind": "record",
+      "title": "Second supplier inspector",
+      "collection": "suppliers",
+      "config": {"fields": ["supplier_id"]},
+      "controls": [],
+      "observe": {"record": {"state": "selected_supplier"}}
+    }
+  },
+  {
+    "op": "layout.replace",
+    "value": {
+      "root": {
+        "kind": "split",
+        "axis": "horizontal",
+        "ratio": 0.6,
+        "first": {"kind": "pane", "projection": "network"},
+        "second": {
+          "kind": "split",
+          "axis": "vertical",
+          "ratio": 0.5,
+          "first": {"kind": "pane", "projection": "inspector"},
+          "second": {"kind": "pane", "projection": "risk-inspector"}
+        }
+      },
+      "hidden": []
+    }
+  }
+]

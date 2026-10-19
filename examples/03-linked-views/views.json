@@ -1,0 +1,88 @@
+[
+  {
+    "op": "entity.create",
+    "collection": "collections",
+    "id": "suppliers",
+    "value": {
+      "source": {"sourceId": "supplier-records", "version": 1},
+      "key": "supplier_id"
+    }
+  },
+  {
+    "op": "entity.create",
+    "collection": "state",
+    "id": "selected_supplier",
+    "value": {
+      "type": {"kind": "ref", "collection": "suppliers"},
+      "nullable": true,
+      "default": null,
+      "scope": "workspace"
+    }
+  },
+  {
+    "op": "entity.create",
+    "collection": "projections",
+    "id": "network",
+    "value": {
+      "kind": "graph",
+      "title": "Supplier network",
+      "source": {"sourceId": "supplier-network", "version": 1},
+      "collection": "suppliers",
+      "config": {"nodeLabels": "show"},
+      "controls": [],
+      "observe": {"highlight": {"state": "selected_supplier"}}
+    }
+  },
+  {
+    "op": "entity.create",
+    "collection": "projections",
+    "id": "inspector",
+    "value": {
+      "kind": "record",
+      "title": "Supplier inspector",
+      "collection": "suppliers",
+      "config": {"fields": null},
+      "controls": [],
+      "observe": {"record": {"state": "selected_supplier"}}
+    }
+  },
+  {
+    "op": "entity.create",
+    "collection": "bindings",
+    "id": "select-supplier",
+    "value": {
+      "event": {"kind": "object.select", "projection": "network"},
+      "effect": {
+        "kind": "state.set",
+        "target": "selected_supplier",
+        "value": {"eventField": "objectRef"}
+      }
+    }
+  },
+  {
+    "op": "entity.create",
+    "collection": "bindings",
+    "id": "clear-supplier",
+    "value": {
+      "event": {"kind": "selection.clear", "projection": "network"},
+      "effect": {
+        "kind": "state.set",
+        "target": "selected_supplier",
+        "value": {"literal": null}
+      }
+    }
+  },
+  {
+    "op": "layout.replace",
+    "value": {
+      "root": {
+        "kind": "split",
+        "axis": "horizontal",
+        "ratio": 0.6,
+        "first": {"kind": "pane", "projection": "network"},
+        "second": {"kind": "pane", "projection": "inspector"}
+      },
+      "hidden": []
+    }
+  }
+]

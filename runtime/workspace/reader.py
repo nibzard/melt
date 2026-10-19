@@ -33,7 +33,6 @@ project-provided path or symlink.
 
 from __future__ import annotations
 
-import io
 import math
 import re
 from dataclasses import dataclass
@@ -352,7 +351,7 @@ def _apply_filters(table, columns: "dict[str, Mapping[str, Any]]", filters):
 
     import pyarrow.compute as pc
 
-    for item in filters:
+    for index, item in enumerate(filters):
         column = columns[item["column"]]
         field = table.column(_parquet_name(column))
         operator = item["operator"]
@@ -363,9 +362,19 @@ def _apply_filters(table, columns: "dict[str, Mapping[str, Any]]", filters):
         else:
             import pyarrow as pa
 
-            scalar = pa.scalar(
-                _filter_scalar(column, item, field.type), type=field.type
-            )
+            try:
+                scalar = pa.scalar(
+                    _filter_scalar(column, item, field.type), type=field.type
+                )
+            except (ValueError, TypeError, OverflowError, pa.ArrowException) as error:
+                raise MeltReaderError(
+                    _diagnostic(
+                        DiagnosticCode.TYPE,
+                        f"/payload/filters/{index}/value",
+                        f"the filter value cannot be represented as"
+                        f" {column['type']} for column {item['column']!r}: {error}",
+                    )
+                ) from error
             if operator == "eq":
                 mask = pc.equal(field, scalar)
             elif operator == "lt":
@@ -398,21 +407,26 @@ def _sort_indices(table, columns, sort) -> "Any":
         )
         for key in sort
     ]
-    positions = pa.array(range(table.num_rows), type=pa.int64())
-    keyed = table.append_column("__melt_position__", positions)
-    keys.append(("__melt_position__", "ascending"))
+    import numpy as np
+
+    positions = pa.array(np.arange(table.num_rows, dtype=np.int64))
+    position_name = "__melt_position__"
+    while position_name in table.column_names:
+        position_name += "_"
+    keyed = table.append_column(position_name, positions)
+    keys.append((position_name, "ascending"))
     # The pinned Arrow build places nulls last for either direction by
     # default, which the row-position tie-breaker then orders fully.
     indices = pc.sort_indices(keyed, sort_keys=keys)
     return indices
 
 
-def _row_bytes(row: "list[Any]") -> int:
-    """The encoded byte cost of one response row."""
+def _encoded_bytes(value: Any) -> int:
+    """The UTF-8 byte count of one compact JSON value."""
 
     import json
 
-    return len(json.dumps(row, separators=(",", ":"), ensure_ascii=False))
+    return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
 
 
 def read_table_page(
@@ -434,10 +448,11 @@ def read_table_page(
     if errors is not None:
         return None, errors
 
+    import pyarrow as pa
     import pyarrow.parquet as pq
 
     try:
-        table = pq.read_table(io.BytesIO(payload))
+        table = pq.read_table(pa.BufferReader(payload))
     except Exception as error:
         return None, [
             _diagnostic(
@@ -448,60 +463,97 @@ def read_table_page(
             )
         ]
     try:
-        table = _apply_filters(table, columns, query.filters)
-        indices = _sort_indices(table, columns, query.sort)
-        if indices is not None:
-            table = table.take(indices)
+        indices = query_indices(table, columns, query)
+        return encode_page(table, schema, query, indices, limits=limits)
     except MeltReaderError as error:
         return None, [error.diagnostic]
 
-    total = table.num_rows
+
+def query_indices(table, columns, query):
+    """Filter and sort only query columns; retain original row positions."""
+    import numpy as np
+    import pyarrow as pa
+
+    _declared_order(columns, table)
+    if not query.filters and not query.sort:
+        return None
+    names = list(dict.fromkeys(
+        _parquet_name(columns[item["column"]])
+        for item in (*query.filters, *query.sort)
+    ))
+    selected = table.select(names)
+    position = "__melt_row__"
+    while position in selected.column_names:
+        position += "_"
+    selected = selected.append_column(
+        position, pa.array(np.arange(table.num_rows, dtype=np.int64))
+    )
+    selected = _apply_filters(selected, columns, query.filters)
+    order = _sort_indices(selected, columns, query.sort)
+    positions = selected.column(position).combine_chunks()
+    return positions if order is None else positions.take(order)
+
+
+def encode_page(table, schema, query, indices=None, *, limits=DEFAULT_LIMITS):
+    """Gather only the requested rows and enforce the wire byte bound."""
+    total = table.num_rows if indices is None else len(indices)
     start = min(int(query.offset), total)
-    end = min(start + int(query.limit), total)
-    window: "list[list[Any]]" = []
+    count = min(int(query.limit), total - start)
+    selected = (table.slice(start, count) if indices is None
+                else table.take(indices.slice(start, count)))
+    return encode_window_page(selected, schema, query, total, limits=limits)
+
+
+def encode_window_page(selected, schema, query, total, *, limits=DEFAULT_LIMITS):
+    """Encode an already selected window using the full query row count."""
+    columns = _column_types(schema)
+    start = min(int(query.offset), total)
     try:
-        window = _encode_window(table.slice(start, end - start), columns)
+        window = _encode_window(selected, columns)
     except MeltReaderError as error:
         return None, [error.diagnostic]
 
     # The encoded byte bound may reduce the row count, but never below
     # one display row: a page that cannot carry a row answers a
     # structured limit error instead (SPEC.md section 12.7).
+    row_sizes = [_encoded_bytes(row) for row in window]
     kept = len(window)
-    while (
-        kept > 1
-        and sum(_row_bytes(row) for row in window[:kept]) > limits.table_page_bytes
-    ):
+    rows_size = sum(row_sizes)
+    response = {
+        "recordType": "pageResponse",
+        "schemaVersion": RECORD_SCHEMA_VERSION,
+        "source": dict(query.source),
+        "queryHash": table_query_hash(query.source, query.sort, query.filters),
+        "columns": [column["id"] for column in schema["columns"]],
+        "rows": [],
+        "offset": start,
+        "hasMore": False,
+        "nextOffset": None,
+    }
+    while True:
+        served_end = start + kept
+        has_more = served_end < total
+        response["hasMore"] = has_more
+        response["nextOffset"] = served_end if has_more else None
+        # Empty brackets are already counted in the response metadata.
+        size = _encoded_bytes(response) + rows_size + max(0, kept - 1)
+        if size <= limits.table_page_bytes:
+            break
+        if kept <= 1:
+            return None, [
+                _diagnostic(
+                    DiagnosticCode.LIMIT,
+                    "/payload/limit",
+                    "the page metadata and its first row exceed the encoded"
+                    f" page bound of {limits.table_page_bytes} bytes",
+                    hint="Widen the table-page-bytes service policy, or read"
+                    " the cell through bounded full-value retrieval.",
+                )
+            ]
         kept -= 1
-    if kept == 1 and _row_bytes(window[0]) > limits.table_page_bytes:
-        return None, [
-            _diagnostic(
-                DiagnosticCode.LIMIT,
-                "/payload/limit",
-                "one row of this table exceeds the encoded page bound of"
-                f" {limits.table_page_bytes} bytes, so no display row"
-                " fits a page",
-                hint="Widen the table-page-bytes service policy, or read"
-                " the cell through bounded full-value retrieval.",
-            )
-        ]
-    window = window[:kept]
-    served_end = start + kept
-    has_more = served_end < total
-    response = PageResponse.model_validate(
-        {
-            "recordType": "pageResponse",
-            "schemaVersion": RECORD_SCHEMA_VERSION,
-            "source": dict(query.source),
-            "queryHash": table_query_hash(query.source, query.sort, query.filters),
-            "columns": tuple(column["id"] for column in schema["columns"]),
-            "rows": [tuple(row) for row in window],
-            "offset": start,
-            "hasMore": has_more,
-            "nextOffset": served_end if has_more else None,
-        }
-    )
-    return model_to_wire(response), None
+        rows_size -= row_sizes[kept]
+    response["rows"] = window[:kept]
+    return model_to_wire(PageResponse.model_validate(response)), None
 
 
 def _encode_window(

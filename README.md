@@ -4,6 +4,20 @@ Melt describes durable interfaces that agents can change and people can
 operate directly. `SPEC.md` defines the `melt/v0.1` contract. Round 1
 develops and tests on Linux only.
 
+## Try the examples
+
+Start with three [runnable examples](examples/README.md), from saved views
+through Python analysis to shared selection across views. Each command prints
+results and saves files you can inspect.
+
+```bash
+uv run --locked python3 examples/01-saved-views/run.py
+uv run --locked python3 examples/02-sales-analysis/run.py
+uv run --locked python3 examples/03-linked-views/run.py
+```
+
+Follow the [example setup](examples/README.md#setup) before the first run.
+
 ## Layout
 
 ```text
@@ -30,13 +44,17 @@ Round 1 pins one interpreter generation and one locked dependency set:
   `uv.lock` records the full transitive closure with hashes.
 - Node 22.19 or newer with npm, for the pinned Pi Durable storage
   adapter `@earendil-works/pi-durable@1.3.0` in
-  `runtime/storage/pi_adapter/package-lock.json` (SPEC.md section 14).
+  `runtime/storage/pi_adapter/package-lock.json` (SPEC.md section 14),
+  and for the pinned Pele renderer `pele@1.6.0` in
+  `runtime/rendering/pele_adapter/package-lock.json` (RFC 001
+  section 7.3).
 
 Set up the environment:
 
 ```bash
 uv sync --locked
 make probe-setup
+make pele-setup
 ```
 
 ## Run the full test suite
@@ -49,8 +67,11 @@ make check
 
 `make check` calls `scripts/check.sh`. The script checks the pinned
 interpreter, syncs `.venv` from `uv.lock`, installs the pinned Pi Durable
-adapter when missing, verifies the canonical document hashes with the
-independent JavaScript canonicalizer, and runs pytest over
+adapter and the pinned Pele renderer when missing, verifies that
+regenerating the protocol artifacts leaves the committed files
+unchanged, verifies the canonical document hashes with the independent
+JavaScript canonicalizer and the generated TypeScript models, and runs
+pytest over
 `tests/contract`, `tests/recovery`, `tests/native`, and
 `tests/integration`. It needs no macOS or Apple tools. The command is
 the merge gate: do not merge while it fails.
@@ -71,11 +92,51 @@ tested filesystem and crash model in
 make probe
 ```
 
+Run the Pele rendering probe alone (`make pele-setup` first); it proves
+the rendered-element identity mapping, the host-owned hit regions, and
+the sanitized, external-resource-free output of the pinned renderer, and
+records its limitations in
+`runtime/rendering/pele_adapter/README.md`:
+
+```bash
+make probe-pele
+```
+
 After you change `pyproject.toml`, refresh the lockfile:
 
 ```bash
 make lock
 ```
+
+## Regenerate the protocol artifacts
+
+One command exports the JSON Schema and generates the TypeScript and
+Swift models from the single restricted vocabulary of
+`python/melt/schema` (SPEC.md section 17, backlog task T007):
+
+```bash
+make protocol
+```
+
+The command writes every file under `protocol/schema` and
+`protocol/generated`; each README there documents its files. Never edit
+a generated file by hand and never author an independent schema: change
+the vocabulary and regenerate. `scripts/check.sh` reruns the generator
+with `--check` and fails when regeneration changes committed output, so
+`make check` enforces the rule.
+
+The generated models also verify canonical hashes: they validate a
+document, normalize it into the wire form (every field present, absent
+optional fields explicit nulls or their defaults), and hash it with
+RFC 8785 canonicalization. `scripts/verify_canonical_hashes.mjs` runs
+the TypeScript models over `fixtures/valid/document-hashes.json` and
+`fixtures/semantic/document-hashes.json`, so the semantic extension
+fixtures join the cross-language agreement in their own index and the
+v0.1 suite stays unchanged (SPEC.md sections 4.2 and 18.1). Where a
+Swift toolchain exists, `scripts/check.sh` also runs the generated
+Swift harness, which replays the RFC 8785 reference vectors and both
+hash indexes; the Linux gate itself never requires Swift (SPEC.md
+section 2.2).
 
 ## Status
 
@@ -157,7 +218,10 @@ press through its binding under projection and binding revisions, and
 `action.invoke` invokes an action manually under its expected action
 revision; both admit through the scheduling core of backlog task T016.
 `run.cancel` and `run.inspect` answer and update run records
-idempotently. Artifact and script tokens are minted by the host capture
+idempotently; a cancellation also signals the owned process group of a
+run this service still executes, escalating from `SIGTERM` to `SIGKILL`
+after the configured grace, and answers the signal report (backlog task
+T035, SPEC.md section 13.5). Artifact and script tokens are minted by the host capture
 operation: opaque, workspace-scoped handles that expire after
 15 minutes (`service.capture_artifact_token` and
 `service.redeem_artifact_token`). Admission answers carry the event
@@ -266,7 +330,13 @@ Entry points:
 
 - `from melt import ui` inside a project script
 - `python -m melt.runner <manifest-file>` inside the spawned process
-- `runtime.execution.launch_run(manifest, log_directory=...)`
+- `runtime.execution.spawn_run(manifest, log_directory=...)`, which
+  spawns the runner as the leader of its own session and returns the
+  `OwnedRunProcess` handle: `wait()` reports the launch result and
+  `terminate(grace_seconds=...)` signals the owned process group,
+  escalating from `SIGTERM` to `SIGKILL` (backlog task T035)
+- `runtime.execution.launch_run(manifest, log_directory=...)`, the
+  blocking spawn-and-wait shape of the same launch
 - `runtime.execution.write_run_manifest` and `materialize_script`
 
 `runtime/workspace` also implements scheduling, snapshots, and
@@ -285,20 +355,53 @@ its timer, and the debounce timers live in the service
 authority: a stale action, registration, or output group expires the
 intent, and an approval dispatches only the exact captured intent it
 covers, pinned by generation and output group revision. Launch wraps
-`runtime.execution.launch_run` with the pre-launch rechecks —
+`runtime.execution.spawn_run` with the pre-launch rechecks —
 permission, registration availability, and the resolved environment
 fingerprint against the admission snapshot — and drives one project
 execution at a time per workspace
-(`service.launch_admitted_run`, `service.launch_next_run`). A restart
+(`service.launch_admitted_run`, `service.launch_next_run`). The launch
+registers the owned process handle before the running transition
+commits, so a run the record shows as running always has a signalable
+handle. The default launch waits for its process; the non-blocking
+execution slot of backlog task T035 parks the wait on the service's own
+execution thread instead (`launch_admitted_run(run_id, wait=False)`),
+so the framed channel keeps answering every request — `run.cancel`,
+`workspace.inspect`, `workspace.apply`, `table.page` — while a project
+process executes: `service.execution_run_id` names the executing run
+and `service.wait_for_execution(timeout=...)` delivers its terminal
+outcome. A cancellation stops scheduling durably and signals the owned
+process group with escalation (SPEC.md section 13.5), and closing the
+service terminates a still-executing owned process and concludes its
+run interrupted (SPEC.md section 14). A restart
 marks pending timers and active jobs interrupted, keeps the reserved
 generations, and never executes anything on its own. Entry points:
 
 - `service.dispatch_due_intents(now_epoch=...)` to fire due timers
 - `service.launch_admitted_run(run_id)` and `service.launch_next_run()`
+- `service.launch_admitted_run(run_id, wait=False)`,
+  `service.execution_run_id`, and
+  `service.wait_for_execution(timeout=...)` for the non-blocking slot
 - `service.output_groups`, `service.pending_intents`, and
   `service.run_is_newest_generation(run_id)`
 - `service.dispatch_as(envelope, origin="programmatic")` for the agent
   event origin, which commits changes without firing bindings
+
+`runtime/workspace/scheduling.py` also carries the parameter identity
+of every admission (backlog task T044, SPEC.md sections 7.3 and 12.3).
+Each captured parameter records the identity incarnation of the
+workspace parameter it addressed beside the value and state revision,
+in the pending intent and the run record, and the run also names the
+workspace parameter of every captured entry. Dispatch and the
+pre-launch recheck compare the captured identity against the stored
+one through `captured_parameter_identity_error`, so an invocation
+whose parameter a later transaction deleted and recreated expires at
+dispatch and refuses its launch even when the recreated name, value,
+and state revision match: a recreated parameter is a new identity, and
+no event of the old one may target it. An older run record saved
+before identity capture reads its missing incarnation as the first,
+which no recreation can satisfy again, so an unrecreated parameter
+keeps its older runs publishable and nothing uncertain reruns. The
+regression suite is `tests/integration/test_parameter_identity.py`.
 
 `runtime/workspace/publication.py` implements atomic publication and
 result status (backlog task T017, SPEC.md sections 13.3 to 13.5).
@@ -315,15 +418,24 @@ publication, so the previous table and plot remain together. A denial
 of the publication permission gate rejects the publication, and
 revocation additionally requests cancellation of the owning run. A
 verified but obsolete run archives as `superseded` historical output
-that no current reference points at, while the previous current run of
-the group flips to superseded when a newer publication lands. Output
+that no current reference points at, while the owning action's previous
+current run flips to superseded when a newer publication lands. Output
 source identifiers are service-owned mappings from `(action id, output
 name)` rebuilt from committed run provenance, never derived from
 titles. Every output group reports `empty`, `pending`, `current`,
 `stale`, or `error` status with `resultIsStale` and the captured
 parameters of the retained result, through
 `service.output_group_status()` and the `outputGroups` view of
-`workspace.inspect`. Entry points:
+`workspace.inspect`. The status, the retained result, and the pending
+request of an entry all belong to the action that owns the group, so a
+freed group name never lends another action's run to the entry (backlog
+task T045). The eligibility recheck compares captured
+parameter identity, not revisions alone: a parameter a later
+transaction deleted and recreated holds a new incarnation while its
+state restarts at revision one, so the older run archives as superseded
+and the group's retained result reports stale with its identity
+reason, while the previous visible sources survive untouched (backlog
+task T044, SPEC.md sections 12.3, 13.3, and 13.5). Entry points:
 
 - `service.publish_run(run_id)` to publish one completed run
 - `service.output_group_status()` and
@@ -368,6 +480,31 @@ uncertain Python effect ever reruns after a restart. Entry points:
 - `runtime.workspace.recovery.reconcile_staging` for the staging
   reconciliation and `missing_artifact_diagnostics` for the
   individual reports
+
+The round 1 performance measurements of SPEC.md section 19 are
+recorded (backlog task T023). `scripts/benchmark_round1.py` measures
+compilation of a generated 32-projection document against the cached
+fixture catalogs, the framed service commits of a bound parameter edit
+and a small definition patch with its notification, `publish_run` of a
+succeeded run, and `table.page` over a generated 1,000,000-row,
+20-column table, warm and with a dropped kernel page cache, plus the
+full-table sort section 19 reports separately. It also times reopening
+a saved five-pane workspace through the framed channel. The recorded
+run, its environment declaration, and the comparison against every
+section 19 target live in `docs/performance/round-1-linux.md` with the
+raw JSON beside it; rerun with `make benchmark-round1`. Entry point:
+
+- `scripts/benchmark_round1.py` (or `make benchmark-round1`)
+
+The table reader caches bounded batches, decoded tables, and query row positions
+within each service session. See [the optimization measurements](docs/performance/optimization-2026-10-19.md)
+for cache limits, first-read costs, and before/after results.
+
+The [workspace scale and concurrency measurements](docs/performance/scale-2026-10-19.md)
+cover larger histories and simultaneous reads and edits. Run them with
+`uv run --locked python3 scripts/benchmark_scale.py`.
+The [fixes and repeated measurements](docs/performance/scale-fixes-2026-10-19.md)
+cover bounded history scans, partial table reads, and edits during sorting.
 
 ## Command-line compiler
 
@@ -424,6 +561,17 @@ $H artifact --source analyze-sales-monthly --output monthly.png
 $H inspect && $H status && $H runs && $H changes --after 0
 ```
 
+The handshake offers both language identifiers, `melt/v0.1` and
+`melt/semantic-draft-1`, so the same harness drives a semantic
+workspace: `create --language melt/semantic-draft-1` starts one, and
+`select`, `clear`, and `render` drive the pure interaction loop of
+RFC 001 section 10.2 through the test renderer (`runtime/harness
+/test_renderer.py`). `--guard path=revision` overrides one observed
+revision of an event, which replays a stale gesture on purpose.
+`migrate [--dry-run]` moves a quiesced `melt/v0.1` workspace to the
+extension language (RFC 001 section 8.3): the dry run explains what
+changes, and the committed migration saves a backup first.
+
 The commands cover the full section 12.6 surface plus the host-side
 operations no envelope reaches: `approve`/`revoke` operate the
 authenticated permission endpoint, `pump` fires due debounce timers,
@@ -458,16 +606,22 @@ minimum 200 it has two rows, and the monthly totals become 300 and
    both outputs together. Both output sources appear at version 1
    with run provenance, both target projections point at that one
    publication, and the plot exports as a PNG artifact.
-3. `set --value 200 --dispatch --launch --publish` reruns through the
-   bound action with zero model calls: every command runs with fake
-   model credentials in its environment, the runs still succeed, and
-   no persisted byte under the data root carries them.
+3. `set --value 200 --dispatch --debounce-wait 400 --launch --publish`
+   reruns through the bound action with zero model calls: every command
+   runs with fake model credentials in its environment, the runs still
+   succeed, and no persisted byte under the data root carries them.
+   The `--debounce-wait 400` holds the command open past the binding's
+   250 ms debounce so the just-admitted intent dispatches in the same
+   session; without it a reopen interrupts the pending timer before it
+   fires.
 4. The pane moves through `apply --operations
    fixtures/sales/layout-move.json` in the staged window of an
    execution — its process completed, its publication pending — and
    the moved layout survives that publication and the compiled plan.
-   A mutation concurrent with a live process needs the non-blocking
-   execution slot of backlog task T035 (race suite T021).
+   The single-process CLI still serializes this way; a mutation
+   concurrent with a live project process runs through the
+   non-blocking execution slot of backlog task T035 (execution-slot
+   suite and race suite T021).
 5. A fresh command reopens the workspace offline: values, bindings,
    sources, and layout restore, and nothing executes. The restart
    interrupts the pending debounce request, keeps the retained result
@@ -490,6 +644,8 @@ minimum 200 it has two rows, and the monthly totals become 300 and
   with `make fixtures`.
 - `fixtures/catalog.json` the trusted catalog (measured artifact
   schemas and the `sales-script-v1` registration) for full compilation.
+- `fixtures/semantic/` the isolated fixtures of the
+  `melt/semantic-draft-1` extension draft; see the section below.
 
 `tests/contract/test_fixtures.py` runs the set. Entries enforced by
 the compiler (T005) or the service (T009) name their owning task in
@@ -506,5 +662,314 @@ across the supported languages: `fixtures/valid/document-hashes.json`
 records the RFC 8785 hash of every valid document, the Python suite
 fails when it goes stale, and `scripts/verify_canonical_hashes.mjs`
 recomputes it with an independent JavaScript canonicalizer that also
-replays the RFC 8785 reference vectors. `make check` runs both, so the
+replays the RFC 8785 reference vectors. The generated TypeScript and
+Swift models of `protocol/generated` verify the same indexes through
+their own table-driven validators, and the semantic extension fixtures
+join the agreement through the separate
+`fixtures/semantic/document-hashes.json` index, so the v0.1 suite runs
+unchanged (backlog task T007). `make check` runs everything, so the
 contract suite blocks merges on failure.
+
+## Round 1 gate
+
+The round 1 Linux gate of `SPEC.md` section 20 step 5 is closed
+(backlog task T024). The recorded evidence lives in
+`docs/gates/round-1-linux.md` with the machine-readable
+`round-1-linux.json` beside it, and `tests/contract/test_gate_record.py`
+keeps that record honest against the tree: every suite and module it
+names exists, the race suite still holds one test per section 18.3
+scenario, the fault suite still holds one test per section 18.4 fault,
+and the compiler and reader measurements still agree with
+`docs/performance/round-1-linux.json`.
+
+The gate record names the closing run — `make check`, 789 passed and
+one round-2 placeholder skipped — the per-suite commands and results,
+the measured numbers against every section 19 target, and the proof
+that no macOS or Apple tool took part. A valid JSON document alone
+does not pass that gate: the recorded run exercised the full language
+and execution loop, patches and restart recovery included, through the
+command-line harness. Native macOS integration and the RFC 001
+extension stay outside it under their own backlog tasks.
+
+## Semantic extension draft
+
+The RFC 001 extension starts under the provisional identifier
+`melt/semantic-draft-1` (backlog task T025). It is not a stable
+interchange version: it marks isolated experimental fixtures, and a
+`melt/v0.1` document still rejects both extension fields, so the v0.1
+contract suite runs unchanged (RFC 001 section 1).
+
+What landed:
+
+- `python/melt/schema/semantic.py` adds the `collections` and `state`
+  maps: typed identity indexes over table source versions, and
+  nullable reference state with workspace scope (RFC 001 sections 3
+  and 4). `parse_document_for_language` dispatches on the language
+  identifier.
+- The compiler extends the existing plans (RFC 001 section 9): the
+  state plan carries each reference entry with its collection, key
+  column, pinned source, and the incarnation the service issued, and
+  the dependency plan indexes the source version each collection
+  reads. Stage 5 applies the same continuity rule to stored
+  selections that parameters follow.
+- The service issues an opaque incarnation when a collection entity is
+  created (`runtime/workspace/semantic.py`); replacing a binding keeps
+  it, and deleting and recreating the entity issues another one, so an
+  old reference cannot select an object in the new collection.
+- Admission verifies the index: the service reads the pinned table
+  bytes and rejects a binding whose key column repeats or nulls a key
+  (`E_REFERENCE` at `/collections/<id>/key`), keeping the previous
+  definitions.
+- `state.set` assigns one reference or null through the same
+  revision-checked mutation machinery (`refstate/<id>` expectations).
+  An assignment must name the declared collection and the current
+  incarnation; a stale or forged incarnation conflicts.
+- Resolution reports `resolved`, `missing`, or `unavailable` through
+  `workspace.inspect`. A newer source version that omits the key
+  leaves the stored reference untouched and reports `missing`; an
+  unreadable artifact reports `unavailable`; a returning key resolves
+  again (RFC 001 section 3.3). A reopen restores the incarnations,
+  the selections, and their resolution without executing anything.
+- Snapshots carry the extension state (`collectionIncarnations` and
+  `referenceStates`), and a `melt/v0.1` workspace refuses the
+  extension operations and fields with `E_VERSION` and `E_SCHEMA`.
+
+`fixtures/semantic/` holds the supplier fixture of RFC 001 section
+10.2 (`S-42` and `S-73`), its graph and table artifacts, its catalog,
+the definitions and the stored agent patch of section 10.3, and an
+invalid manifest; `tests/contract/test_semantic_*.py` and
+`tests/integration/test_semantic_*.py` prove the behaviors above.
+Extension conflicts and recovery are the T029 suite below.
+
+### Pure events, observers, and the test renderer (T026)
+
+RFC 001 sections 5 through 7 add the interaction half of the
+extension:
+
+- `object.select` and `selection.clear` are renderer events with
+  typed `state.set` bindings and no expressions. A binding observes
+  the projection whose renderer declares the event, and its value
+  selector names the declared `objectRef` field or the typed null
+  literal — nothing else parses. Each event address carries at most
+  one writer, a pure event never invokes a capability, and its
+  debounce is fixed at zero (`python/melt/schema/semantic.py`).
+- The `melt.graph` and `melt.record` renderers join the trusted
+  registry with their event schemas and observer slots. A graph
+  source is an immutable JSON artifact whose measured schema is its
+  validated identity map: stable node IDs bound to semantic
+  references, edges between existing nodes, one collection per
+  selectable graph (RFC 001 sections 7.1 and 7.2).
+- The `highlight` and `record` observers read state through fixed
+  selector slots. The compiled plans carry them: the render plan
+  names each slot, the dependency plan indexes state to observers,
+  and the identity plan maps graph nodes to semantic references
+  (RFC 001 sections 6 and 9).
+- The service commits one pure event in a single transaction: the
+  state change, its notification, and the receipt land together. The
+  revision guards ride the envelope's `expected` map — the target
+  state, the projection, the binding, and the displayed source and
+  collection records — so a stale graph or collection revision
+  rejects the event even when its key still exists. A duplicate event
+  ID replays the stored receipt; reuse with different content fails
+  with `E_REQUEST_REUSE` (RFC 001 section 5.3).
+- Nothing in the path launches Python or calls a model: no run is
+  admitted, no generation reserved, no staging directory created.
+  A `melt/v0.1` workspace refuses both event methods with `E_VERSION`.
+- The Linux test renderer (`runtime/harness/test_renderer.py`) builds
+  each event the way a host would and resolves every observer slot
+  through the service's own inspection view. `select`, `clear`, and
+  `render` drive it from the command line.
+
+The supplier fixture proves the whole loop
+(`tests/integration/test_semantic_interactions.py` and
+`test_semantic_harness.py`): selecting `S-42` commits one state
+revision, the inspector resolves the `S-42` record, the graph
+highlights its node through the compiled observer plan, a restart
+restores the selection and its resolution, a collection version that
+omits `S-42` reports `missing` while the reference stays stored, and
+an event from a previous graph or collection revision is rejected.
+The stored agent patch of RFC 001 section 10.3
+(`fixtures/semantic/patches/second-inspector.json`) then adds a second
+inspector: the selected reference, the state revision, and every
+existing projection and binding revision survive unchanged, and the
+new inspector resolves the current selection immediately.
+
+An artifact the store can no longer read never blocks that loop
+(backlog task T046). The `record` observer reads its pinned table
+inside a guarded read: a missing, unreadable, or no longer decodable
+artifact answers one `unavailable` view that keeps the stored
+reference and a recoverable reason, while the normal `E_ARTIFACT`
+diagnostic and the startup recovery report still ride the same
+inspection (RFC 001 sections 6 and 10.5, SPEC.md section 14). Unrelated
+observers, sources, and state stay inspectable on the dispatch path and
+on the framed channel, a restart with the file still missing keeps the
+workspace readable, and restoring the same content-addressed bytes
+resolves the observer again without a new selection or any Python run.
+The regression suite is
+`tests/integration/test_observer_availability.py`.
+
+### Pane-independent outputs and the v0.1 migration (T027)
+
+RFC 001 section 8 separates publication from panes:
+
+- An extension action declares output names, kinds, and a publication
+  group, and carries no `targets` (`python/melt/schema/semantic.py`).
+  A `melt/v0.1` action keeps requiring them, and a v0.1 projection
+  source stays a source reference or null.
+- A projection source may subscribe to an output by its stable
+  incarnation: `{"actionOutput": {"action", "output",
+  "incarnation"}, "follow": "current"}` follows the output's current
+  pointer, and `"follow": "pinned"` with a `version` freezes one
+  version of the output's stable logical source. The alternative form
+  of section 8.1 — pinning through the existing source reference —
+  keeps working.
+- The service issues one opaque output incarnation when an action
+  entity is created (`runtime/workspace/outputs.py`); replacing a
+  definition keeps it, and deleting or recreating the action issues
+  another one, so old subscribers cannot attach to a new calculation.
+  The compiler verifies the incarnation of every subscription
+  (`E_CONFLICT` at the subscription path); the mutation path also
+  rejects a pinned subscription to a version the output never
+  published.
+- Publication stays atomic and eligibility no longer depends on pane
+  existence: hiding, closing, or removing a projection neither cancels
+  a run nor invalidates its outputs, and the publication transaction
+  stops rewriting projections at all — a subscriber resolves the
+  output pointers of the commit sequence it reads. Deleting the action
+  itself invalidates the current publication in the same transaction
+  that removes it. A `melt/v0.1` workspace keeps every v0.1 rule,
+  including the rejected publication of a deleted target
+  (`runtime/workspace/publication.py` and `service.py`).
+- `workspace.inspect` exposes the outputs view: each action's
+  incarnation, each output's current pointer with its provenance, and
+  every subscriber's resolution — `current`, `empty`, `pinned` with a
+  `stale` flag, or `unavailable` (RFC 001 section 9). The dependency
+  plan carries the output-to-subscriber index, and the action plan
+  carries the stable identity without pane ownership.
+- A current pointer belongs to the output identity that published it,
+  never to the reusable group name (backlog task T045). Resolution and
+  inspection pick the owning action's own current run — the run also
+  carries the incarnation its admission captured, and a run of a
+  retired incarnation no longer counts — so a transaction that moves
+  an action to another group and hands the freed name to an action
+  that never ran leaves the new owner with no pointer and the previous
+  owner with its own result, reported `stale` under the group it holds
+  now. Retirement of a deleted or recreated action keys on the owner
+  as well, so an action that moved before its deletion still loses its
+  current publication. Nothing executes on either path, and the
+  previous owner's source versions stay readable as history.
+
+The explicit migration of RFC 001 section 8.3 is the
+`workspace.migrate` method plus the harness `migrate` command:
+
+- The migration refuses while a run is active or a request is pending:
+  quiesce them first. `--dry-run` previews the same plan and writes
+  nothing — no receipt, no backup, no revision — and its report
+  explains that pane removal no longer invalidates output publication.
+- The committed migration validates the new document, saves a backup
+  of the database into `backups/` through the SQLite backup API, and
+  changes the language in one transaction. Each v0.1 target becomes a
+  following subscription; source versions, projection IDs, parameter
+  values, and layout are unchanged. A failure at any step leaves
+  `melt/v0.1` current, and the old histories keep their records.
+
+`tests/integration/test_output_independence.py` proves the acceptance
+of RFC 001 section 10.4 — publishing with no projections, two
+subscribers resolving one saved output without a second execution,
+removing a subscriber during another run, pinned subscriptions,
+obsolete generations, a missing output rejecting the entire
+publication, and recreated actions refusing old incarnations.
+`tests/integration/test_output_owner_identity.py` proves the owner
+binding of backlog task T045: a freed group name lends no run to the
+action that reuses it, the moved owner keeps its subscribers and its
+`stale` result without a new execution, group swaps between two
+published actions keep their pointers apart, a renamed output contract
+holds no pointer, recreation retires the previous incarnation's run
+even after a group move, and inspection agrees with subscriber
+resolution across a restart. `tests/integration/test_migration.py`
+proves section 10.1 through the
+harness and the service: equal saved sources, parameters, and layout
+after the migration, a second table subscriber without a rerun, and
+the v0.1 boundary that still rejects a deleted target.
+
+### Pele rendering and identity mapping (T028)
+
+RFC 001 section 7.3 names the pinned Pele renderer an external
+prerequisite. `runtime/rendering/pele_adapter` pins `pele@1.6.0` and
+probes its actual Linux interface; `pele_render.mjs` is the
+application-owned adapter every render goes through:
+
+- One validated graph lowers to a Mermaid flowchart whose node IDs are
+  the graph's own node IDs, so each rendered node group's `data-id`
+  names the graph node. The adapter verifies the rendered identity set
+  equals the graph's node ID set — no more, no less — and fails closed
+  when it drifts. The graph and its identity map stay authoritative;
+  the SVG is derived.
+- Host-owned hit regions close the interaction gap: Pele 1.6.0 exposes
+  no hit-testing, event, focus, or accessibility API on Linux, so the
+  adapter extracts each node's shape bounds from the rendered SVG and
+  the trusted host maps a click in user space to a node ID, then
+  through the identity map to a semantic reference. SVG generation
+  alone is not interaction, and nothing claims it is.
+- Labels are reduced to plain text and Mermaid numeric character
+  references before lowering; render options are frozen with `links`
+  and `images` disabled; and the output is verified against an element
+  allowlist plus scans for handlers, URL references, and CSS imports.
+  A hostile label neither breaks the renderer nor smuggles markup.
+
+`tests/integration/test_pele_rendering.py` runs the probe inside
+`make check`; `runtime/rendering/pele_adapter/README.md` records the
+pin, the proven properties, and the limitations (no interaction API,
+ambiguous rendered edge IDs, no per-node accessibility output,
+environment-dependent text measurement). The Linux semantic tests keep
+using the test renderer; native rendering is the later macOS round.
+
+### Extension conflicts and recovery (T029)
+
+RFC 001 section 10.5 names six failure and conflict shapes and two
+invariants. `tests/integration/test_semantic_conflicts.py` drives all
+of them through the same service handlers the native host will use:
+
+- Duplicate events replay their stored receipt; the commit sequence
+  and the state revision move once. A reused request ID with a changed
+  payload answers `E_REQUEST_REUSE`, before and after a restart,
+  because receipts live for the workspace lifetime.
+- A stale state revision conflicts without committing and stores no
+  receipt, so the same request ID stays usable once the host
+  refreshes its guards.
+- A recreated collection ID issues another incarnation. The recreation
+  transaction must clear or replace the stored selection that names
+  the previous one (`E_STATE_MIGRATION` otherwise), and an event
+  carrying the old incarnation conflicts even with fresh guards, so an
+  old reference cannot select an object in the new collection.
+- A failed commit is never acknowledged: a storage failure inside the
+  append surfaces instead of a false receipt, nothing moves, and the
+  retry of the same request commits exactly once.
+- A lost acknowledgement reconciles through the receipt. The verbatim
+  retry replays the stored response — across a restart — and the
+  notification stream still carries the commit, so a host that lost
+  the frame can resynchronize. A retry rebuilt from the new snapshot
+  is different content and answers `E_REQUEST_REUSE`.
+- Unavailable renderer versions degrade the host display only. The
+  test renderer takes the registry the host ships
+  (`render --renderer ID=VERSION` on the harness): a pinned renderer
+  the set omits or disagrees with renders a fallback pane with source
+  details and diagnostics, and refuses to originate a gesture.
+
+The two invariants:
+
+- An optimistic selection is never reported durable before commit.
+  `OptimisticSelection` (`runtime/harness/test_renderer.py`) models the
+  host display of RFC 001 section 5.3: the attempted key shows
+  immediately with an unsaved marker, while a durable read taken
+  inside the commit window — before the store append lands — still
+  reports the previous committed value. A failed append restores the
+  committed display as unanswered; only the acknowledgement turns the
+  display committed, and a rejected gesture restores it with a
+  conflict status.
+- An unavailable graph renderer never blocks inspection of saved
+  sources or semantic state. `workspace.inspect` keeps answering the
+  full snapshot — sources, committed selections with their resolution,
+  observer views, and the pinned renderer versions the host needs to
+  detect the gap — while the render degrades to the fallback pane
+  only.

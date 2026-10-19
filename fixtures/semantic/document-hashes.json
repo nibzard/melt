@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "description": "Canonical RFC 8785 hashes of the melt/semantic-draft-1 document fixtures, computed by the Python schema package. They are kept separate from fixtures/valid/document-hashes.json so the v0.1 suite stays unchanged; the generated TypeScript and Swift models of protocol/generated verify them beside the Python implementation and scripts/verify_canonical_hashes.mjs (SPEC.md section 18.1, RFC 001).",
+  "documents": {
+    "supplier-workspace.json": "sha256:dbd4ce39732886ead201ec472bd039b95ef6db825d0029e2c6d6420beeba3439"
+  }
+}

@@ -131,6 +131,59 @@ def test_expected_revisions_are_nonnegative_safe_integers():
     assert codes(request)[0] == ("E_TYPE", "/expected/parameters~1minimum")
 
 
+def test_parameter_set_rejects_unsafe_integer_values():
+    """parameter.set rejects unsafe integers before rounding (T037).
+
+    Regression: a value of `9007199254740993` once parsed to the float
+    `9007199254740992.0`, so the service committed a rounded value
+    (SPEC.md section 4.2 rejects instead of coercing).
+    """
+
+    request = envelope(
+        operations=[{"op": "parameter.set", "id": "minimum", "value": 2**53 + 1}]
+    )
+    assert ("E_TYPE", "/operations/0/value") in codes(request)
+    request = envelope(
+        operations=[{"op": "parameter.set", "id": "minimum", "value": -(2**53)}]
+    )
+    assert ("E_TYPE", "/operations/0/value") in codes(request)
+
+
+def test_parameter_set_scalar_failure_collapses_to_one_diagnostic():
+    """One rejected parameter.set value reports one diagnostic (T040).
+
+    Regression: the value failed every `JsonScalar` branch, so the
+    command reported three sibling `E_TYPE` diagnostics at
+    `/operations/0/value`, one per branch.
+    """
+
+    request = envelope(
+        operations=[{"op": "parameter.set", "id": "minimum", "value": 2**53 + 1}]
+    )
+    with pytest.raises(MeltCommandError) as raised:
+        parse_command(request)
+    diagnostics = raised.value.diagnostics
+    assert [(item.code, item.path) for item in diagnostics] == [
+        ("E_TYPE", "/operations/0/value")
+    ]
+    assert "safe integer range" in diagnostics[0].message
+
+
+def test_parameter_set_accepts_safe_integer_bounds():
+    parsed = parse_command(
+        envelope(
+            operations=[
+                {"op": "parameter.set", "id": "minimum", "value": 2**53 - 1},
+                {"op": "parameter.set", "id": "minimum", "value": -(2**53 - 1)},
+            ]
+        )
+    )
+    assert [operation.value for operation in parsed.operations] == [
+        9007199254740991.0,
+        -9007199254740991.0,
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Operations
 # ---------------------------------------------------------------------------

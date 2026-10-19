@@ -25,6 +25,7 @@ registered. The suite proves the contract end to end:
 from __future__ import annotations
 
 import dataclasses
+import json
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -426,16 +427,21 @@ def test_a_table_wider_than_the_column_bound_requires_selection():
 
 
 def test_the_byte_bound_reduces_rows_but_never_below_one():
-    tiny = dataclasses.replace(DEFAULT_LIMITS, table_page_bytes=120)
+    tiny = dataclasses.replace(DEFAULT_LIMITS, table_page_bytes=400)
     result, errors = read(page(limit=8), limits=tiny)
     assert errors is None
     assert len(result["rows"]) >= 1
     assert len(result["rows"]) < 8
     assert result["hasMore"] is True
     assert result["nextOffset"] == len(result["rows"])
+    assert len(json.dumps(result, separators=(",", ":")).encode("utf-8")) <= tiny.table_page_bytes
 
     impossible = dataclasses.replace(DEFAULT_LIMITS, table_page_bytes=8)
     _, errors = read(page(limit=8), limits=impossible)
+    assert ("E_LIMIT", "/payload/limit") in codes_of(errors)
+
+    # Metadata also consumes bytes when the requested offset has no rows.
+    _, errors = read(page(offset=100), limits=impossible)
     assert ("E_LIMIT", "/payload/limit") in codes_of(errors)
 
 
@@ -595,3 +601,42 @@ def test_the_service_reads_published_output_sources(
         ["2026-02", 200.0],
     ]
     assert answer.result["hasMore"] is False
+
+
+def test_unicode_rows_obey_the_encoded_byte_bound():
+    table = pa.table({"text": ["😀" * 20, "😀" * 20]})
+    sink = pa.BufferOutputStream()
+    pq.write_table(table, sink)
+    payload = sink.getvalue().to_pybytes()
+    schema = measure_artifact(payload, kind="table", media_type=PARQUET)
+    limits = dataclasses.replace(DEFAULT_LIMITS, table_page_bytes=400)
+    result, errors = read_table_page(payload, schema, page(), limits=limits)
+    assert errors is None
+    assert result["rows"] == [["😀" * 20]]
+    assert len(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) <= limits.table_page_bytes
+    assert result["nextOffset"] == 1
+
+
+def test_sorting_does_not_collide_with_imported_field_names():
+    table = pa.table({"__melt_position__": ["second", "first"], "rank": [2, 1]})
+    sink = pa.BufferOutputStream()
+    pq.write_table(table, sink)
+    payload = sink.getvalue().to_pybytes()
+    schema = measure_artifact(payload, kind="table", media_type=PARQUET)
+    result, errors = read_table_page(
+        payload, schema, page(sort=[{"column": "rank", "direction": "asc"}])
+    )
+    assert errors is None
+    assert result["rows"] == [["first", "1"], ["second", "2"]]
+
+
+@pytest.mark.parametrize(
+    "column,value",
+    [("day", "2026-02-30"), ("moment", "2026-13-01T00:00:00Z"), ("quantity", 1e30)],
+)
+def test_invalid_filter_values_return_diagnostics(column, value):
+    result, errors = read(
+        page(filters=[{"column": column, "operator": "eq", "value": value}])
+    )
+    assert result is None
+    assert ("E_TYPE", "/payload/filters/0/value") in codes_of(errors)

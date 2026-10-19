@@ -19,6 +19,7 @@ from pydantic import (
     AfterValidator,
     BeforeValidator,
     Field,
+    StrictBool,
     StrictStr,
     TypeAdapter,
     ValidationError,
@@ -31,7 +32,7 @@ from melt.schema.diagnostics import (
     Diagnostic,
     DiagnosticCode,
     MeltSchemaError,
-    diagnostic_from_pydantic_error,
+    diagnostics_from_pydantic_errors,
     sorted_diagnostics,
     with_code,
 )
@@ -55,9 +56,26 @@ from melt.schema.document import (
     SourceReference,
     TableProjection,
     _first_error_message,
-    document_semantic_diagnostics,
 )
 from melt.schema.limits import DEFAULT_LIMITS
+from melt.schema.semantic import (
+    OBJECT_SELECT_EVENT,
+    SELECTION_CLEAR_EVENT,
+    SEMANTIC_LANGUAGE_ID,
+    GraphProjection,
+    RecordProjection,
+    SemanticAction,
+    SemanticBinding,
+    SemanticCollection,
+    SemanticDocument,
+    SemanticDocumentProjection,
+    SemanticPlotProjection,
+    SemanticReference,
+    SemanticState,
+    SemanticTableProjection,
+    document_diagnostics,
+    document_model_of,
+)
 
 PROTOCOL_VERSION = 1
 
@@ -71,13 +89,24 @@ MethodName = Literal[
     "action.register",
     "action.invoke",
     "control.activate",
+    OBJECT_SELECT_EVENT,
+    SELECTION_CLEAR_EVENT,
     "run.cancel",
     "run.inspect",
     "table.page",
     "workspace.subscribe",
+    "workspace.migrate",
 ]
 
-EntityCollection = Literal["parameters", "actions", "projections", "bindings"]
+EntityCollection = Literal[
+    "parameters", "actions", "projections", "bindings", "collections", "state"
+]
+"""The entity collections a mutation operation may address.
+
+The first four are the v0.1 collections of SPEC.md section 12.2. The
+last two belong to `melt/semantic-draft-1` (RFC 001 sections 3 and 4);
+the workspace service rejects them for a `melt/v0.1` workspace, whose
+document defines neither map."""
 
 RequestId = Annotated[StrictStr, Field(min_length=1, max_length=128)]
 """Request IDs are opaque strings of 1 to 128 characters."""
@@ -200,8 +229,25 @@ class SessionHelloPayload(MeltModel):
     clientVersion: NonEmptyStr
 
 
+def _dispatch_document(value: object):
+    """Validate a workspace document under the language it declares.
+
+    `melt/v0.1` keeps its closed v0.1 shape; `melt/semantic-draft-1`
+    adds the RFC 001 extension maps. Any other identifier reports
+    `E_VERSION` at `/language` through the v0.1 literal.
+    """
+
+    return document_model_of(value)
+
+
+AnyDocument = Annotated[
+    Union[Document, SemanticDocument], BeforeValidator(_dispatch_document)
+]
+"""A workspace document of either supported language."""
+
+
 class WorkspaceCreatePayload(MeltModel):
-    document: Document
+    document: AnyDocument
 
 
 class WorkspaceInspectPayload(MeltModel):
@@ -228,6 +274,29 @@ class ActionInvokePayload(MeltModel):
 class ControlActivatePayload(MeltModel):
     projectionId: EntityId
     controlId: EntityId
+
+
+class ObjectSelectPayload(MeltModel):
+    """One `object.select` renderer event (RFC 001 section 5.1).
+
+    The payload carries the one semantic reference the gesture selected.
+    The projection, its definition revision, the renderer contract, and
+    the displayed source and collection revisions ride the envelope:
+    its `expected` map pins them (sections 5.1 and 5.3).
+    """
+
+    projectionId: EntityId
+    objectRef: SemanticReference
+
+
+class SelectionClearPayload(MeltModel):
+    """One `selection.clear` renderer event (RFC 001 section 5.1).
+
+    Clear carries no object data; the bound assignment writes the typed
+    null literal.
+    """
+
+    projectionId: EntityId
 
 
 class RunCancelPayload(MeltModel):
@@ -264,6 +333,21 @@ class WorkspaceSubscribePayload(MeltModel):
     epoch: PositiveSafeInt
 
 
+class WorkspaceMigratePayload(MeltModel):
+    """One explicit language migration request (RFC 001 section 8.3).
+
+    The migration starts from `melt/v0.1` and commits
+    `melt/semantic-draft-1`: every v0.1 target becomes a following
+    subscription, and source versions, projection IDs, parameter
+    values, and layout stay unchanged. ``dryRun`` previews the same
+    migration without writing; its report explains that pane removal no
+    longer invalidates output publication.
+    """
+
+    targetLanguage: Literal[SEMANTIC_LANGUAGE_ID]
+    dryRun: StrictBool = False
+
+
 PAYLOAD_MODELS: dict[str, type[MeltModel] | None] = {
     "session.hello": SessionHelloPayload,
     "workspace.create": WorkspaceCreatePayload,
@@ -274,10 +358,13 @@ PAYLOAD_MODELS: dict[str, type[MeltModel] | None] = {
     "action.register": ActionRegisterPayload,
     "action.invoke": ActionInvokePayload,
     "control.activate": ControlActivatePayload,
+    OBJECT_SELECT_EVENT: ObjectSelectPayload,
+    SELECTION_CLEAR_EVENT: SelectionClearPayload,
     "run.cancel": RunCancelPayload,
     "run.inspect": RunInspectPayload,
     "table.page": TablePagePayload,
     "workspace.subscribe": WorkspaceSubscribePayload,
+    "workspace.migrate": WorkspaceMigratePayload,
 }
 """The payload model of each method. `None` marks the operation methods."""
 
@@ -302,14 +389,34 @@ def _dispatch_entity_value(value: object):
     keys = set(value)
     branch: type | None
     if "implementation" in keys:
-        branch = Action
+        # The extension action carries no targets (RFC 001 8.1); the
+        # final candidate validation under the document's own language
+        # rejects the shape that language does not define.
+        branch = SemanticAction if "targets" not in keys else Action
     elif "event" in keys:
-        branch = Binding
+        event = value.get("event")
+        event_kind = event.get("kind") if isinstance(event, dict) else None
+        effect = value.get("effect")
+        effect_kind = effect.get("kind") if isinstance(effect, dict) else None
+        if event_kind in (OBJECT_SELECT_EVENT, SELECTION_CLEAR_EVENT) or (
+            effect_kind == "state.set"
+        ):
+            # The pure-event bindings of RFC 001 section 5.2 accept the
+            # extension events and effects; the v0.1 Binding does not.
+            branch = SemanticBinding
+        else:
+            branch = Binding
     elif "kind" in keys:
+        source = value.get("source")
+        subscribing = isinstance(source, dict) and "actionOutput" in source
         branch = {
-            "table": TableProjection,
-            "plot": PlotProjection,
-            "document": DocumentProjection,
+            "table": SemanticTableProjection if subscribing else TableProjection,
+            "plot": SemanticPlotProjection if subscribing else PlotProjection,
+            "document": (
+                SemanticDocumentProjection if subscribing else DocumentProjection
+            ),
+            "graph": GraphProjection,
+            "record": RecordProjection,
         }.get(value.get("kind"))
         if branch is None:
             raise ValueError(
@@ -318,14 +425,18 @@ def _dispatch_entity_value(value: object):
                     f"unknown projection kind {value.get('kind')!r}",
                 )
             )
+    elif "source" in keys and "key" in keys:
+        branch = SemanticCollection
+    elif "scope" in keys:
+        branch = SemanticState
     elif "default" in keys or "nullable" in keys or "constraints" in keys:
         branch = Parameter
     else:
         raise ValueError(
             with_code(
                 DiagnosticCode.SCHEMA,
-                "value matches no parameter, action, projection, or"
-                " binding shape",
+                "value matches no parameter, action, projection,"
+                " binding, collection, or reference state shape",
             )
         )
     try:
@@ -336,15 +447,42 @@ def _dispatch_entity_value(value: object):
 
 
 EntityValue = Annotated[
-    Union[Parameter, Action, TableProjection, PlotProjection, DocumentProjection, Binding],
+    Union[
+        Parameter,
+        Action,
+        SemanticAction,
+        TableProjection,
+        PlotProjection,
+        DocumentProjection,
+        SemanticTableProjection,
+        SemanticPlotProjection,
+        SemanticDocumentProjection,
+        GraphProjection,
+        RecordProjection,
+        Binding,
+        SemanticBinding,
+        SemanticCollection,
+        SemanticState,
+    ],
     BeforeValidator(_dispatch_entity_value),
 ]
 
 ENTITY_MODELS: dict[str, tuple[type, ...]] = {
     "parameters": (Parameter,),
-    "actions": (Action,),
-    "projections": (TableProjection, PlotProjection, DocumentProjection),
-    "bindings": (Binding,),
+    "actions": (Action, SemanticAction),
+    "projections": (
+        TableProjection,
+        PlotProjection,
+        DocumentProjection,
+        SemanticTableProjection,
+        SemanticPlotProjection,
+        SemanticDocumentProjection,
+        GraphProjection,
+        RecordProjection,
+    ),
+    "bindings": (Binding, SemanticBinding),
+    "collections": (SemanticCollection,),
+    "state": (SemanticState,),
 }
 """The entity model of each mutable collection."""
 
@@ -375,13 +513,36 @@ class ParameterSet(MeltModel):
     value: JsonScalar | None
 
 
+class StateSet(MeltModel):
+    """One reference state assignment (RFC 001 sections 4 and 5.2).
+
+    The value is a serialized semantic reference or null. A reference
+    must match the declared collection and its current incarnation at
+    assignment time, so a stale incarnation cannot select an object in
+    a recreated collection. The workspace service rejects this
+    operation for a `melt/v0.1` workspace, whose language defines no
+    reference state.
+    """
+
+    op: Literal["state.set"]
+    id: EntityId
+    value: SemanticReference | None
+
+
 class LayoutReplace(MeltModel):
     op: Literal["layout.replace"]
     value: Layout
 
 
 Operation = Annotated[
-    Union[EntityCreate, EntityReplace, EntityDelete, ParameterSet, LayoutReplace],
+    Union[
+        EntityCreate,
+        EntityReplace,
+        EntityDelete,
+        ParameterSet,
+        StateSet,
+        LayoutReplace,
+    ],
     Field(discriminator="op"),
 ]
 
@@ -670,19 +831,16 @@ def parse_payload(method: str, payload: Any) -> MeltModel:
     except ValidationError as error:
         raise MeltCommandError(
             _prefixed(
-                [
-                    diagnostic_from_pydantic_error(item, DiagnosticCode.SCHEMA)
-                    for item in error.errors()
-                ],
+                diagnostics_from_pydantic_errors(
+                    error.errors(), DiagnosticCode.SCHEMA
+                ),
                 "/payload",
             )
         ) from error
     if isinstance(parsed, WorkspaceCreatePayload):
-        document_diagnostics = document_semantic_diagnostics(parsed.document)
-        if document_diagnostics:
-            raise MeltCommandError(
-                _prefixed(document_diagnostics, "/payload/document")
-            )
+        diagnostics = document_diagnostics(parsed.document)
+        if diagnostics:
+            raise MeltCommandError(_prefixed(diagnostics, "/payload/document"))
     return parsed
 
 
@@ -730,10 +888,7 @@ def parse_command(data: "str | bytes | bytearray | dict") -> CommandEnvelope:
         envelope = CommandEnvelope.model_validate(value)
     except ValidationError as error:
         raise MeltCommandError(
-            [
-                diagnostic_from_pydantic_error(item, DiagnosticCode.SCHEMA)
-                for item in error.errors()
-            ]
+            diagnostics_from_pydantic_errors(error.errors(), DiagnosticCode.SCHEMA)
         ) from error
     diagnostics = command_semantic_diagnostics(envelope)
     if diagnostics:
@@ -755,16 +910,14 @@ def parse_response(data: "str | bytes | bytearray | dict") -> CommandResponse:
         return _response_adapter().validate_python(value)
     except ValidationError as error:
         raise MeltCommandError(
-            [
-                diagnostic_from_pydantic_error(item, DiagnosticCode.SCHEMA)
-                for item in error.errors()
-            ]
+            diagnostics_from_pydantic_errors(error.errors(), DiagnosticCode.SCHEMA)
         ) from error
 
 
 __all__ = [
     "ActionInvokePayload",
     "ActionRegisterPayload",
+    "AnyDocument",
     "CommandEnvelope",
     "CommandResponse",
     "ControlActivatePayload",
@@ -778,6 +931,7 @@ __all__ = [
     "LayoutReplace",
     "MeltCommandError",
     "MethodName",
+    "ObjectSelectPayload",
     "OkResponse",
     "Operation",
     "PageLimit",
@@ -790,12 +944,15 @@ __all__ = [
     "RejectedResponse",
     "RunCancelPayload",
     "RunInspectPayload",
+    "SelectionClearPayload",
     "SessionHelloPayload",
     "SortKey",
     "SourceImportPayload",
+    "StateSet",
     "TablePagePayload",
     "WorkspaceCreatePayload",
     "WorkspaceInspectPayload",
+    "WorkspaceMigratePayload",
     "WorkspaceSubscribePayload",
     "command_semantic_diagnostics",
     "decode_frame",

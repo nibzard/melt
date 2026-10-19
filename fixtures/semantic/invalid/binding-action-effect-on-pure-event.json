@@ -1,0 +1,172 @@
+{
+  "language": "melt/semantic-draft-1",
+  "workspaceId": "supplier-demo",
+  "title": "Supplier risk",
+  "sources": {
+    "supplier-records": {
+      "kind": "table",
+      "currentVersion": 1,
+      "versions": {
+        "1": {
+          "artifact": "sha256:0b03b11a7e1c826a41f3bdc4a877b87487c254110a8fc54692c170c3f2afb99e",
+          "mediaType": "application/vnd.apache.parquet",
+          "byteLength": 737,
+          "schema": {
+            "columns": [
+              {
+                "id": "supplier_id",
+                "type": "string",
+                "nullable": false
+              },
+              {
+                "id": "name",
+                "type": "string",
+                "nullable": false
+              }
+            ],
+            "rowKey": null
+          },
+          "origin": {
+            "kind": "import",
+            "label": "suppliers.parquet"
+          }
+        }
+      }
+    },
+    "supplier-network": {
+      "kind": "graph",
+      "currentVersion": 1,
+      "versions": {
+        "1": {
+          "artifact": "sha256:5c2dae28729386d098e65aac600753940cf8475471415d239cece1763c9d5dc5",
+          "mediaType": "application/vnd.melt.graph+json",
+          "byteLength": 366,
+          "schema": {
+            "nodes": [
+              {
+                "nodeId": "s-42",
+                "label": "Alpha Components",
+                "collection": "suppliers",
+                "key": "S-42"
+              },
+              {
+                "nodeId": "s-73",
+                "label": "Beta Systems",
+                "collection": "suppliers",
+                "key": "S-73"
+              }
+            ],
+            "edges": [
+              {
+                "edgeId": "e-s42-s73",
+                "from": "s-42",
+                "to": "s-73"
+              }
+            ]
+          },
+          "origin": {
+            "kind": "import",
+            "label": "supplier-network.graph.json"
+          }
+        }
+      }
+    }
+  },
+  "parameters": {},
+  "actions": {},
+  "projections": {
+    "network": {
+      "kind": "graph",
+      "title": "Supplier network",
+      "source": {
+        "sourceId": "supplier-network",
+        "version": 1
+      },
+      "collection": "suppliers",
+      "config": {
+        "nodeLabels": "show"
+      },
+      "controls": [],
+      "observe": {
+        "highlight": {
+          "state": "selected_supplier"
+        }
+      }
+    },
+    "inspector": {
+      "kind": "record",
+      "title": "Supplier inspector",
+      "collection": "suppliers",
+      "config": {
+        "fields": null
+      },
+      "controls": [],
+      "observe": {
+        "record": {
+          "state": "selected_supplier"
+        }
+      }
+    }
+  },
+  "bindings": {
+    "select-supplier": {
+      "event": {
+        "kind": "object.select",
+        "projection": "network"
+      },
+      "effect": {
+        "kind": "action.invoke",
+        "action": "analyze-risk"
+      }
+    },
+    "clear-supplier": {
+      "event": {
+        "kind": "selection.clear",
+        "projection": "network"
+      },
+      "effect": {
+        "kind": "state.set",
+        "target": "selected_supplier",
+        "value": {
+          "literal": null
+        }
+      }
+    }
+  },
+  "collections": {
+    "suppliers": {
+      "source": {
+        "sourceId": "supplier-records",
+        "version": 1
+      },
+      "key": "supplier_id"
+    }
+  },
+  "state": {
+    "selected_supplier": {
+      "type": {
+        "kind": "ref",
+        "collection": "suppliers"
+      },
+      "nullable": true,
+      "default": null,
+      "scope": "workspace"
+    }
+  },
+  "layout": {
+    "root": {
+      "kind": "split",
+      "axis": "horizontal",
+      "ratio": 0.6,
+      "first": {
+        "kind": "pane",
+        "projection": "network"
+      },
+      "second": {
+        "kind": "pane",
+        "projection": "inspector"
+      }
+    },
+    "hidden": []
+  }
+}

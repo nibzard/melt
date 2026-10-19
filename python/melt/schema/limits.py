@@ -16,7 +16,11 @@ _MIB = 1024 * 1024
 
 @dataclass(frozen=True)
 class ServiceLimits:
-    """The round-1 default limits from SPEC.md section 15.2."""
+    """The round-1 default limits from SPEC.md section 15.2.
+
+    The last two entries bound the RFC 001 extension collections of
+    `melt/semantic-draft-1`; the v0.1 tables carry no counterpart.
+    """
 
     control_frame_bytes: int = 1 * _MIB
     operations_per_mutation: int = 128
@@ -26,6 +30,8 @@ class ServiceLimits:
     max_bindings: int = 256
     max_controls_per_projection: int = 32
     max_layout_depth: int = 8
+    max_collections: int = 64
+    max_reference_states: int = 256
     table_page_rows: int = 256
     table_page_columns: int = 128
     table_page_bytes: int = 1 * _MIB

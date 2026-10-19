@@ -238,15 +238,37 @@
       "id": "T007",
       "title": "Generate JSON Schema and language models",
       "priority": 2,
-      "status": "todo",
-      "details": "Export JSON Schema and generate TypeScript and Swift models from the single restricted vocabulary (SPEC.md section 17). Document every generated file and provide one repeatable generation command. Continuous integration fails when regeneration changes committed output. Do not author independent duplicate schemas.\n\nReview repair: No JSON Schema export or generated TypeScript and Swift models\nAcceptance: one repeatable generation command exports JSON Schema and generates TypeScript and Swift models from the single restricted vocabulary, documents every generated file, and fails continuous integration when regeneration changes committed output (SPEC.md section 17).\nEvidence: protocol/schema/ and protocol/generated/ each contain only a README deferring to backlog task T007; no generation script exists under scripts/ and no generated model files are committed.\n\nReview repair: Generated TypeScript and Swift models verify canonical hashes against document-hashes.json\nT007 generates TypeScript and Swift models from the single schema vocabulary. Those models should join scripts/verify_canonical_hashes.mjs and the Python implementation in verifying every entry of fixtures/valid/document-hashes.json, per SPEC.md sections 4.2, 17, and 18.1 (\"Shared fixtures detect disagreement\"). The document-hashes.json index and the wire-form rule documented in verify_canonical_hashes.mjs (absent optional bounds, column fields, and rowKey serialize as explicit nulls) are the contract they must reproduce.\nEvidence: SPEC.md section 18.1 requires canonical hashes to agree across supported languages; today the agreement covers Python and JavaScript (scripts/verify_canonical_hashes.mjs, run by make check). protocol/generated/ holds only a README until T007 lands.\n\nReview repair: JSON Schema export and generated TypeScript and Swift models are missing\nOne repeatable generation command exports JSON Schema and generates TypeScript and Swift models from the single restricted vocabulary, documents every generated file, and fails continuous integration when regeneration changes committed output (SPEC.md section 17); generated models verify canonical hashes against fixtures/valid/document-hashes.json.\nEvidence: protocol/schema/ and protocol/generated/ each contain only a README deferring to backlog task T007; scripts/ holds check.sh, build_fixture_artifacts.py, and verify_canonical_hashes.mjs only; scripts/check.sh has no regeneration-drift gate, so SPEC.md section 17 'Continuous integration MUST fail when regeneration changes committed output' has no enforcement point.",
+      "status": "done",
+      "details": "Export JSON Schema and generate TypeScript and Swift models from the single restricted vocabulary (SPEC.md section 17). Document every generated file and provide one repeatable generation command. Continuous integration fails when regeneration changes committed output. Do not author independent duplicate schemas.\n\nReview repair: No JSON Schema export or generated TypeScript and Swift models\nAcceptance: one repeatable generation command exports JSON Schema and generates TypeScript and Swift models from the single restricted vocabulary, documents every generated file, and fails continuous integration when regeneration changes committed output (SPEC.md section 17).\nEvidence: protocol/schema/ and protocol/generated/ each contain only a README deferring to backlog task T007; no generation script exists under scripts/ and no generated model files are committed.\n\nReview repair: Generated TypeScript and Swift models verify canonical hashes against document-hashes.json\nT007 generates TypeScript and Swift models from the single schema vocabulary. Those models should join scripts/verify_canonical_hashes.mjs and the Python implementation in verifying every entry of fixtures/valid/document-hashes.json, per SPEC.md sections 4.2, 17, and 18.1 (\"Shared fixtures detect disagreement\"). The document-hashes.json index and the wire-form rule documented in verify_canonical_hashes.mjs (absent optional bounds, column fields, and rowKey serialize as explicit nulls) are the contract they must reproduce.\nEvidence: SPEC.md section 18.1 requires canonical hashes to agree across supported languages; today the agreement covers Python and JavaScript (scripts/verify_canonical_hashes.mjs, run by make check). protocol/generated/ holds only a README until T007 lands.\n\nReview repair: JSON Schema export and generated TypeScript and Swift models are missing\nOne repeatable generation command exports JSON Schema and generates TypeScript and Swift models from the single restricted vocabulary, documents every generated file, and fails continuous integration when regeneration changes committed output (SPEC.md section 17); generated models verify canonical hashes against fixtures/valid/document-hashes.json.\nEvidence: protocol/schema/ and protocol/generated/ each contain only a README deferring to backlog task T007; scripts/ holds check.sh, build_fixture_artifacts.py, and verify_canonical_hashes.mjs only; scripts/check.sh has no regeneration-drift gate, so SPEC.md section 17 'Continuous integration MUST fail when regeneration changes committed output' has no enforcement point.\n\nReview repair: Extend cross-language canonical hash agreement to the semantic fixtures\nThe semantic fixtures (fixtures/semantic/supplier-workspace.json) have a stable RFC 8785 hash through the Python canonicalizer, but fixtures/valid/document-hashes.json and scripts/verify_canonical_hashes.mjs cover only the v0.1 documents under fixtures/valid. When T007 generates the TypeScript and Swift models from the single restricted vocabulary, the extension fields must join that agreement: the generated models need the collections and state maps, and the cross-language hash index needs a home for the semantic fixtures (kept separate from the v0.1 set so the v0.1 suite stays unchanged).\nEvidence: scripts/verify_canonical_hashes.mjs iterates fixtures/valid/document-hashes.json only; document_hash(parse_document_for_language(...)) is asserted stable in tests/contract/test_semantic_fixtures.py::test_valid_fixture_hash_is_stable on the Python side alone.\n\nReview repair: Generated JSON Schema and TypeScript and Swift models are still missing\nOne repeatable generation command exports JSON Schema and generates TypeScript and Swift models from the single restricted vocabulary, documents every generated file, and fails continuous integration when regeneration changes committed output (SPEC.md section 17). The generated models verify canonical hashes against fixtures/valid/document-hashes.json, and the semantic fixtures join that agreement in a separate index so the v0.1 suite stays unchanged.\nEvidence: protocol/schema/ and protocol/generated/ still contain only READMEs that defer to T007. scripts/ holds check.sh, build_fixture_artifacts.py, verify_canonical_hashes.mjs, and benchmark_round1.py only. scripts/check.sh has no regeneration-drift gate, so the SPEC.md section 17 continuous-integration requirement has no enforcement point.",
       "depends_on": [
         "T003"
+      ],
+      "files": [
+        ".gitignore",
+        "Makefile",
+        "README.md",
+        "fixtures/semantic/README.md",
+        "fixtures/semantic/document-hashes.json",
+        "protocol/generated/MeltDocument.swift",
+        "protocol/generated/README.md",
+        "protocol/generated/melt-document.ts",
+        "protocol/schema/README.md",
+        "protocol/schema/command.schema.json",
+        "protocol/schema/document.schema.json",
+        "protocol/schema/record.schema.json",
+        "protocol/schema/semantic-document.schema.json",
+        "scripts/check.sh",
+        "scripts/generate_protocol.py",
+        "scripts/verify_canonical_hashes.mjs",
+        "tests/contract/test_protocol_generation.py",
+        "tests/contract/test_semantic_fixtures.py"
       ],
       "tags": [
         "looper:finding:generated-schema-and-language-models",
         "looper:finding:generated-models-verify-canonical-hashes"
-      ]
+      ],
+      "updated_at": "2026-10-18T18:18:27Z",
+      "unblock_when": "\"\""
     },
     {
       "id": "T008",
@@ -649,20 +671,32 @@
       "id": "T023",
       "title": "Record round 1 performance measurements",
       "priority": 2,
-      "status": "doing",
+      "status": "done",
       "details": "Measure compilation, service commits, artifact publication, and table paging on a declared 16 GiB Linux machine (SPEC.md section 19). Record hardware, dependency versions, build mode, fixture sizes, and warm and cold conditions. Compare p95 results against the targets. A missed target triggers investigation without weakening persistence or correctness.\n\nReview repair: Round 1 performance measurements are not recorded\nAcceptance: measure compilation, service commits, artifact publication, and table paging on a declared 16 GiB Linux machine with hardware, dependency versions, build mode, fixture sizes, and warm and cold conditions recorded, and compare p95 results against the SPEC.md section 19 targets.\nEvidence: No benchmark or measurement artifact exists in the tree (search for benchmark/performance/measurement files finds only third-party files under runtime/storage/pi_adapter/node_modules and an unrelated contract test); README.md and docs/ carry no recorded numbers.\n\nReview repair: Round 1 performance measurements are not recorded\nMeasure compilation, service commits, artifact publication, and table paging on a declared 16 GiB Linux machine with hardware, dependency versions, build mode, fixture sizes, and warm and cold conditions recorded, and compare p95 results against the SPEC.md section 19 targets.\nEvidence: No benchmark or measurement artifact exists in the tree (search outside .venv and node_modules finds none); scripts/check.sh runs no measurement step; README.md and docs/ record no numbers against the section 19 targets (compile p95 below 50 ms, control feedback below 50 ms, committed patch below 100 ms, five-pane restore below 2 s, warm first page for 1 million rows below 300 ms).",
       "depends_on": [
         "T019"
       ],
+      "files": [
+        ".gitignore",
+        "Makefile",
+        "README.md",
+        "docs/performance/round-1-linux.json",
+        "docs/performance/round-1-linux.md",
+        "scripts/benchmark_round1.py",
+        "tests/contract/test_performance_record.py"
+      ],
       "tags": [
-        "looper:finding:round1-performance-measurements"
-      ]
+        "looper:finding:round1-performance-measurements",
+        "looper:operator"
+      ],
+      "updated_at": "2026-10-18T12:49:11Z",
+      "unblock_when": "\"\""
     },
     {
       "id": "T024",
       "title": "Close the Linux recovery gate",
       "priority": 1,
-      "status": "todo",
+      "status": "done",
       "details": "Close round 1 per SPEC.md section 20 step 5. Confirm passing hero workflow, contract suite, race suite, and publication fault tests, with compiler and reader measurements recorded. Confirm no macOS tools are required. A valid JSON document alone does not pass.",
       "depends_on": [
         "T019",
@@ -670,58 +704,206 @@
         "T021",
         "T022",
         "T023"
-      ]
+      ],
+      "files": [
+        "README.md",
+        "docs/gates/round-1-linux.json",
+        "docs/gates/round-1-linux.md",
+        "tests/contract/test_gate_record.py"
+      ],
+      "updated_at": "2026-10-18T13:08:35Z",
+      "unblock_when": "\"\""
     },
     {
       "id": "T025",
       "title": "Add semantic collections and reference state",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "Under the provisional identifier melt/semantic-draft-1, add semantic collections as typed identity indexes over table sources and nullable reference state with workspace scope (RFC 001 sections 3 and 4). Verify unique non-null string keys at admission. Issue opaque incarnations on collection creation. Preserve unresolved references as missing. Reject these fields in any v0.1 document.",
       "depends_on": [
         "T024"
-      ]
+      ],
+      "files": [
+        "README.md",
+        "fixtures/semantic/README.md",
+        "fixtures/semantic/catalog.json",
+        "fixtures/semantic/invalid/collection-key-not-string.json",
+        "fixtures/semantic/invalid/collection-unknown-source.json",
+        "fixtures/semantic/invalid/manifest.json",
+        "fixtures/semantic/invalid/state-non-nullable.json",
+        "fixtures/semantic/invalid/state-unknown-collection.json",
+        "fixtures/semantic/invalid/unsupported-semantic-version.json",
+        "fixtures/semantic/invalid/v01-document-with-collections.json",
+        "fixtures/semantic/supplier-workspace.json",
+        "fixtures/semantic/suppliers.parquet",
+        "python/melt/cli.py",
+        "python/melt/schema/__init__.py",
+        "python/melt/schema/commands.py",
+        "python/melt/schema/diagnostics.py",
+        "python/melt/schema/limits.py",
+        "python/melt/schema/records.py",
+        "python/melt/schema/semantic.py",
+        "runtime/compiler/__init__.py",
+        "runtime/compiler/compiler.py",
+        "runtime/compiler/plans.py",
+        "runtime/workspace/__init__.py",
+        "runtime/workspace/inspection.py",
+        "runtime/workspace/mutations.py",
+        "runtime/workspace/semantic.py",
+        "runtime/workspace/service.py",
+        "runtime/workspace/state.py",
+        "scripts/build_fixture_artifacts.py",
+        "tests/contract/test_records.py",
+        "tests/contract/test_semantic_commands.py",
+        "tests/contract/test_semantic_compiler.py",
+        "tests/contract/test_semantic_document.py",
+        "tests/contract/test_semantic_fixtures.py",
+        "tests/integration/test_semantic_collections.py"
+      ],
+      "updated_at": "2026-10-18T14:17:56Z",
+      "unblock_when": "\"\""
     },
     {
       "id": "T026",
       "title": "Add pure events, observers, and test renderer",
       "priority": 2,
-      "status": "todo",
-      "details": "Add object.select and selection.clear events with typed state.set bindings and no expressions (RFC 001 sections 5 and 6). Add highlight and record observers to the dependency plan. Build the Linux test renderer. Pass the supplier fixture with S-42 and S-73: one state commit, inspector resolution, graph highlighting, zero model calls, zero Python launches, restart restoration, missing-key reporting, and stale revision rejection. Apply a stored agent-shaped patch that adds a second inspector without touching existing components or state revisions.",
+      "status": "done",
+      "details": "Add object.select and selection.clear events with typed state.set bindings and no expressions (RFC 001 sections 5 and 6). Add highlight and record observers to the dependency plan. Build the Linux test renderer. Pass the supplier fixture with S-42 and S-73: one state commit, inspector resolution, graph highlighting, zero model calls, zero Python launches, restart restoration, missing-key reporting, and stale revision rejection. Apply a stored agent-shaped patch that adds a second inspector without touching existing components or state revisions.\n\nReview repair: Teach the command-line harness the melt/semantic-draft-1 language\nT026 must drive the RFC 001 section 10.2 supplier fixture (S-42/S-73) through the Linux test renderer and command-line harness. The harness currently negotiates only melt/v0.1: runtime/harness/cli.py sends languageVersions [\"melt/v0.1\"] in its session.hello, and a melt/semantic-draft-1 workspace rejects that handshake with E_VERSION at /payload/languageVersions (runtime/workspace/service.py _session_hello). The harness needs to speak the workspace language (or both identifiers) before it can create, mutate, or inspect a semantic workspace. The service-side handlers are ready and proven through tests/integration/test_semantic_collections.py.\nEvidence: runtime/harness/cli.py:183 (\"languageVersions\": [\"melt/v0.1\"]) and cli.py:192 (\"language\": \"melt/v0.1\"); tests/integration/test_semantic_collections.py::test_hello_negotiates_the_workspace_language proves a v0.1-only client is refused against a semantic workspace.",
       "depends_on": [
         "T025"
-      ]
+      ],
+      "files": [
+        "README.md",
+        "fixtures/semantic/README.md",
+        "fixtures/semantic/catalog.json",
+        "fixtures/semantic/definitions.json",
+        "fixtures/semantic/invalid/binding-action-effect-on-pure-event.json",
+        "fixtures/semantic/invalid/binding-clear-with-event-field.json",
+        "fixtures/semantic/invalid/binding-collection-mismatch.json",
+        "fixtures/semantic/invalid/binding-debounce-nonzero.json",
+        "fixtures/semantic/invalid/binding-duplicate-address.json",
+        "fixtures/semantic/invalid/binding-event-non-graph-projection.json",
+        "fixtures/semantic/invalid/binding-expression-value.json",
+        "fixtures/semantic/invalid/binding-unknown-state.json",
+        "fixtures/semantic/invalid/graph-node-foreign-collection.json",
+        "fixtures/semantic/invalid/graph-source-wrong-media-type.json",
+        "fixtures/semantic/invalid/manifest.json",
+        "fixtures/semantic/invalid/observer-collection-mismatch.json",
+        "fixtures/semantic/invalid/observer-unknown-state.json",
+        "fixtures/semantic/invalid/record-unknown-field.json",
+        "fixtures/semantic/patches/second-inspector.json",
+        "fixtures/semantic/supplier-network.graph.json",
+        "fixtures/semantic/supplier-workspace.json",
+        "python/melt/schema/commands.py",
+        "python/melt/schema/document.py",
+        "python/melt/schema/records.py",
+        "python/melt/schema/semantic.py",
+        "runtime/compiler/__init__.py",
+        "runtime/compiler/catalog.py",
+        "runtime/compiler/compiler.py",
+        "runtime/compiler/plans.py",
+        "runtime/harness/cli.py",
+        "runtime/harness/test_renderer.py",
+        "runtime/workspace/importer.py",
+        "runtime/workspace/inspection.py",
+        "runtime/workspace/observers.py",
+        "runtime/workspace/service.py",
+        "runtime/workspace/tokens.py",
+        "scripts/build_fixture_artifacts.py",
+        "tests/contract/test_semantic_events.py",
+        "tests/contract/test_semantic_fixtures.py",
+        "tests/integration/test_semantic_harness.py",
+        "tests/integration/test_semantic_interactions.py",
+        "tests/integration/test_token_store.py"
+      ],
+      "tags": [
+        "looper:finding:linux-harness-speaks-semantic-draft-language"
+      ],
+      "updated_at": "2026-10-18T15:20:36Z",
+      "unblock_when": "\"\""
     },
     {
       "id": "T027",
       "title": "Add pane-independent outputs and v0.1 migration",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "Let actions declare outputs with names, kinds, and a publication group, without projection targets (RFC 001 section 8). Support following and pinned subscriptions by stable output incarnation. Publication stays atomic and eligibility no longer depends on pane existence. Provide the explicit v0.1 migration with quiesced runs, backup, and atomic language change; a failed migration leaves v0.1 current. The v0.1 baseline suite passes unchanged before and after.",
       "depends_on": [
         "T025"
-      ]
+      ],
+      "files": [
+        "README.md",
+        "fixtures/semantic/README.md",
+        "fixtures/semantic/invalid/action-with-targets.json",
+        "fixtures/semantic/invalid/manifest.json",
+        "fixtures/semantic/invalid/subscription-follow-current-with-version.json",
+        "fixtures/semantic/invalid/subscription-kind-mismatch.json",
+        "fixtures/semantic/invalid/subscription-pinned-without-version.json",
+        "fixtures/semantic/invalid/subscription-unknown-action.json",
+        "fixtures/semantic/invalid/subscription-unknown-output.json",
+        "fixtures/semantic/invalid/v01-projection-with-subscription.json",
+        "python/melt/schema/commands.py",
+        "python/melt/schema/document.py",
+        "python/melt/schema/records.py",
+        "python/melt/schema/semantic.py",
+        "runtime/compiler/compiler.py",
+        "runtime/compiler/plans.py",
+        "runtime/harness/cli.py",
+        "runtime/harness/test_renderer.py",
+        "runtime/storage/workspace.py",
+        "runtime/workspace/inspection.py",
+        "runtime/workspace/mutations.py",
+        "runtime/workspace/outputs.py",
+        "runtime/workspace/service.py",
+        "runtime/workspace/state.py",
+        "tests/contract/test_semantic_outputs.py",
+        "tests/integration/test_migration.py",
+        "tests/integration/test_output_independence.py"
+      ],
+      "updated_at": "2026-10-18T16:19:10Z",
+      "unblock_when": "\"\""
     },
     {
       "id": "T028",
       "title": "Probe Pele rendering and identity mapping",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "External prerequisite for the extension. Pin a Pele version and establish its actual Linux interface (RFC 001 section 7.3). Prove rendered-element to node-ID mapping through a verified renderer mapping or host-owned hit regions. Sanitize labels and disable external resources in rendered output. Report limitations instead of claiming interaction from SVG generation alone.",
       "depends_on": [
         "T026"
-      ]
+      ],
+      "files": [
+        "Makefile",
+        "README.md",
+        "runtime/rendering/pele_adapter/README.md",
+        "runtime/rendering/pele_adapter/package-lock.json",
+        "runtime/rendering/pele_adapter/package.json",
+        "runtime/rendering/pele_adapter/pele_render.mjs",
+        "runtime/rendering/pele_adapter/probe.mjs",
+        "scripts/check.sh",
+        "tests/integration/test_pele_rendering.py"
+      ],
+      "updated_at": "2026-10-18T16:44:55Z"
     },
     {
       "id": "T029",
       "title": "Verify extension conflicts and recovery",
       "priority": 2,
-      "status": "todo",
+      "status": "done",
       "details": "Test duplicate events, reused IDs with changed payloads, stale state revisions, recreated collection IDs, failed commits, lost acknowledgements, and unavailable renderer versions (RFC 001 section 10.5). An optimistic selection is never reported durable before commit. An unavailable graph renderer never blocks inspection of saved sources or semantic state.",
       "depends_on": [
         "T026",
         "T027"
-      ]
+      ],
+      "files": [
+        "README.md",
+        "runtime/harness/cli.py",
+        "runtime/harness/test_renderer.py",
+        "tests/integration/test_semantic_conflicts.py",
+        "tests/integration/test_semantic_harness.py"
+      ],
+      "updated_at": "2026-10-18T17:14:13Z",
+      "unblock_when": "\"\""
     },
     {
       "id": "T030",
@@ -736,15 +918,18 @@
         "T032"
       ],
       "blockers": [
-        "Deferred from the Linux run: requires an available macOS Apple Silicon host for native validation."
+        "An operator must complete this prerequisite; coding workers cannot execute it.",
+        "Deferred from the Linux run: requires an available macOS Apple Silicon host for native validation.",
+        "Deferred: A macOS Apple Silicon host is available to workers (Linux and semantic-extension gates green). The operator records evidence of providing it, then removes looper:operator from T030 so coding workers resume native integration."
       ],
       "tags": [
+        "deferred:native-round",
+        "looper:deferred",
         "looper:finding:native-round2-macos-suite",
-        "looper:operator",
-        "deferred:native-round"
+        "looper:operator"
       ],
       "updated_at": "2026-10-17T23:35:10.554076Z",
-      "unblock_when": "Resume in the native round after Linux and semantic-extension gates pass and a macOS Apple Silicon host is available. Remove looper:operator and set todo only when coding workers can access that host. Mark done only after the required checks pass."
+      "unblock_when": "Record evidence that the operator completed the action, then mark this task done. To delegate different work, explicitly change its contract and remove looper:operator."
     },
     {
       "id": "T031",
@@ -756,14 +941,18 @@
         "T030"
       ],
       "blockers": [
-        "Deferred from the Linux run: requires an available macOS Apple Silicon host for native validation."
+        "An operator must complete this prerequisite; coding workers cannot execute it.",
+        "Deferred from the Linux run: requires an available macOS Apple Silicon host for native validation.",
+        "Deferred: T030's native suite passes on an available macOS Apple Silicon host; then the release gate of SPEC section 20 step 7 runs there."
       ],
       "tags": [
-        "looper:operator",
-        "deferred:native-round"
+        "deferred:native-round",
+        "looper:deferred",
+        "looper:finding:application-release-gate",
+        "looper:operator"
       ],
       "updated_at": "2026-10-17T23:35:10.554085Z",
-      "unblock_when": "Resume in the native round after Linux and semantic-extension gates pass and a macOS Apple Silicon host is available. Remove looper:operator and set todo only when coding workers can access that host. Mark done only after the required checks pass."
+      "unblock_when": "T030's native suite passes on an available macOS Apple Silicon host; then the release gate of SPEC section 20 step 7 runs there.; remove looper:deferred and set todo when this condition is met."
     },
     {
       "id": "T032",
@@ -777,15 +966,18 @@
         "T029"
       ],
       "blockers": [
-        "Deferred from the Linux run: requires an available macOS Apple Silicon host for native validation."
+        "An operator must complete this prerequisite; coding workers cannot execute it.",
+        "Deferred from the Linux run: requires an available macOS Apple Silicon host for native validation.",
+        "Deferred: A macOS Apple Silicon host is available in the native round; then re-run the pinned adapter probe there and record the macOS full-sync configuration and crash model."
       ],
       "tags": [
+        "deferred:native-round",
+        "looper:deferred",
         "looper:finding:pi-durable-macos-fullsync-verification",
-        "looper:operator",
-        "deferred:native-round"
+        "looper:operator"
       ],
       "updated_at": "2026-10-17T23:35:10.554087Z",
-      "unblock_when": "Resume in the native round after Linux and semantic-extension gates pass and a macOS Apple Silicon host is available. Remove looper:operator and set todo only when coding workers can access that host. Mark done only after the required checks pass."
+      "unblock_when": "A macOS Apple Silicon host is available in the native round; then re-run the pinned adapter probe there and record the macOS full-sync configuration and crash model.; remove looper:deferred and set todo when this condition is met."
     },
     {
       "id": "T033",
@@ -810,30 +1002,248 @@
       "id": "T034",
       "title": "WorkspaceService.process_frame crashes on every well-formed frame",
       "priority": 2,
-      "status": "todo",
-      "details": "Acceptance: process_frame must answer any decodable frame with one framed response per its contract (SPEC.md section 12.1 buffer form of the private IPC channel), rejecting only over-limit or truncated frames, with a test that exercises a valid frame through this entry point.\nEvidence: runtime/workspace/service.py:1506-1520: payload = decode_frame(data, limit=...) keeps decode_frame's (payload, end) tuple (python/melt/schema/commands.py:563-598 returns a tuple) and passes it unchanged to handle_request. parse_command then rejects the tuple, and _salvage_request_id (service.py:1669-1681) calls parse_json on the tuple, raising AttributeError: 'tuple' object has no attribute 'startswith' (python/melt/schema/canonical.py:95). Reproduced at 2f34b8f: after WorkspaceService.open, service.process_frame(encode_frame(\u003cvalid session.hello JSON\u003e)) raises AttributeError instead of returning a frame. Only the over-limit path is tested (tests/integration/test_workspace_service.py:1145-1159) because the limit error is raised inside decode_frame before the tuple escapes; the serve()/_read_frame_or_none socket path is unaffected and covered.\n\nReview repair: WorkspaceService.process_frame crashes on every well-formed frame\nAcceptance: process_frame must answer any decodable frame with one framed response per its contract (SPEC.md section 12.1), rejecting only over-limit or truncated frames, with a test that exercises a valid frame through this entry point.\nEvidence: Re-verified at 81f2bfd: after WorkspaceService.open, service.process_frame(encode_frame(\u003cvalid session.hello JSON\u003e)) raises AttributeError: 'tuple' object has no attribute 'startswith'. Root cause unchanged: runtime/workspace/service.py:3672-3686 passes decode_frame's (payload, end) tuple (python/melt/schema/commands.py:563-598) straight to handle_request, so parse_command rejects the tuple and _salvage_request_id calls parse_json on it. The serve() socket path is unaffected; only the over-limit path is tested (tests/integration/test_workspace_service.py:1145-1159).\n\nReview repair: Verify and close T034: the process_frame tuple fix landed inside T018\nThe one-line repair (unwrap decode_frame's tuple before handle_request) landed with T018 because the harness drives the framed channel. The T034 session should verify its acceptance against commit 6293766 and complete the task.\nEvidence: runtime/workspace/service.py process_frame now unwraps the (payload, end) tuple before handle_request; tests/integration/test_workspace_service.py::test_process_frame_answers_a_valid_frame sends a valid session.hello frame and reads the framed answer; the over-limit test still passes.",
+      "status": "done",
+      "details": "Acceptance: process_frame must answer any decodable frame with one framed response per its contract (SPEC.md section 12.1 buffer form of the private IPC channel), rejecting only over-limit or truncated frames, with a test that exercises a valid frame through this entry point.\nEvidence: runtime/workspace/service.py:1506-1520: payload = decode_frame(data, limit=...) keeps decode_frame's (payload, end) tuple (python/melt/schema/commands.py:563-598 returns a tuple) and passes it unchanged to handle_request. parse_command then rejects the tuple, and _salvage_request_id (service.py:1669-1681) calls parse_json on the tuple, raising AttributeError: 'tuple' object has no attribute 'startswith' (python/melt/schema/canonical.py:95). Reproduced at 2f34b8f: after WorkspaceService.open, service.process_frame(encode_frame(\u003cvalid session.hello JSON\u003e)) raises AttributeError instead of returning a frame. Only the over-limit path is tested (tests/integration/test_workspace_service.py:1145-1159) because the limit error is raised inside decode_frame before the tuple escapes; the serve()/_read_frame_or_none socket path is unaffected and covered.\n\nReview repair: WorkspaceService.process_frame crashes on every well-formed frame\nAcceptance: process_frame must answer any decodable frame with one framed response per its contract (SPEC.md section 12.1), rejecting only over-limit or truncated frames, with a test that exercises a valid frame through this entry point.\nEvidence: Re-verified at 81f2bfd: after WorkspaceService.open, service.process_frame(encode_frame(\u003cvalid session.hello JSON\u003e)) raises AttributeError: 'tuple' object has no attribute 'startswith'. Root cause unchanged: runtime/workspace/service.py:3672-3686 passes decode_frame's (payload, end) tuple (python/melt/schema/commands.py:563-598) straight to handle_request, so parse_command rejects the tuple and _salvage_request_id calls parse_json on it. The serve() socket path is unaffected; only the over-limit path is tested (tests/integration/test_workspace_service.py:1145-1159).\n\nReview repair: Verify and close T034: the process_frame tuple fix landed inside T018\nThe one-line repair (unwrap decode_frame's tuple before handle_request) landed with T018 because the harness drives the framed channel. The T034 session should verify its acceptance against commit 6293766 and complete the task.\nEvidence: runtime/workspace/service.py process_frame now unwraps the (payload, end) tuple before handle_request; tests/integration/test_workspace_service.py::test_process_frame_answers_a_valid_frame sends a valid session.hello frame and reads the framed answer; the over-limit test still passes.\n\nReview repair: Verify and close T034: process_frame answers valid frames\nThe repair landed with T018 (process_frame unwraps decode_frame's tuple before handle_request). The T034 session should verify its acceptance against the current tree and complete the task; no code work remains as far as this session could probe.\nEvidence: tests/integration/test_workspace_service.py::test_process_frame_answers_a_valid_frame sends a valid session.hello frame after WorkspaceService.open and reads the framed answer; it passed in both gate runs at 5ea5f01 and 1dabeda.\n\nReview repair: T034 acceptance is met: process_frame answers valid frames; close the task\nAcceptance per T034: process_frame answers any decodable frame with one framed response, rejecting only over-limit or truncated frames, with a test exercising a valid frame through this entry point. The repair (unwrapping decode_frame's (payload, end) tuple before handle_request) is in the tree at runtime/workspace/service.py:3911-3925; no code work remains. The task is still todo in the accepted backlog although Complete/Integrate T034 commits exist (both changed no tree files because the fix landed inside T018).\nEvidence: Probe at 1828244: after WorkspaceService.open, service.process_frame(encode_frame(\u003cvalid session.hello JSON\u003e)) returns a framed response decoding to ok: true, requestId r1, with result keys clientVersion, epoch, language, limits, protocolVersion, serverVersion. tests/integration/test_workspace_service.py::test_process_frame_answers_a_valid_frame passed in the full-suite run (798 passed).\n\nReview repair: T034 acceptance is met: process_frame answers valid frames; only task completion remains\nAcceptance per T034: process_frame answers any decodable frame with one framed response, rejecting only over-limit or truncated frames, with a test that exercises a valid frame through this entry point.\nEvidence: tests/integration/test_workspace_service.py:1145 test_process_frame_answers_a_valid_frame passed both in the full-suite run at this revision (1019 passed, 1 skipped) and when run alone; the over-limit test still passes. The repair that unwraps decode_frame's tuple is in the tree. No code work remains; the task is still todo in the accepted backlog.",
       "tags": [
         "looper:finding:service-process-frame-answers-valid-frames"
-      ]
+      ],
+      "updated_at": "2026-10-18T18:28:52Z"
     },
     {
       "id": "T035",
       "title": "run.cancel never signals the owned process; a launching run blocks the entire service",
       "priority": 2,
-      "status": "todo",
-      "details": "Acceptance: a cancellation request must stop scheduling and signal the owned process group, with escalation when necessary (SPEC.md section 13.5), and the framed service channel must keep answering requests while a project process executes, so race scenarios that mutate the workspace during execution (SPEC.md sections 18.3 and 20 step 5) can run for real rather than only between dispatch and launch.\nEvidence: runtime/workspace/service.py:3294-3346 _run_cancel only rewrites the run record to cancelled; no terminate, kill, or signal call exists anywhere under runtime/ (grep over runtime/workspace and runtime/execution finds none). runtime/execution/launcher.py:327 spawns the runner with subprocess.Popen without a process group (no start_new_session) and retains no handle. launch_admitted_run (service.py:2543-2743) blocks the calling thread until process.wait() returns, so while a run executes no framed request (run.cancel, workspace.inspect, workspace.apply, table.page) can be processed. Existing scheduling tests simulate 'during a run' by mutating between dispatch and launch (tests/integration/test_scheduling.py test_launch_refuses_a_registration_that_drifted and similar). No backlog task names this capability.\n\nReview repair: Hero step 4 pane move runs in the staged window until T035 lands the non-blocking execution slot\nT019 proves step 4 ('move a pane while execution runs') in the only window today's service offers: launch_admitted_run blocks the owning session for the whole process, owner.lock fences a second harness process, and a restart marks queued work interrupted, so the pane move lands after the run's process completed and staged its outputs but before its publication — same execution, results in flight, publication preserved. The literal concurrent-during-process mutation requires the non-blocking execution slot T035 already owns, and belongs to the T021 race suite.\nEvidence: tests/integration/test_hero_workflow.py step 4 (run launched without --publish, layout-move applied, then publish --run-id); runtime/workspace/service.py ACTIVE_RUN_STATES = (\"queued\", \"running\") plus _mark_restart_interrupted at open; runtime/storage/ownership.py exclusive flock per process.\n\nReview repair: Serve the framed channel and signal the owned process group while a run executes\nT035 already owns this outcome. New evidence from T021: the race suite now proves every during-execution scenario through the Python service handlers by driving the blocking launch_admitted_run from a helper thread, so the interleaving is real at the service level, but the framed serve loop still cannot answer any request while a project process executes and run.cancel still rewrites only the run record. Once the non-blocking execution slot and the process-group cancellation signal land, the race suite's assertions hold unchanged and can additionally assert channel liveness during execution and signal-driven cancellation of a gated run.\nEvidence: tests/integration/test_race_suite.py (ExecutingRun drives launch_admitted_run on a helper thread with a staging-directory start/release gate); runtime/workspace/service.py launch_admitted_run blocks through launch_run/process.wait; runtime/execution/launcher.py spawns subprocess.Popen without a process group and retains no handle; no terminate/kill signal call exists under runtime/.\n\nReview repair: run.cancel never signals the owned process group and the framed channel is blocked during execution\nA cancellation request must stop scheduling and signal the owned process group with escalation when necessary (SPEC.md section 13.5), and the framed service channel must keep answering requests while a project process executes, so during-execution race scenarios (SPEC.md sections 18.3 and 20 step 5) run for real.\nEvidence: runtime/workspace/service.py _run_cancel only rewrites the run record to cancelled; no terminate, kill, or signal call exists anywhere under runtime/ (grep). runtime/execution/launcher.py spawns subprocess.Popen without a process group and retains no handle. launch_admitted_run blocks the owning thread through process.wait, so no framed request is answered while a run executes; tests/integration/test_race_suite.py works around this by driving the blocking launch from a helper thread with a staging-directory gate.",
+      "status": "done",
+      "details": "Acceptance: a cancellation request must stop scheduling and signal the owned process group, with escalation when necessary (SPEC.md section 13.5), and the framed service channel must keep answering requests while a project process executes, so race scenarios that mutate the workspace during execution (SPEC.md sections 18.3 and 20 step 5) can run for real rather than only between dispatch and launch.\nEvidence: runtime/workspace/service.py:3294-3346 _run_cancel only rewrites the run record to cancelled; no terminate, kill, or signal call exists anywhere under runtime/ (grep over runtime/workspace and runtime/execution finds none). runtime/execution/launcher.py:327 spawns the runner with subprocess.Popen without a process group (no start_new_session) and retains no handle. launch_admitted_run (service.py:2543-2743) blocks the calling thread until process.wait() returns, so while a run executes no framed request (run.cancel, workspace.inspect, workspace.apply, table.page) can be processed. Existing scheduling tests simulate 'during a run' by mutating between dispatch and launch (tests/integration/test_scheduling.py test_launch_refuses_a_registration_that_drifted and similar). No backlog task names this capability.\n\nReview repair: Hero step 4 pane move runs in the staged window until T035 lands the non-blocking execution slot\nT019 proves step 4 ('move a pane while execution runs') in the only window today's service offers: launch_admitted_run blocks the owning session for the whole process, owner.lock fences a second harness process, and a restart marks queued work interrupted, so the pane move lands after the run's process completed and staged its outputs but before its publication — same execution, results in flight, publication preserved. The literal concurrent-during-process mutation requires the non-blocking execution slot T035 already owns, and belongs to the T021 race suite.\nEvidence: tests/integration/test_hero_workflow.py step 4 (run launched without --publish, layout-move applied, then publish --run-id); runtime/workspace/service.py ACTIVE_RUN_STATES = (\"queued\", \"running\") plus _mark_restart_interrupted at open; runtime/storage/ownership.py exclusive flock per process.\n\nReview repair: Serve the framed channel and signal the owned process group while a run executes\nT035 already owns this outcome. New evidence from T021: the race suite now proves every during-execution scenario through the Python service handlers by driving the blocking launch_admitted_run from a helper thread, so the interleaving is real at the service level, but the framed serve loop still cannot answer any request while a project process executes and run.cancel still rewrites only the run record. Once the non-blocking execution slot and the process-group cancellation signal land, the race suite's assertions hold unchanged and can additionally assert channel liveness during execution and signal-driven cancellation of a gated run.\nEvidence: tests/integration/test_race_suite.py (ExecutingRun drives launch_admitted_run on a helper thread with a staging-directory start/release gate); runtime/workspace/service.py launch_admitted_run blocks through launch_run/process.wait; runtime/execution/launcher.py spawns subprocess.Popen without a process group and retains no handle; no terminate/kill signal call exists under runtime/.\n\nReview repair: run.cancel never signals the owned process group and the framed channel is blocked during execution\nA cancellation request must stop scheduling and signal the owned process group with escalation when necessary (SPEC.md section 13.5), and the framed service channel must keep answering requests while a project process executes, so during-execution race scenarios (SPEC.md sections 18.3 and 20 step 5) run for real.\nEvidence: runtime/workspace/service.py _run_cancel only rewrites the run record to cancelled; no terminate, kill, or signal call exists anywhere under runtime/ (grep). runtime/execution/launcher.py spawns subprocess.Popen without a process group and retains no handle. launch_admitted_run blocks the owning thread through process.wait, so no framed request is answered while a run executes; tests/integration/test_race_suite.py works around this by driving the blocking launch from a helper thread with a staging-directory gate.\n\nReview repair: Serve the framed channel and signal the owned process group while a run executes\nA cancellation request must stop scheduling and signal the owned process group with escalation, and the framed service channel must keep answering requests while a project process executes. The race suite currently proves every during-execution scenario by driving the blocking launch_admitted_run from a helper thread gated on the staging directory, so the interleavings are real at the service level but the channel itself stays blocked and run.cancel still only rewrites the run record. Not a gate blocker: all eleven section 18.3 scenarios pass as recorded in docs/gates/round-1-linux.md.\nEvidence: tests/integration/test_race_suite.py ExecutingRun helper drives launch_admitted_run on a helper thread; runtime/workspace/service.py _run_cancel rewrites only the run record; runtime/execution/launcher.py spawns subprocess.Popen without a process group and retains no handle; the gate record lists T035 under roundBoundary.openTrackedWork.\n\nReview repair: run.cancel still never signals the owned process and execution still blocks the framed channel\nA cancellation request must stop scheduling and signal the owned process group, with escalation when necessary (SPEC.md section 13.5), and the framed service channel must keep answering requests while a project process executes, so during-execution race scenarios run for real.\nEvidence: _run_with_cancellation (runtime/workspace/service.py:4147) only rewrites the run record to cancelled; its docstring claims it signals the owned process group, but the only terminate and kill calls under runtime/ target the Node storage worker (runtime/storage/worker.py:165, 210, 219; runtime/storage/workspace.py:133, 395). runtime/execution/launcher.py:327 spawns the runner with subprocess.Popen without start_new_session and retains no handle, and launch_admitted_run (service.py:3594) blocks the owning thread through process.wait (launcher.py:351), so no framed request is answered while a run executes. tests/integration/test_race_suite.py still works around this with a helper thread gated on the staging directory.",
+      "files": [
+        "README.md",
+        "runtime/execution/__init__.py",
+        "runtime/execution/launcher.py",
+        "runtime/workspace/service.py",
+        "tests/integration/test_execution_slot.py",
+        "tests/integration/test_race_suite.py",
+        "tests/integration/test_scheduling.py"
+      ],
       "tags": [
         "looper:finding:run-cancellation-signals-owned-process-group"
-      ]
+      ],
+      "updated_at": "2026-10-18T19:04:12Z"
     },
     {
       "id": "T036",
       "title": "README hero step 3 command omits --debounce-wait, so the documented rerun silently never executes",
       "priority": 3,
-      "status": "todo",
-      "details": "A user following the README 'Hero workflow' step 3 verbatim must get the rerun the section describes; either the command must include --debounce-wait (matching the 250 ms binding debounce) or the harness must fire the just-admitted debounce when asked to dispatch.\nEvidence: README.md hero step 3 documents 'set --value 200 --dispatch --launch --publish'. Running exactly that shape this session (set --parameter minimum --value 0 --dispatch --launch --publish, binding debounceMs 250 per fixtures/sales/definitions.json): _drive calls dispatch_due_intents with no wait, the intent is not yet due, scheduling.launch answers {launched: false, reason: 'no queued run'}, and the next harness command's reopen marks the pending intent interrupted (status reason 'service-restart'), so no run executes and the published table stays at the old version. tests/integration/test_hero_workflow.py:373 passes '--debounce-wait 400' for this step, which the README text omits; the flag exists (runtime/harness/cli.py --debounce-wait).",
+      "status": "done",
+      "details": "A user following the README 'Hero workflow' step 3 verbatim must get the rerun the section describes; either the command must include --debounce-wait (matching the 250 ms binding debounce) or the harness must fire the just-admitted debounce when asked to dispatch.\nEvidence: README.md hero step 3 documents 'set --value 200 --dispatch --launch --publish'. Running exactly that shape this session (set --parameter minimum --value 0 --dispatch --launch --publish, binding debounceMs 250 per fixtures/sales/definitions.json): _drive calls dispatch_due_intents with no wait, the intent is not yet due, scheduling.launch answers {launched: false, reason: 'no queued run'}, and the next harness command's reopen marks the pending intent interrupted (status reason 'service-restart'), so no run executes and the published table stays at the old version. tests/integration/test_hero_workflow.py:373 passes '--debounce-wait 400' for this step, which the README text omits; the flag exists (runtime/harness/cli.py --debounce-wait).\n\nReview repair: Verify and close T036: README hero step 3 debounce flag\nThe README hero step 3 command was repaired in the T024 commit to carry --debounce-wait 400, matching the passing hero test, so the documented rerun dispatches in one session. The T036 session should verify the acceptance and complete the task.\nEvidence: README.md hero workflow step 3 now reads 'set --value 200 --dispatch --debounce-wait 400 --launch --publish' with the explanation of the 250 ms binding debounce; tests/contract/test_gate_record.py::test_the_readme_points_at_the_gate_record pins the flag so it cannot silently disappear; tests/integration/test_hero_workflow.py:373 uses the same shape and passed in both gate runs.\n\nReview repair: T036 acceptance is met: README hero step 3 carries --debounce-wait; close the task\nAcceptance per T036: a user following the README hero workflow step 3 verbatim gets the documented rerun; the command includes --debounce-wait matching the 250 ms binding debounce, and the flag cannot silently disappear. The README now documents 'set --value 200 --dispatch --debounce-wait 400 --launch --publish' with the debounce explanation, and tests/contract/test_gate_record.py:269-271 pins the flag against the README. I also ran the exact command shape through the harness this session: it reran the bound action and republished both outputs (2 rows, totals 300/200). No code work remains.\nEvidence: README.md:476 carries '--debounce-wait 400' with the 250 ms debounce explanation; tests/contract/test_gate_record.py asserts '--debounce-wait 400' in the README (passed in the full-suite run); my harness run of 'set --parameter minimum --value 200 --dispatch --debounce-wait 400 --launch --publish' answered ok and advanced both output sources to version 2.\n\nReview repair: T036 acceptance is met: README hero step 3 carries --debounce-wait; only task completion remains\nAcceptance per T036: a user who follows README hero step 3 verbatim gets the documented rerun, and the flag cannot silently disappear.\nEvidence: README.md hero step 3 documents 'set --value 200 --dispatch --debounce-wait 400 --launch --publish' with the 250 ms debounce explanation. tests/contract/test_gate_record.py pins the flag against the README and passed this session. I also ran the documented shape through the harness on a fresh workspace: the bound action reran and both output sources advanced (2 rows, totals 300 and 200). No code work remains; the task is still todo in the accepted backlog.\n\nReview repair: T036 acceptance is met; only task completion remains\nAcceptance per T036: a user who follows README hero step 3 verbatim gets the documented rerun, and the flag cannot silently disappear. No code work remains; complete the task.\nEvidence: README.md:559 documents 'set --value 200 --dispatch --debounce-wait 400 --launch --publish' with the 250 ms debounce explanation. tests/contract/test_gate_record.py:271 pins '--debounce-wait 400' against the README and passed in the clean full-suite run. I ran the documented shape through the harness on a fresh workspace this session: the bound action reran and both output sources advanced to version 2 (2 rows, monthly totals 300 and 200).",
       "tags": [
         "looper:finding:readme-hero-step3-debounce-wait"
+      ],
+      "updated_at": "2026-10-18T19:59:14Z"
+    },
+    {
+      "id": "T037",
+      "title": "Unsafe integers are accepted and silently rounded at every parameter boundary",
+      "priority": 2,
+      "status": "done",
+      "details": "Acceptance: integers outside -(2^53 - 1) through 2^53 - 1 are rejected with a diagnostic at every boundary that carries document or command data — Parameter.default, numeric constraint bounds, parameter.set values, and stored ParameterState — with regression tests for each site (SPEC.md section 4.2: integers MUST stay within the safe range on the wire; reject invalid values rather than coercing; the module docstring in python/melt/schema/document.py already promises unsafe integers are rejected). Today _finite_number converts any finite int to float without a safe-range check, so 9007199254740993 silently becomes 9007199254740992.0 in committed state. The existing invalid fixture covers only byteLength.\nEvidence: Executable probes at 1828244: (1) parse_document accepts an integer parameter with default 2^53+1; the parsed default prints 9007199254740992.0, and a constraint minimum of 2^53+1 is silently rounded (a triggered error message reads 'below the minimum 9007199254740992.0'). (2) Through the framed channel on a real WorkspaceService, workspace.apply with parameter.set value 2^53+1 answers ok: true and workspace.inspect then reports parameterStates.p = {value: 9007199254740992.0, revision: 2}. Root cause: python/melt/schema/document.py:84-100 (_finite_number has no safe-integer check) feeding Parameter.default (document.py:399), ParameterSet.value (python/melt/schema/commands.py:372-375), and ParameterState.value (python/melt/schema/records.py:367); SafeInt exists at document.py:69-82 but is not applied to these fields. fixtures/invalid/unsafe-integer.json exercises only sources byteLength, and tests/contract/test_document.py:185-187 passes for the wrong reason (E_TYPE from constraints.minimum 0, not the safe range). No backlog task or looper:finding tag tracks this.\n\nReview repair: Unsafe integers are still accepted and silently rounded at parameter boundaries\nIntegers outside -(2^53 - 1) through 2^53 - 1 must be rejected with a diagnostic at every boundary that carries document or command data: Parameter.default, numeric constraint bounds, parameter.set values, and stored ParameterState, with regression tests for each site (SPEC.md section 4.2).\nEvidence: Probe at 94c9ce7: parse_document accepts an integer parameter with default 9007199254740993 and reports 9007199254740992.0; parse_command accepts a parameter.set value of 9007199254740993 as 9007199254740992.0. Root cause unchanged: _finite_number (python/melt/schema/document.py:84-100) converts any finite int to float without a safe-range check, and SafeInt (document.py:69-82) is not applied to these fields.",
+      "files": [
+        "python/melt/schema/diagnostics.py",
+        "python/melt/schema/document.py",
+        "tests/contract/test_commands.py",
+        "tests/contract/test_document.py",
+        "tests/contract/test_records.py",
+        "tests/integration/test_workspace_service.py"
+      ],
+      "tags": [
+        "looper:finding:unsafe-integers-rejected-at-every-boundary"
+      ],
+      "updated_at": "2026-10-18T19:25:11Z"
+    },
+    {
+      "id": "T038",
+      "title": "Service transactions erase committed semantic extension state",
+      "priority": 2,
+      "status": "done",
+      "details": "Every service transaction that adopts a new WorkspaceState must carry forward collection_incarnations, output_incarnations, and reference_states unchanged unless the transaction itself intentionally mutates them (RFC 001 sections 2, 3.2, and 8.1; SPEC.md section 14 durability). Regression tests must drive object.select or selection.clear, source.import, and action.register on one melt/semantic-draft-1 workspace holding a collection, a committed selection, and an action with a subscriber, and must assert the maps keep their values through the transaction and a restart, and that workspace.apply and workspace.preview still succeed afterwards.\nEvidence: WorkspaceState (runtime/workspace/state.py:276) defaults the three extension maps to empty dicts. _action_register (runtime/workspace/service.py:2398) builds its committed state without any of them; _source_import (service.py:2244) and the renderer-event path _renderer_event (service.py:2817) omit output_incarnations; _append_transaction (service.py:1561) persists that state in the committed snapshot. Probes through the public service handlers on supplier workspaces that also hold an action: (1) one committed object.select of S-42 changed output_incarnations from {'analyze-sales': 'out-...'} to {}; (2) importing supplier-records version 2 did the same; (3) action.register of an edited script erased collection_incarnations, output_incarnations, and reference_states at once, so the committed S-42 selection disappeared, workspace.inspect showed the collection incarnation as null with an empty referenceStates view, and a reopen found all three maps empty, proving the loss durable. Follow-on breakage verified: _verify_output_subscriptions (service.py:1258) then rejects every mutation with E_CONFLICT 'holds no current output incarnation', and an apply after the drop failed with E_STATE_MIGRATION 'reference state holds no stored record'. A migrated v0.1 workspace hit the same erasure from one routine source.import, and the service-less compile path fails open (runtime/compiler/compiler.py:537), masking the damage from the harness plan command. No existing task or looper:finding tag tracks this.",
+      "files": [
+        "runtime/workspace/service.py",
+        "runtime/workspace/state.py",
+        "tests/integration/test_extension_state_durability.py"
+      ],
+      "tags": [
+        "looper:finding:service-transactions-drop-semantic-extension-maps"
+      ],
+      "updated_at": "2026-10-18T19:29:12Z",
+      "unblock_when": "\"\""
+    },
+    {
+      "id": "T039",
+      "title": "Move T035 out of the round-1 gate record openTrackedWork when integrating",
+      "priority": 3,
+      "status": "done",
+      "details": "The round-1 gate record lists T035 under roundBoundary.openTrackedWork, and tests/contract/test_gate_record.py pins that listing. Completing T035 does not change the record: it is the point-in-time record of the gate close. When T035 integrates, move the item out of openTrackedWork in docs/gates/round-1-linux.md and docs/gates/round-1-linux.json together with the pinning assertion, so the record and the suite stay consistent.\nEvidence: docs/gates/round-1-linux.md lines 114-118 and 186-189 name T035 as remaining work; tests/contract/test_gate_record.py asserts 'T035' in ' '.join(record['roundBoundary']['openTrackedWork']).\n\nReview repair: The round-1 gate record still lists the completed T035 as open tracked work\nT039 owns this outcome: move T035 out of roundBoundary.openTrackedWork in docs/gates/round-1-linux.md and docs/gates/round-1-linux.json together with the pinning assertion in tests/contract/test_gate_record.py, so the record and the suite stay consistent. T036 stays listed until it completes.\nEvidence: T035 completed and integrated at commits 3d69201/974cc63. docs/gates/round-1-linux.json lines 167-171 still list 'backlog task T035: the non-blocking execution slot and process-group cancellation signal...' in openTrackedWork, docs/gates/round-1-linux.md lines 114-118 and 186-189 still describe it as remaining, and tests/contract/test_gate_record.py:261 still asserts both 'T035' and 'T036' appear there.\n\nReview repair: Move completed T035 and T036 out of the round-1 gate record openTrackedWork when integrating\nThe round-1 gate record lists both T035 and T036 under roundBoundary.openTrackedWork (docs/gates/round-1-linux.json:167-170, docs/gates/round-1-linux.md:186-190), and tests/contract/test_gate_record.py:261 pins both listings. T035 and T036 are now complete, so the integration refresh owned by T039 must move both entries out of openTrackedWork in the md and json records together with the pinning assertion, keeping the record and the suite consistent. T039's notes already scope this: \"T036 stays listed until it completes.\"\nEvidence: docs/gates/round-1-linux.json:167-170 still lists 'backlog task T036: the README hero step 3 command must carry --debounce-wait...' in openTrackedWork; tests/contract/test_gate_record.py:261 asserts 'T035' in open_work and 'T036' in open_work and passed this session; T036 completed this session (README.md:559 verified, hero and gate-record suites green, full check.sh run 1042 passed / 2 skipped).",
+      "files": [
+        "docs/gates/round-1-linux.json",
+        "docs/gates/round-1-linux.md",
+        "tests/contract/test_gate_record.py"
+      ],
+      "tags": [
+        "looper:finding:round1-gate-record-open-work-refresh"
+      ],
+      "updated_at": "2026-10-18T20:22:54Z",
+      "unblock_when": "\"\""
+    },
+    {
+      "id": "T040",
+      "title": "Collapse scalar-union branch noise into one diagnostic per field",
+      "priority": 3,
+      "status": "done",
+      "details": "When a scalar union such as JsonScalar fails every branch, pydantic reports one error per branch, so an unsafe integer at /parameters/p/default yields three E_TYPE diagnostics: the decisive safe-range message plus \"Input should be a valid boolean\" and \"Input should be a valid string\". Paths and codes are correct after T037's marker stripping; only the redundant siblings remain. Collapsing them needs a dedicated single-validator scalar type, which would touch the exported JSON Schema union shape and require protocol regeneration, so it was left out of this repair.\nEvidence: CLI probe: melt validate on a document with default 9007199254740993 emits E_TYPE at /parameters/p/default three times (boolean, safe-range, string messages); scripts/generate_protocol.py --check stays clean with the current union.\n\nReview repair: Unsafe integers at one field still emit three sibling E_TYPE diagnostics\nAcceptance per T040: collapse the scalar-union branch noise into one decisive diagnostic per field, without changing the exported JSON Schema union shape or regenerating the protocol.\nEvidence: Reproduced at fe47a61: melt validate on a document with default 9007199254740993 emits E_TYPE at /parameters/p/default three times ('Input should be a valid boolean', the decisive safe-range message, 'Input should be a valid string'). Paths and codes are correct after T037; only the redundant siblings remain.",
+      "files": [
+        "fixtures/invalid/manifest.json",
+        "fixtures/invalid/unsafe-integer-default.json",
+        "python/melt/runner/manifest.py",
+        "python/melt/schema/commands.py",
+        "python/melt/schema/diagnostics.py",
+        "python/melt/schema/document.py",
+        "python/melt/schema/records.py",
+        "python/melt/schema/semantic.py",
+        "runtime/compiler/catalog.py",
+        "runtime/compiler/compiler.py",
+        "runtime/workspace/service.py",
+        "tests/contract/test_commands.py",
+        "tests/contract/test_document.py",
+        "tests/contract/test_records.py",
+        "tests/contract/test_run_manifest.py",
+        "tests/integration/test_workspace_service.py"
+      ],
+      "tags": [
+        "looper:finding:scalar-union-branch-noise"
+      ],
+      "updated_at": "2026-10-18T20:55:47Z",
+      "unblock_when": "\"\""
+    },
+    {
+      "id": "T041",
+      "title": "The cancellation escalation test races on the child-pid marker, so the merge gate can fail red spuriously",
+      "priority": 3,
+      "status": "done",
+      "details": "Acceptance: test_cancellation_escalates_and_reaches_the_whole_group must not depend on scheduling luck. The test must wait for the child-pid marker the way it waits for the started marker (wait_for_marker exists in the same file), so make check stays green under concurrent machine load.\nEvidence: First full-suite run at fe47a61 failed: 'FileNotFoundError: .../staging/run-RWEnUri0NsEvJEOmyjoA3Kds/child-pid' at tests/integration/test_execution_slot.py:402, while my review probes ran in parallel. Rerun of the full suite passed (1042 passed, exit 0) and the single test passed 5/5 in isolation and under CPU load. Mechanism: launch_parked (test_execution_slot.py:223-233) waits only for STARTED_NAME; pid_gated_script writes the started marker, then its own pid, then spawns a subprocess and only then writes child-pid (test_execution_slot.py:89-104). scripts/check.sh is the documented merge gate, so a false red blocks merges. No backlog task tracks this.\n\nReview repair: Full-suite run hit the T041 child-pid marker race once under concurrent load\nThe refresh run of ./scripts/check.sh failed once at tests/integration/test_execution_slot.py::test_cancellation_escalates_and_reaches_the_whole_group with FileNotFoundError on \u003cstaging\u003e/run-*/child-pid, while other load ran on the machine. The immediate full rerun was green (1042 passed, 2 skipped) and the single test passed three consecutive times in isolation (~1.5 s each). Mechanism as T041 records: launch_parked waits only for the started marker while pid_gated_script writes child-pid after spawning its subprocess. Fix per T041: wait for the child-pid marker through the existing wait_for_marker helper in the same file, so the merge gate cannot fail red spuriously under concurrent load.\nEvidence: First run: 'FAILED tests/integration/test_execution_slot.py::test_cancellation_escalates_and_reaches_the_whole_group ... 1 failed, 1041 passed, 2 skipped in 231.59s'; rerun exit 0 with '1042 passed, 2 skipped in 207.53s'; isolated runs 3/3 passed. Diff of this session touches only docs/gates/round-1-linux.{md,json} and tests/contract/test_gate_record.py, so the failure is unrelated to the gate-record refresh.",
+      "files": [
+        "tests/integration/test_execution_slot.py"
+      ],
+      "tags": [
+        "looper:finding:execution-slot-child-pid-marker-race"
+      ],
+      "updated_at": "2026-10-18T20:45:47Z"
+    },
+    {
+      "id": "T042",
+      "title": "Collapse scalar-union branch noise in page-response table cells",
+      "priority": 3,
+      "status": "done",
+      "details": "TableCell = Union[StrictBool, FiniteNumber, StrictStr, None] sits at an integer-indexed position inside PageResponse.rows, so its pydantic branch markers are neither stripped by _strip_union_markers nor collapsed by the T040 grouping, both of which require a named holder field (default, value, minimum, maximum). One invalid cell therefore still yields three sibling E_TYPE diagnostics with raw markers in the paths. Reachable only when parsing a hand-built or corrupted pageResponse record; the trusted table reader emits typed cells, so no live service path is affected. Extend the marker stripping and collapse grouping to scalar-union positions under an integer list index, keeping the exported JSON Schema union shape unchanged.\nEvidence: Probe at commit 28ab813: parse_record on a pageResponse with rows [[\"x\", {\"bad\": 1}]] emits E_TYPE /rows/0/1/bool -- Input should be a valid boolean; E_TYPE /rows/0/1/function-before[_finite_number(), float] -- expected a JSON number, no coercion; E_TYPE /rows/0/1/str -- Input should be a valid string.\n\nReview repair: T042 remains open: a scalar union at an integer-indexed position in PageResponse.rows still emits three sibling E_TYPE diagnostics with raw branch markers\nAcceptance: extend the marker stripping and the T040 collapse grouping to scalar-union positions under an integer list index, so parsing a pageResponse record with one invalid table cell yields exactly one decisive E_TYPE diagnostic with a clean JSON Pointer path (for example /rows/0/1) and no raw pydantic branch markers, while the exported JSON Schema union shape stays unchanged and the protocol regeneration gate stays green. Add a regression test that parses a hand-built pageResponse with an invalid cell. No live service path is affected today: the trusted table reader emits typed cells, and the noise is reachable only through a hand-built or corrupted pageResponse record.\nEvidence: Probe at 888abfd: parse_record on a pageResponse-shaped mapping with rows [[\"x\", {\"bad\": 1}]] raises MeltRecordError carrying E_TYPE at /rows/0/1/bool ('Input should be a valid boolean'), E_TYPE at /rows/0/1/function-before[_finite_number(), float] ('expected a JSON number, no coercion'), and E_TYPE at /rows/0/1/str ('Input should be a valid string'), matching the evidence recorded on task T042 at 28ab813. The T040 collapse works for named holder fields: a document default of 9007199254740993 and a ParameterState.value of {\"bad\": 1} each yield exactly one decisive diagnostic, so the gap is specific to integer-indexed positions. Task T042 is status todo in the accepted backlog (key table-cell-union-branch-noise, priority 3, no dependencies).",
+      "files": [
+        "python/melt/schema/diagnostics.py",
+        "tests/contract/test_records.py"
+      ],
+      "tags": [
+        "looper:finding:table-cell-union-branch-noise"
+      ],
+      "updated_at": "2026-10-18T21:23:31Z",
+      "unblock_when": "\"\""
+    },
+    {
+      "id": "T043",
+      "title": "Collapse scalar-union branch noise at run-manifest parameter map keys",
+      "priority": 3,
+      "status": "done",
+      "details": "The run manifest field parameters: dict[EntityId, CapturedValue] (python/melt/runner/manifest.py:102) holds a scalar union under a string map key, a position class the T040/T042 stripping and collapse still do not cover: the holder cannot be read from the key, because map keys are arbitrary entity IDs. One invalid captured value therefore yields three sibling E_TYPE diagnostics with raw pydantic branch markers in the paths. Reachable only when parsing a hand-built or corrupted manifest; the runner writes typed values, so no live service path is affected. The repair mirrors T042: identify the holder positionally by the enclosing map field name (for example a scalar-union holder-map set containing \"parameters\"), keep the exported protocol shape unchanged, and add a regression test with a neutral entity-ID key.\nEvidence: Probe in this worktree after the T042 fix: parse_manifest on a manifest with parameters {\"threshold\": {\"bad\": 1}} raises MeltManifestError carrying E_TYPE at /parameters/threshold/bool ('Input should be a valid boolean'), E_TYPE at /parameters/threshold/function-before[_finite_number(), float] ('expected a JSON number, no coercion'), and E_TYPE at /parameters/threshold/str ('Input should be a valid string'). A key that coincides with a holder-field name (\"minimum\") collapses by accident, which confirms the holder-name dependence. Not tracked in the accepted backlog; T040 and T042 cover named fields and integer list indices only.",
+      "files": [
+        "python/melt/schema/diagnostics.py",
+        "tests/contract/test_run_manifest.py"
+      ],
+      "tags": [
+        "looper:finding:scalar-union-map-key-branch-noise"
+      ],
+      "updated_at": "2026-10-18T21:38:23Z",
+      "unblock_when": "\"\""
+    },
+    {
+      "id": "T044",
+      "title": "Reject obsolete runs after parameter identity recreation",
+      "priority": 1,
+      "status": "done",
+      "details": "Linux correctness repair; no macOS host, model trial, or publication needed. Suggested tag looper:finding:parameter-incarnation-publication. Acceptance: a recreated parameter cannot satisfy an older invocation's captured identity even when its name, value, and numeric revision match; the failing regression (admit and execute minimum=0 at state revision 1, then in one workspace.apply delete and recreate parameter minimum with default 300 before publication) rejects the publish in both melt/v0.1 and melt/semantic-draft-1. Cause confirmed: mutations.py starts the recreated parameter at revision 1 (runtime/workspace/mutations.py:449-469) while obsolescence_error compares only stored versus captured revisions (runtime/workspace/publication.py:491); the per-parameter incarnation counters already persisted by T009 (Snapshot.incarnations, python/melt/schema/records.py:445) are unused at admission, launch, and publication. Implementation: carry parameter identity through admission, pending intents, and persisted run snapshots, and check it at launch and publication; alternatively use a compatible identity-preserving revision scheme; do not compare values alone. Preserve the identity data across restart and define safe handling of older saved records that lack it, without silently rerunning uncertain effects. Verify the old run cannot become current, keep valid outputs as historical where the publication contract permits, and keep previous visible results. Cover recreation with the same value, with different values, lost acknowledgements, and restart between recreation and publication; ordinary unchanged runs must still publish. Receipts and atomic publication behavior remain unchanged. Run the scheduling, publication, race, and recovery suites, then scripts/check.sh; refresh generated schemas and models if records change.",
+      "depends_on": [
+        "T009",
+        "T016",
+        "T017"
+      ],
+      "files": [
+        "README.md",
+        "protocol/schema/record.schema.json",
+        "python/melt/schema/records.py",
+        "runtime/workspace/__init__.py",
+        "runtime/workspace/inspection.py",
+        "runtime/workspace/publication.py",
+        "runtime/workspace/scheduling.py",
+        "runtime/workspace/service.py",
+        "tests/integration/test_hero_workflow.py",
+        "tests/integration/test_parameter_identity.py",
+        "tests/integration/test_permissions.py",
+        "tests/integration/test_publication.py"
+      ],
+      "updated_at": "2026-10-18T22:35:48Z",
+      "unblock_when": "\"\""
+    },
+    {
+      "id": "T045",
+      "title": "Keep output pointers bound to their owning action identity",
+      "priority": 1,
+      "status": "done",
+      "details": "Linux correctness repair for the extension; no macOS host needed. Suggested tag looper:finding:output-group-owner-pointer. Acceptance: a following subscriber never receives another action identity's run as its current result; an action with no publication has no current pointer; inspection and subscriber resolution agree before and after restart; ownership changes preserve historical artifacts and do not start Python implicitly. Failing regression: in a melt/semantic-draft-1 workspace, publish action analyze-sales in group sales-results, then in one valid revision-checked transaction move analyze-sales to moved-results and create other-action using group sales-results with matching output names and kinds; other-action has never run, yet inspection today reports analyze-sales' run and source versions as other-action's current outputs, and adding a following subscriber on other-action's newly issued output incarnation displays the previous owner's result as current. Cause confirmed: runtime/workspace/outputs.py resolves current runs by outputGroup alone in subscriber_view and output_views (outputs.py:78 and outputs.py:203); action ownership and output incarnation do not participate, and current-run invalidation in service.py handles deletion and recreation but not group ownership transfer. Implementation: bind current pointer resolution to the owning action and stable output identity, not only the reusable group name; audit publication, source mapping, group reassignment, and action recreation for the same identity leak; preserve the original run and sources as history and prevent a new owner from inheriting them as current; define and test the old owner's display status. Cover action deletion and recreation, group swaps, changed output contracts, and restart; valid subscribers to the unchanged owner must still resolve without execution. Preserve atomic multi-output publication and melt/v0.1 behavior. Run the output-independence, migration, conflict, and recovery regressions, then scripts/check.sh.",
+      "depends_on": [
+        "T027"
+      ],
+      "files": [
+        "README.md",
+        "protocol/schema/record.schema.json",
+        "python/melt/schema/records.py",
+        "runtime/workspace/outputs.py",
+        "runtime/workspace/publication.py",
+        "runtime/workspace/scheduling.py",
+        "runtime/workspace/service.py",
+        "tests/integration/test_output_owner_identity.py"
+      ],
+      "updated_at": "2026-10-18T23:09:49Z"
+    },
+    {
+      "id": "T046",
+      "title": "Keep workspace inspection available when an observer artifact is missing",
+      "priority": 1,
+      "status": "done",
+      "details": "Linux correctness repair for the extension; no macOS host needed. Suggested tag looper:finding:record-observer-missing-artifact. Acceptance: workspace.inspect returns a valid response with the affected observer marked unavailable; no FileNotFoundError or equivalent read error escapes the transport, including the framed request path; unrelated content remains inspectable; restoring the same content-addressed artifact bytes lets the observer resolve without changing the saved selection or running Python. Failing regression: build the supplier extension fixture with graph and record observers, select S-42, remove only its table artifact inside the isolated fixture, then call workspace.inspect; today it raises FileNotFoundError. Cause confirmed: runtime/workspace/observers.py record_view calls read_artifact directly while building read_table_page arguments (observers.py:95) with no error handling, so the read failure escapes observer_views and service._workspace_inspect (runtime/workspace/service.py:1932 wraps nothing); the semantic reference resolver already reports unavailable, but the record observer crashes the whole request. Implementation: convert expected artifact read and decode failures into an unavailable observer with a recoverable diagnostic; do not swallow unrelated programming errors; preserve the selected reference, its revision, the saved document, and other readable observers; inspection must still expose normal missing-artifact diagnostics and the recovery report. Cover missing files, unreadable or corrupt bytes where supported, restart with missing artifacts, and restoration of the same content-addressed artifact; one bad observer must not prevent inspecting unrelated sources or state. Run the observer, semantic interaction, service framing, and recovery tests, then scripts/check.sh.",
+      "depends_on": [
+        "T026",
+        "T029"
+      ],
+      "files": [
+        "README.md",
+        "runtime/workspace/observers.py",
+        "tests/integration/test_observer_availability.py"
+      ],
+      "updated_at": "2026-10-18T23:28:33Z",
+      "unblock_when": "\"\""
+    },
+    {
+      "id": "T047",
+      "title": "Merge gate fails at the reviewed revision: invalid table.page filter values crash the trusted reader and the framed channel",
+      "priority": 1,
+      "status": "todo",
+      "details": "Acceptance: every semantically invalid filter value must answer exactly one E_TYPE diagnostic at /payload/filters/\u003ci\u003e/value — impossible calendar dates for date columns, impossible timestamps for timestamp columns, numbers outside the int64 range, and any other value whose typed conversion fails. The diagnostic must be produced by read_table_page, by service dispatch, and by process_frame; no Python exception may escape the framed channel while answering a decodable request. The three tests tests/integration/test_table_reader.py::test_invalid_filter_values_return_diagnostics must pass and ./scripts/check.sh must exit 0 (SPEC.md sections 12.7 and 11.3; backlog T020's rule that the suite blocks merges). Linux correctness repair; no macOS host, model trial, or publication needed.\nEvidence: ./scripts/check.sh at 4d1fcf1 exited 1: '3 failed, 1088 passed, 2 skipped in 234.55s'; the failures are exactly test_invalid_filter_values_return_diagnostics[day-2026-02-30], [moment-2026-13-01T00:00:00Z], [quantity-1e+30], and they fail identically when the module runs alone (3 failed, 20 passed), so the failure is deterministic. git diff 0da24d4..4d1fcf1 shows the reviewed commit added this test and the reader changes together, so the commit landed without a green check run. Root cause: _filter_type_error validates only lexical patterns (runtime/workspace/reader.py:214-230), so '2026-02-30', '2026-13-01T00:00:00Z', and 1e30 pass validation; the later typed conversion raises — date.fromisoformat (reader.py:297) ValueError, datetime.fromisoformat through _parse_timestamp (reader.py:309) ValueError, and int(1e30) fed to pa.scalar (reader.py:293, 366) OverflowError — while read_table_page catches only MeltReaderError around _apply_filters (reader.py:458). Service-level probe through WorkspaceService.process_frame on a real workspace with a date32 and an int64 column: filter '2026-02-30' escapes as ValueError, 1e30 escapes as OverflowError, and only the lexically invalid 'not-a-date' answers the proper E_TYPE diagnostic; service.py:4892 calls read_table_page without a guard and handle_request, process_frame, and serve (service.py:5189-5260) have no catch-all, so the framed channel dies on such a request. All other check.sh steps passed at the same run: the regeneration drift gate was clean and canonical hashes agreed across the JavaScript and Python implementations and the generated TypeScript models (8 of 8 recorded document hashes).",
+      "tags": [
+        "looper:finding:table-page-filter-value-diagnostics"
       ]
     }
   ]

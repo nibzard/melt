@@ -1,0 +1,11 @@
+{
+  "parameters": {
+    "minimum": {
+      "type": "number",
+      "nullable": false,
+      "constraints": {"minimum": 0, "maximum": 1000000000}
+    }
+  },
+  "inputs": {"sales": "table"},
+  "outputs": {"filtered": "table", "monthly": "image"}
+}

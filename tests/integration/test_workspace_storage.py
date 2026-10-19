@@ -680,3 +680,80 @@ def test_json_record_data_is_validated_before_commit(store: WorkspaceStore) -> N
         store.append_records([("melt.commandReceipt", {"value": object()})])
     with pytest.raises(ValueError, match="at least one record"):
         store.append_records([])
+
+
+def test_artifact_reads_reject_symbolic_links(tmp_path: Path) -> None:
+    store = ArtifactStore(tmp_path / "artifacts")
+    artifact = store.write(b"approved bytes")
+    target = store.path_for(artifact)
+    target.unlink()
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(b"unapproved bytes")
+    target.symlink_to(outside)
+    with pytest.raises(OSError):
+        store.read(artifact)
+    assert store.verify(artifact) is False
+
+
+def test_artifact_reads_reject_named_pipes(tmp_path: Path) -> None:
+    store = ArtifactStore(tmp_path / "artifacts")
+    artifact = store.write(b"approved bytes")
+    target = store.path_for(artifact)
+    target.unlink()
+    os.mkfifo(target)
+    with pytest.raises(OSError):
+        store.read(artifact)
+
+
+@requires_storage_worker
+@pytest.mark.parametrize('order', ['ascending', 'descending'])
+def test_scan_pages_fit_frames_without_losing_large_records(tmp_path, order):
+    adapter = PlatformAdapter.with_root(tmp_path)
+    with WorkspaceStore.open(adapter, 'large-history') as store:
+        data = '😀' * 50_000
+        expected = []
+        for index in range(8):
+            sequence, records = store.append_records([
+                ('melt.commandReceipt', {'requestId': str(index), 'data': data})
+            ])
+            expected.extend(records)
+        found = []
+        cursor = None
+        while True:
+            response = store._worker.call('scan', {'limit': 200, 'cursor': cursor, 'order': order})
+            found.extend(response['entries'])
+            cursor = response['next']
+            if cursor is None:
+                break
+        matching = [item for item in found if item['kind'] == 'melt.commandReceipt']
+        ordered = expected if order == 'ascending' else list(reversed(expected))
+        assert [item['id'] for item in matching] == [record.id for record in ordered]
+        assert all(item['data']['data'] == data for item in matching)
+        assert [item['commitSequence'] for item in matching] == [record.commit_sequence for record in ordered]
+    with WorkspaceStore.open(adapter, 'large-history') as reopened:
+        assert reopened.commit_sequence == sequence
+        assert [r.id for r in reopened.records_of_kind('melt.commandReceipt')] == [r.id for r in expected]
+
+
+@requires_storage_worker
+def test_recovery_reuses_open_scan_but_invalidates_after_append(tmp_path, monkeypatch):
+    adapter = PlatformAdapter.with_root(tmp_path)
+    with WorkspaceStore.open(adapter, 'opening-records') as store:
+        calls = []
+        scan = store._worker.scan_entries
+
+        def observed(**kwargs):
+            calls.append(kwargs)
+            return scan(**kwargs)
+
+        monkeypatch.setattr(store._worker, 'scan_entries', observed)
+        initial = store.take_opening_records()
+        assert len(initial) == 1 and not calls
+        _, records = store.append_records([('melt.commandReceipt', {'requestId': 'new'})])
+        assert store.take_opening_records()[-1].id == records[0].id
+        assert calls
+    with WorkspaceStore.open(adapter, 'opening-records') as reopened:
+        # Append before consuming the startup scan; the old snapshot
+        # must not hide this committed record from a later consumer.
+        _, records = reopened.append_records([('melt.commandReceipt', {'requestId': 'later'})])
+        assert reopened.take_opening_records()[-1].id == records[0].id

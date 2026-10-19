@@ -246,6 +246,7 @@ def test_publication_makes_both_outputs_current_together(
         "parameter": "minimum",
         "value": 200,
         "stateRevision": 2,
+        "stateIncarnation": 1,
     }
     assert status["latestRun"]["disposition"] == "current"
 

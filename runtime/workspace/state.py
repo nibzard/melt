@@ -9,9 +9,13 @@ without executing project code (SPEC.md section 14).
 
 Record paths address one durable record each:
 
-- ``<collection>/<id>`` for the four mutable entity collections,
+- ``<collection>/<id>`` for the four mutable entity collections, and
+  ``collections/<id>`` for the semantic collection entities of
+  ``melt/semantic-draft-1``,
+- ``semantic-state/<id>`` for one reference state definition entity,
 - ``layout`` for the layout tree,
-- ``state/<parameter-id>`` for stored parameter values.
+- ``state/<parameter-id>`` for stored parameter values,
+- ``refstate/<state-id>`` for stored reference state values.
 
 The ``expected`` map of a command envelope uses exactly these paths.
 Zero means the record is expected to be absent.
@@ -21,11 +25,26 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from melt.schema.semantic import SemanticReference
+
 LAYOUT_PATH = "layout"
 """The record path of the layout tree."""
 
 ENTITY_COLLECTIONS = ("parameters", "actions", "projections", "bindings")
 """The collections a mutation operation may address (SPEC.md 12.2)."""
+
+SEMANTIC_ENTITY_COLLECTIONS = ("collections", "state")
+"""The entity collections `melt/semantic-draft-1` adds (RFC 001 3, 4).
+
+A `melt/v0.1` document defines neither map, so a mutation that
+addresses one of them is refused for that language instead of
+silently writing an unknown collection."""
+
+REFERENCE_STATE_PATH_PREFIX = "refstate"
+"""The record path prefix of one stored reference state value."""
+
+STATE_ENTITY_PATH_PREFIX = "semantic-state"
+"""The record path prefix of one reference state definition entity."""
 
 SNAPSHOT_KIND = "melt.workspaceSnapshot"
 """The committed record that holds the workspace snapshot of a commit."""
@@ -75,8 +94,17 @@ a mutation operation, or an ``expected`` map (SPEC.md sections 12.6 and
 
 
 def entity_path(collection: str, entity_id: str) -> str:
-    """Return the record path of one entity."""
+    """Return the record path of one entity.
 
+    The RFC 001 `state` entity collection addresses its records under
+    ``semantic-state/<id>``: the v0.1 wire contract already reserves
+    ``state/<parameter-id>`` for stored parameter values (SPEC.md
+    section 12.2), and one record path must address exactly one
+    durable record.
+    """
+
+    if collection == "state":
+        return f"{STATE_ENTITY_PATH_PREFIX}/{entity_id}"
     return f"{collection}/{entity_id}"
 
 
@@ -95,6 +123,18 @@ def state_path(parameter_id: str) -> str:
     """Return the record path of one stored parameter value."""
 
     return f"state/{parameter_id}"
+
+
+def reference_state_path(state_id: str) -> str:
+    """Return the record path of one stored reference state value.
+
+    Reference state writes are revision-checked exactly as parameter
+    writes are: an ``expected`` entry for this path carries the stored
+    revision, and zero means expected absence (RFC 001 sections 4 and
+    5.3 reuse the v0.1 receipt and revision machinery).
+    """
+
+    return f"{REFERENCE_STATE_PATH_PREFIX}/{state_id}"
 
 
 def registration_path(registration_id: str) -> str:
@@ -193,6 +233,20 @@ class ParameterStateValue:
     revision: int
 
 
+@dataclass(frozen=True)
+class ReferenceStateValue:
+    """The stored value and revision of one reference state entry
+    (RFC 001 section 4).
+
+    The value is one semantic reference or null. A reference a newer
+    source version leaves unresolved stays stored; resolution is
+    reported, never rewritten (RFC 001 section 3.3).
+    """
+
+    value: "SemanticReference | None"
+    revision: int
+
+
 def values_equal(first, second) -> bool:
     """Report whether two stored parameter values are equal.
 
@@ -210,6 +264,14 @@ def values_equal(first, second) -> bool:
     return first == second
 
 
+def reference_values_equal(first, second) -> bool:
+    """Report whether two stored reference values are equal."""
+
+    if first is None or second is None:
+        return first is None and second is None
+    return first == second
+
+
 @dataclass
 class WorkspaceState:
     """The committed state one service transaction reads and writes."""
@@ -223,6 +285,11 @@ class WorkspaceState:
         default_factory=dict
     )
     incarnations: dict[str, int] = field(default_factory=dict)
+    collection_incarnations: dict[str, str] = field(default_factory=dict)
+    output_incarnations: dict[str, str] = field(default_factory=dict)
+    reference_states: dict[str, ReferenceStateValue] = field(
+        default_factory=dict
+    )
 
     @property
     def present(self) -> bool:
@@ -230,11 +297,22 @@ class WorkspaceState:
 
         return self.document is not None
 
+    @property
+    def language(self) -> "str | None":
+        """The language identifier of the committed document."""
+
+        return None if self.document is None else self.document.get("language")
+
     def current_revision(self, path: str) -> int:
         """Return the revision of one record path; zero when absent."""
 
         if path.startswith("state/"):
             state = self.parameter_states.get(path[len("state/") :])
+            return 0 if state is None else state.revision
+        if path.startswith(f"{REFERENCE_STATE_PATH_PREFIX}/"):
+            state = self.reference_states.get(
+                path[len(REFERENCE_STATE_PATH_PREFIX) + 1 :]
+            )
             return 0 if state is None else state.revision
         return self.entity_revisions.get(path, 0)
 
@@ -250,20 +328,43 @@ class WorkspaceState:
         observed[LAYOUT_PATH] = self.entity_revisions.get(LAYOUT_PATH, 0)
         for parameter_id, state in self.parameter_states.items():
             observed[state_path(parameter_id)] = state.revision
+        for state_id, state in self.reference_states.items():
+            observed[reference_state_path(state_id)] = state.revision
         return observed
+
+    def advanced(self, *, commit_sequence: int, **overrides) -> "WorkspaceState":
+        """Return the state one adopting transaction commits.
+
+        Every field carries forward from the committed state unless the
+        transaction names an explicit override. A service transaction
+        must not drop the semantic extension maps by omission: the
+        collection incarnations, the output incarnations, and the
+        reference states survive unrelated transactions unchanged
+        (RFC 001 sections 2, 3.2, and 8.1; SPEC.md section 14).
+        """
+
+        carried = {
+            "workspace_id": self.workspace_id,
+            "epoch": self.epoch,
+            "commit_sequence": commit_sequence,
+            "document": self.document,
+            "entity_revisions": dict(self.entity_revisions),
+            "parameter_states": dict(self.parameter_states),
+            "incarnations": dict(self.incarnations),
+            "collection_incarnations": dict(self.collection_incarnations),
+            "output_incarnations": dict(self.output_incarnations),
+            "reference_states": dict(self.reference_states),
+        }
+        for name, value in overrides.items():
+            if name not in carried:
+                raise TypeError(f"WorkspaceState carries no field {name!r}")
+            carried[name] = value
+        return WorkspaceState(**carried)
 
     def with_commit(self, commit_sequence: int) -> "WorkspaceState":
         """Return the state advanced to one committed sequence."""
 
-        return WorkspaceState(
-            workspace_id=self.workspace_id,
-            epoch=self.epoch,
-            commit_sequence=commit_sequence,
-            document=self.document,
-            entity_revisions=dict(self.entity_revisions),
-            parameter_states=dict(self.parameter_states),
-            incarnations=dict(self.incarnations),
-        )
+        return self.advanced(commit_sequence=commit_sequence)
 
 
 __all__ = [
@@ -281,18 +382,24 @@ __all__ = [
     "PUBLICATION_KIND",
     "ParameterStateValue",
     "RECEIPT_KIND",
+    "REFERENCE_STATE_PATH_PREFIX",
     "REGISTRATION_COLLECTION",
     "REGISTRATION_KIND",
     "RUN_KIND",
+    "SEMANTIC_ENTITY_COLLECTIONS",
     "SNAPSHOT_KIND",
     "SOURCE_COLLECTION",
+    "STATE_ENTITY_PATH_PREFIX",
     "WorkspaceState",
+    "ReferenceStateValue",
     "entity_path",
     "intent_path",
     "output_group_path",
     "permission_path",
     "pointer_key",
     "publication_path",
+    "reference_state_path",
+    "reference_values_equal",
     "registration_path",
     "run_path",
     "source_path",

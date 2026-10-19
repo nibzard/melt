@@ -22,6 +22,13 @@ The harness keeps three boundaries (SPEC.md sections 13.1, 13.2, 15.1):
   directory, and its stdout and stderr land in bounded log files under
   ``logs/<run-id>/``. Project stdout is never a control channel
   (SPEC.md section 12.1).
+- Owned process group. The child starts as the leader of its own
+  session, so its process group covers exactly the processes the run
+  spawned. Cancellation signals that whole group and escalates from
+  ``SIGTERM`` to ``SIGKILL`` when the grace period expires (SPEC.md
+  section 13.5), and the handle the spawner keeps
+  (:class:`OwnedRunProcess`) answers both ``wait`` and ``terminate``
+  from different threads.
 
 Scheduling, admission, and publication belong to the workspace service
 (backlog tasks T016 and T017). This module only proves the launch loop
@@ -32,6 +39,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -65,6 +73,16 @@ SCRIPT_NAME = "script.py"
 
 STDOUT_LOG_NAME = "stdout.log"
 STDERR_LOG_NAME = "stderr.log"
+
+CANCEL_GRACE_SECONDS = 5.0
+"""The grace a cancellation gives ``SIGTERM`` before it escalates.
+
+The service owns this policy (SPEC.md section 15.2): a run that answers
+the terminal signal within the grace stops politely; one that ignores
+it receives ``SIGKILL`` on the whole process group.
+"""
+
+_SIGNAL_NAMES = {signal.SIGTERM: "SIGTERM", signal.SIGKILL: "SIGKILL"}
 
 _COPY_CHUNK_BYTES = 64 * 1024
 
@@ -272,18 +290,173 @@ def _truncation_note(dropped: int, limit: int) -> bytes:
     return message.encode("utf-8")
 
 
-def launch_run(
+class OwnedRunProcess:
+    """One live runner process the service owns (SPEC.md section 13.5).
+
+    The child runs as the leader of its own session, so its process
+    group covers every process the run spawned. `terminate` signals the
+    whole group — ``SIGTERM`` first, then ``SIGKILL`` once the grace
+    period expires — and `wait` builds the same `RunLaunchResult`
+    :func:`launch_run` has always built. One thread calls `wait` while
+    another may call `terminate`, because `subprocess.Popen.wait`
+    serializes its reaping and every caller observes the one exit code.
+    """
+
+    def __init__(
+        self,
+        process: subprocess.Popen,
+        *,
+        manifest: RunManifest,
+        manifest_path: Path,
+        stdout_path: Path,
+        stderr_path: Path,
+        stdout_log,
+        stderr_log,
+        limit: int,
+        threads: "list[threading.Thread]",
+        counts: "dict[str, tuple[int, int]]",
+    ):
+        self._process = process
+        self.manifest = manifest
+        self.manifest_path = manifest_path
+        self.stdout_path = stdout_path
+        self.stderr_path = stderr_path
+        self._stdout_log = stdout_log
+        self._stderr_log = stderr_log
+        self._limit = limit
+        self._threads = threads
+        self._counts = counts
+        self._finalize = threading.Lock()
+        self._result: "RunLaunchResult | None" = None
+
+    @property
+    def pid(self) -> int:
+        """The process identifier of the run's own process."""
+
+        return self._process.pid
+
+    @property
+    def alive(self) -> bool:
+        """True while the owned process has not exited."""
+
+        return self._process.poll() is None
+
+    def wait(self) -> RunLaunchResult:
+        """Wait for the process, finalize the logs, and report."""
+
+        exit_code = self._process.wait()
+        with self._finalize:
+            if self._result is not None:
+                return self._result
+            for thread in self._threads:
+                thread.join()
+            for name, target in (
+                ("stdout", self._stdout_log),
+                ("stderr", self._stderr_log),
+            ):
+                dropped = self._counts[name][1]
+                if dropped:
+                    target.write(_truncation_note(dropped, self._limit))
+            self._stdout_log.close()
+            self._stderr_log.close()
+            stdout_bytes, stdout_dropped = self._counts["stdout"]
+            stderr_bytes, stderr_dropped = self._counts["stderr"]
+            self._result = RunLaunchResult(
+                manifest=self.manifest,
+                manifest_path=self.manifest_path,
+                exit_code=exit_code,
+                staged=read_staged_index(Path(self.manifest.stagingDirectory)),
+                stdout_path=self.stdout_path,
+                stderr_path=self.stderr_path,
+                stdout_bytes=stdout_bytes,
+                stderr_bytes=stderr_bytes,
+                stdout_dropped=stdout_dropped,
+                stderr_dropped=stderr_dropped,
+            )
+            return self._result
+
+    def terminate(
+        self, *, grace_seconds: float = CANCEL_GRACE_SECONDS
+    ) -> dict:
+        """Signal the owned process group, escalating when necessary.
+
+        Returns the report a cancellation answers honestly: the signals
+        delivered, the outcome — ``terminated`` when the group stopped
+        inside the grace, ``escalated`` when ``SIGKILL`` had to follow,
+        ``gone`` when the process already exited — the signalled group
+        identifier, and the exit code the wait observed.
+        """
+
+        report: dict = {"signals": [], "result": "gone"}
+        process = self._process
+        if process.poll() is not None:
+            report["exitCode"] = process.returncode
+            return report
+        try:
+            group = os.getpgid(process.pid)
+        except ProcessLookupError:
+            report["exitCode"] = process.poll()
+            return report
+        report["processGroupId"] = group
+        if not _signal_group(group, signal.SIGTERM, report):
+            report["exitCode"] = process.poll()
+            return report
+        try:
+            process.wait(timeout=max(float(grace_seconds), 0.0))
+            report["result"] = "terminated"
+        except subprocess.TimeoutExpired:
+            if _signal_group(group, signal.SIGKILL, report):
+                report["result"] = "escalated"
+            else:
+                # The group left between the grace expiring and the
+                # escalation; the terminal signal did stop it.
+                report["result"] = "terminated"
+            process.wait()
+        report["exitCode"] = process.returncode
+        return report
+
+    def kill(self) -> None:
+        """Deliver ``SIGKILL`` to the owned process group, no grace."""
+
+        process = self._process
+        if process.poll() is not None:
+            return
+        try:
+            group = os.getpgid(process.pid)
+        except ProcessLookupError:
+            return
+        try:
+            os.killpg(group, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        process.wait()
+
+
+def _signal_group(group: int, number: int, report: dict) -> bool:
+    """Deliver one signal to a process group and record the delivery."""
+
+    try:
+        os.killpg(group, number)
+    except ProcessLookupError:
+        return False
+    report["signals"].append(_SIGNAL_NAMES.get(number, str(number)))
+    return True
+
+
+def spawn_run(
     manifest: "Path | RunManifest",
     *,
     log_directory: Path,
     log_limit: "int | None" = None,
-) -> RunLaunchResult:
-    """Launch one run process and wait for it.
+) -> OwnedRunProcess:
+    """Spawn one runner process and return the handle the service owns.
 
     The staging directory of the manifest becomes the working directory
     of the child. `log_directory` receives `stdout.log` and `stderr.log`,
     each bounded by `log_limit` bytes with an explicit truncation
-    marker (SPEC.md section 15.2).
+    marker (SPEC.md section 15.2). The child starts a fresh session, so
+    the group the service may signal holds the run's processes alone
+    (SPEC.md sections 13.5 and 15.1).
     """
 
     if isinstance(manifest, RunManifest):
@@ -321,9 +494,13 @@ def launch_run(
     )
 
     counts: dict[str, "tuple[int, int]"] = {}
-    with open(stdout_path, "wb") as stdout_log, open(
-        stderr_path, "wb"
-    ) as stderr_log:
+    stdout_log = open(stdout_path, "wb")
+    try:
+        stderr_log = open(stderr_path, "wb")
+    except BaseException:
+        stdout_log.close()
+        raise
+    try:
         process = subprocess.Popen(
             [
                 sys.executable,
@@ -335,8 +512,25 @@ def launch_run(
             env=runner_environment(),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            start_new_session=True,
         )
-        threads: list[threading.Thread] = []
+    except BaseException:
+        stdout_log.close()
+        stderr_log.close()
+        raise
+    owned = OwnedRunProcess(
+        process,
+        manifest=parsed,
+        manifest_path=manifest_path,
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+        stdout_log=stdout_log,
+        stderr_log=stderr_log,
+        limit=limit,
+        threads=[],
+        counts=counts,
+    )
+    try:
         for name, source, target in (
             ("stdout", process.stdout, stdout_log),
             ("stderr", process.stderr, stderr_log),
@@ -347,32 +541,30 @@ def launch_run(
                 daemon=True,
             )
             thread.start()
-            threads.append(thread)
-        exit_code = process.wait()
-        for thread in threads:
-            thread.join()
-        for name, target in (
-            ("stdout", stdout_log),
-            ("stderr", stderr_log),
-        ):
-            dropped = counts[name][1]
-            if dropped:
-                target.write(_truncation_note(dropped, limit))
+            owned._threads.append(thread)
+    except BaseException:  # pragma: no cover - thread start failure
+        owned.kill()
+        raise
+    return owned
 
-    stdout_bytes, stdout_dropped = counts["stdout"]
-    stderr_bytes, stderr_dropped = counts["stderr"]
-    return RunLaunchResult(
-        manifest=parsed,
-        manifest_path=manifest_path,
-        exit_code=exit_code,
-        staged=read_staged_index(staging),
-        stdout_path=stdout_path,
-        stderr_path=stderr_path,
-        stdout_bytes=stdout_bytes,
-        stderr_bytes=stderr_bytes,
-        stdout_dropped=stdout_dropped,
-        stderr_dropped=stderr_dropped,
-    )
+
+def launch_run(
+    manifest: "Path | RunManifest",
+    *,
+    log_directory: Path,
+    log_limit: "int | None" = None,
+) -> RunLaunchResult:
+    """Launch one run process and wait for it.
+
+    The blocking shape of one launch: :func:`spawn_run` starts the
+    owned process and this call waits for its result. The workspace
+    service drives the same handle in both modes (SPEC.md sections
+    13.1 and 13.5).
+    """
+
+    return spawn_run(
+        manifest, log_directory=log_directory, log_limit=log_limit
+    ).wait()
 
 
 def _drain(
@@ -384,14 +576,17 @@ def _drain(
 
 
 __all__ = [
+    "CANCEL_GRACE_SECONDS",
     "MANIFEST_NAME",
     "MeltLaunchError",
     "SCRIPT_NAME",
     "RunLaunchResult",
     "STDERR_LOG_NAME",
     "STDOUT_LOG_NAME",
+    "OwnedRunProcess",
     "launch_run",
     "materialize_script",
     "runner_environment",
+    "spawn_run",
     "write_run_manifest",
 ]

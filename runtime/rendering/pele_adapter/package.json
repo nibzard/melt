@@ -1,0 +1,13 @@
+{
+	"name": "melt-pele-adapter-probe",
+	"private": true,
+	"version": "0.1.0",
+	"type": "module",
+	"description": "Pinned Pele rendering adapter probe for Melt (RFC 001 section 7.3, backlog task T028)",
+	"engines": {
+		"node": ">=20"
+	},
+	"dependencies": {
+		"pele": "1.6.0"
+	}
+}

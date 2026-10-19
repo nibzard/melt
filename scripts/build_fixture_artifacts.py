@@ -10,6 +10,13 @@ byte-identical under the pinned toolchain:
 - `sales/revenue.png`: a plain RGB PNG that stands in for a published
   plot until the runner produces a real one.
 - `sales/notes.md`: a UTF-8 text source.
+- `semantic/suppliers.parquet`: the supplier fixture of RFC 001
+  section 10.2, two suppliers `S-42` and `S-73` with distinct names,
+  keyed by a unique non-null string column.
+- `semantic/supplier-network.graph.json`: the immutable supplier graph
+  of RFC 001 sections 7.1 and 10.2. Its identity map binds two visual
+  nodes to the `S-42` and `S-73` records of the `suppliers` collection
+  (backlog task T026).
 
 Run without arguments to (re)write the files under `fixtures/`. Run
 with `--check` to compare the committed files against regeneration and
@@ -22,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import struct
 import sys
 import zlib
@@ -63,6 +71,20 @@ The sales input holds three rows across two months.
 This text artifact backs the `document` projection fixtures of the
 contract suite (SPEC.md section 18.1).
 """
+
+# The supplier rows of RFC 001 section 10.2: two suppliers with
+# distinct names, keyed by unique non-null strings.
+SUPPLIER_ROWS: tuple[tuple[str, str], ...] = (
+    ("S-42", "Alpha Components"),
+    ("S-73", "Beta Systems"),
+)
+
+SUPPLIERS_TABLE_SCHEMA = pa.schema(
+    [
+        pa.field("supplier_id", pa.string(), nullable=False),
+        pa.field("name", pa.string(), nullable=False),
+    ]
+)
 
 
 def sha256_of(data: bytes) -> str:
@@ -117,6 +139,55 @@ def notes_markdown_bytes() -> bytes:
     return NOTES_MD.encode("utf-8")
 
 
+def suppliers_table() -> pa.Table:
+    """Return the supplier fixture as a typed Arrow table."""
+
+    arrays = [
+        pa.array([row[0] for row in SUPPLIER_ROWS], type=pa.string()),
+        pa.array([row[1] for row in SUPPLIER_ROWS], type=pa.string()),
+    ]
+    return pa.Table.from_arrays(arrays, schema=SUPPLIERS_TABLE_SCHEMA)
+
+
+def suppliers_parquet_bytes() -> bytes:
+    """Return the Parquet encoding of the supplier fixture table."""
+
+    sink = pa.BufferOutputStream()
+    pq.write_table(suppliers_table(), sink, compression="snappy", version="2.6")
+    return sink.getvalue().to_pybytes()
+
+
+# The supplier graph of RFC 001 sections 7.1 and 10.2: one node per
+# supplier, one edge between them, and the identity map that binds each
+# visual node to the semantic reference of its record.
+SUPPLIER_GRAPH: dict = {
+    "nodes": [
+        {
+            "nodeId": "s-42",
+            "label": "Alpha Components",
+            "collection": "suppliers",
+            "key": "S-42",
+        },
+        {
+            "nodeId": "s-73",
+            "label": "Beta Systems",
+            "collection": "suppliers",
+            "key": "S-73",
+        },
+    ],
+    "edges": [{"edgeId": "e-s42-s73", "from": "s-42", "to": "s-73"}],
+}
+
+
+def supplier_graph_bytes() -> bytes:
+    """Return the UTF-8 JSON encoding of the supplier graph fixture."""
+
+    text = json.dumps(
+        SUPPLIER_GRAPH, indent=2, sort_keys=True, ensure_ascii=False
+    )
+    return (text + "\n").encode("utf-8")
+
+
 def fixture_files() -> dict[str, bytes]:
     """Return every fixture artifact keyed by its path under fixtures/."""
 
@@ -124,6 +195,8 @@ def fixture_files() -> dict[str, bytes]:
         "sales/sales.parquet": sales_parquet_bytes(),
         "sales/revenue.png": revenue_png_bytes(),
         "sales/notes.md": notes_markdown_bytes(),
+        "semantic/suppliers.parquet": suppliers_parquet_bytes(),
+        "semantic/supplier-network.graph.json": supplier_graph_bytes(),
     }
 
 

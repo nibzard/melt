@@ -368,7 +368,12 @@ def test_admission_without_a_grant_captures_the_intent(service_adapter: Platform
         assert intent["registrationRevision"] == 1
         assert intent["outputGroup"] == "notes-group"
         assert intent["capturedParameters"] == {
-            "threshold": {"parameter": "threshold", "value": "all", "stateRevision": 1}
+            "threshold": {
+                "parameter": "threshold",
+                "value": "all",
+                "stateRevision": 1,
+                "stateIncarnation": 1,
+            }
         }
         assert intent["capturedInputs"] == {}
         # The admission state executes and grants nothing.

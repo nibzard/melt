@@ -33,7 +33,7 @@ from melt.schema.diagnostics import (
     Diagnostic,
     DiagnosticCode,
     MeltSchemaError,
-    diagnostic_from_pydantic_error,
+    diagnostics_from_pydantic_errors,
     sorted_diagnostics,
 )
 from melt.schema.document import (
@@ -41,9 +41,23 @@ from melt.schema.document import (
     ButtonControl,
     Document,
     TableProjection,
-    document_semantic_diagnostics,
 )
 from melt.schema.limits import DEFAULT_LIMITS, ServiceLimits
+from melt.schema.semantic import (
+    OBJECT_SELECT_EVENT,
+    SELECTION_CLEAR_EVENT,
+    SEMANTIC_LANGUAGE_ID,
+    GraphProjection,
+    GraphSchema,
+    OutputSubscription,
+    RecordProjection,
+    SemanticDocument,
+    SemanticReference,
+    SemanticState,
+    document_diagnostics,
+    document_model_of,
+    is_output_subscription,
+)
 from runtime.compiler.catalog import (
     ActionRegistry,
     RegistrationEntry,
@@ -56,22 +70,29 @@ from runtime.compiler.plans import (
     CompiledPlan,
     ControlIdentity,
     DependencyPlan,
+    GraphNodeIdentity,
     IdentityPlan,
     InteractionPlan,
     InteractionPlanEntry,
     LayoutPlan,
+    OutputDependency,
     OutputGroupPlan,
+    OutputSubscriber,
     PLAN_VERSION,
     PaneIdentity,
     ParameterDependency,
     Placement,
+    ReferenceStateDependency,
     RegistrationRef,
+    RenderObserver,
     RenderPlan,
     RenderPlanEntry,
     RendererRef,
     SourceVersionReaders,
+    StateObserver,
     StateParameterPlan,
     StatePlan,
+    StateReferencePlan,
 )
 
 COMPILER_VERSION = "0.1.0"
@@ -80,18 +101,26 @@ COMPILER_IDENTIFIER = f"melt-compiler/{COMPILER_VERSION}"
 
 
 # ---------------------------------------------------------------------------
-# Renderer registry (SPEC.md sections 8 and 11.1)
+# Renderer registry (SPEC.md sections 8 and 11.1; RFC 001 section 7.2)
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class RendererSpec:
-    """One trusted built-in renderer of the v0.1 host."""
+    """One trusted built-in renderer of the host.
+
+    `events` names the renderer events the contract declares and
+    `observer_slots` the selector slots it supports; a v0.1 renderer
+    declares neither, because v0.1 events come from controls only
+    (RFC 001 section 7.2).
+    """
 
     kind: str
     id: str
     contract_version: int
     source_kind: str
+    events: tuple[str, ...] = ()
+    observer_slots: tuple[str, ...] = ()
 
 
 RENDERER_REGISTRY: dict[str, RendererSpec] = {
@@ -105,6 +134,66 @@ RENDERER_REGISTRY: dict[str, RendererSpec] = {
 """The versioned renderer registry that v0.1 ships in the host."""
 
 
+SEMANTIC_RENDERER_SPECS: dict[str, RendererSpec] = {
+    spec.kind: spec
+    for spec in (
+        RendererSpec(
+            "graph",
+            "melt.graph",
+            1,
+            "graph",
+            events=(OBJECT_SELECT_EVENT, SELECTION_CLEAR_EVENT),
+            observer_slots=("highlight",),
+        ),
+        RendererSpec("record", "melt.record", 1, "table", observer_slots=("record",)),
+    )
+}
+"""The renderers the `melt/semantic-draft-1` language adds (RFC 001 6, 7).
+
+They ride only the extension's plans and plan keys, so a `melt/v0.1`
+plan keeps exactly the renderer set v0.1 shipped."""
+
+
+def renderer_registry(document: "Document | Mapping[str, Any] | str") -> dict[str, RendererSpec]:
+    """The trusted renderers one document's language may use.
+
+    The document may be a model, a wire tree, or a language identifier
+    itself; a semantic document in any of those forms resolves the
+    graph and record renderers too.
+    """
+
+    language = document
+    if isinstance(document, Document):
+        language = document.language
+    elif isinstance(document, Mapping):
+        language = document.get("language")
+    return registry_of_language(language)
+
+
+def registry_of_language(language: "str | None") -> dict[str, RendererSpec]:
+    """The trusted renderers one language identifier may use."""
+
+    if language == SEMANTIC_LANGUAGE_ID:
+        return {**RENDERER_REGISTRY, **SEMANTIC_RENDERER_SPECS}
+    return dict(RENDERER_REGISTRY)
+
+
+def renderer_events(kind: str, document: "Document | Mapping[str, Any] | str | None" = None) -> tuple[str, ...]:
+    """The event names one renderer kind's contract declares.
+
+    Without a document, the answer covers every trusted renderer of
+    both languages.
+    """
+
+    registry = (
+        {**RENDERER_REGISTRY, **SEMANTIC_RENDERER_SPECS}
+        if document is None
+        else renderer_registry(document)
+    )
+    spec = registry.get(kind)
+    return spec.events if spec is not None else ()
+
+
 # ---------------------------------------------------------------------------
 # Inputs and outputs
 # ---------------------------------------------------------------------------
@@ -115,6 +204,20 @@ class ParameterStateInput:
     """One current parameter value with its state revision (6.2)."""
 
     value: "bool | float | str | None"
+    revision: int
+
+
+@dataclass(frozen=True)
+class ReferenceStateInput:
+    """One current reference state value with its revision (RFC 001 4).
+
+    `value` is a serialized semantic reference or null. The service
+    supplies these inputs exactly as it supplies parameter state, so a
+    committed selection and a compiled plan agree on one definition of
+    validity.
+    """
+
+    value: "SemanticReference | None"
     revision: int
 
 
@@ -132,13 +235,22 @@ class CompileRequest:
 
     Permission grants are not compiler inputs. `parameter_states`
     carries the current values the service wants validated against the
-    candidate definitions.
+    candidate definitions. `reference_states` and
+    `collection_incarnations` carry the same service state for the
+    RFC 001 extension: the stored selection of each reference state
+    entry and the incarnation the service issued for each collection.
+    `output_incarnations` carries the stable output identity the
+    service issued for each extension action (RFC 001 section 8.1).
+    All stay empty for a `melt/v0.1` document.
     """
 
     document: "str | bytes | bytearray | dict | Document"
     source_catalog: SourceCatalog = field(default_factory=SourceCatalog)
     action_registry: ActionRegistry = field(default_factory=ActionRegistry)
     parameter_states: Mapping[str, ParameterStateInput] = field(default_factory=dict)
+    reference_states: Mapping[str, Any] = field(default_factory=dict)
+    collection_incarnations: Mapping[str, str] = field(default_factory=dict)
+    output_incarnations: Mapping[str, str] = field(default_factory=dict)
     limits: ServiceLimits = DEFAULT_LIMITS
     max_input_bytes: int = DEFAULT_LIMITS.control_frame_bytes
 
@@ -213,17 +325,23 @@ def stage_decode(
 
 
 def stage_structure(value: Any) -> tuple[Document | None, list[Diagnostic]]:
-    """Validate the document structure and its language version."""
+    """Validate the document structure and its language version.
+
+    The `language` field selects the model: a `melt/v0.1` document
+    keeps its closed v0.1 shape and rejects the RFC 001 extension
+    fields, and a `melt/semantic-draft-1` document adds them. Any other
+    identifier fails on the v0.1 literal, which reports `E_VERSION` at
+    `/language`.
+    """
 
     if isinstance(value, Document):
         return value, []
     try:
-        return Document.model_validate(value), []
+        return document_model_of(value), []
     except ValidationError as error:
-        return None, [
-            diagnostic_from_pydantic_error(item, DiagnosticCode.SCHEMA)
-            for item in error.errors()
-        ]
+        return None, diagnostics_from_pydantic_errors(
+            error.errors(), DiagnosticCode.SCHEMA
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -393,15 +511,61 @@ def _resolve_artifacts(
     return diagnostics
 
 
+def check_output_incarnations(
+    document: Document, output_incarnations: "Mapping[str, str]"
+) -> list[Diagnostic]:
+    """Verify every subscription against the issued incarnations.
+
+    The compiler verifies the stable output identity a subscription
+    carries (RFC 001 section 8.1): an action the map knows must hold
+    exactly the incarnation the subscription names, so deleting and
+    recreating an action does not attach old subscribers to a new
+    calculation. The service, whose map is complete by construction,
+    additionally rejects a subscription to an action with no issued
+    incarnation; a service-less compile cannot know one.
+    """
+
+    if not isinstance(document, SemanticDocument):
+        return []
+    diagnostics: list[Diagnostic] = []
+    for projection_id, projection in sorted(document.projections.items()):
+        source = getattr(projection, "source", None)
+        if not is_output_subscription(source):
+            continue
+        identity = source.actionOutput
+        current = output_incarnations.get(identity.action)
+        if current is None or current == identity.incarnation:
+            continue
+        diagnostics.append(
+            _diagnostic(
+                DiagnosticCode.CONFLICT,
+                f"/projections/{projection_id}/source/actionOutput/incarnation",
+                f"subscription carries incarnation"
+                f" {identity.incarnation!r}, but action"
+                f" {identity.action!r} currently holds {current!r}",
+                hint="Migrate or remove the subscriber in the same"
+                " transaction that recreates the action (RFC 001"
+                " section 8.1).",
+            )
+        )
+    return diagnostics
+
+
 def stage_references(
-    document: Document, catalog: SourceCatalog, registry: ActionRegistry
+    document: Document,
+    catalog: SourceCatalog,
+    registry: ActionRegistry,
+    output_incarnations: "Mapping[str, str] | None" = None,
 ) -> list[Diagnostic]:
     """Resolve document, catalog, and registry references."""
 
     diagnostics: list[Diagnostic] = []
-    diagnostics.extend(document_semantic_diagnostics(document))
+    diagnostics.extend(document_diagnostics(document))
     diagnostics.extend(_resolve_registrations(document, registry))
     diagnostics.extend(_resolve_artifacts(document, catalog))
+    diagnostics.extend(
+        check_output_incarnations(document, output_incarnations or {})
+    )
     return diagnostics
 
 
@@ -526,11 +690,18 @@ def _check_registration_types(
 
 
 def _check_renderer_compatibility(document: Document) -> list[Diagnostic]:
-    """Check every projection against the renderer registry."""
+    """Check every projection against the renderer registry.
+
+    A `melt/v0.1` document checks against the v0.1 registry only; a
+    `melt/semantic-draft-1` document also resolves the graph and record
+    renderers (RFC 001 section 7.2).
+    """
 
     diagnostics: list[Diagnostic] = []
+    registry = renderer_registry(document)
+    semantic = isinstance(document, SemanticDocument)
     for projection_id, projection in sorted(document.projections.items()):
-        spec = RENDERER_REGISTRY.get(projection.kind)
+        spec = registry.get(projection.kind)
         if spec is None:
             diagnostics.append(
                 _diagnostic(
@@ -538,7 +709,12 @@ def _check_renderer_compatibility(document: Document) -> list[Diagnostic]:
                     f"/projections/{projection_id}/kind",
                     f"no renderer in the registry handles kind"
                     f" {projection.kind!r}",
-                    hint="Use one of table, plot, or document.",
+                    hint=(
+                        "Use one of table, plot, document, graph, or"
+                        " record."
+                        if semantic
+                        else "Use one of table, plot, or document."
+                    ),
                 )
             )
     return diagnostics
@@ -601,13 +777,80 @@ def parameter_value_error(parameter, value: Any) -> "str | None":
     return None
 
 
+def reference_collection_error(
+    definition: SemanticState, value: SemanticReference
+) -> "str | None":
+    """Return a message when a reference names the wrong collection.
+
+    The workspace service reuses this check when it validates a
+    candidate reference assignment, so a committed value and a compiled
+    plan agree on one definition of validity (RFC 001 section 4: a
+    reference must match the declared collection).
+    """
+
+    if value.collection != definition.type.collection:
+        return (
+            f"reference names collection {value.collection!r} but the"
+            f" state declares {definition.type.collection!r}"
+        )
+    return None
+
+
+def reference_incarnation_error(
+    value: SemanticReference, incarnations: "Mapping[str, str]"
+) -> "str | None":
+    """Return a message when a reference carries a stale incarnation.
+
+    A reference must match the collection's current incarnation at
+    assignment time, so an old incarnation cannot select an object in a
+    recreated collection (RFC 001 sections 3.2 and 4).
+    """
+
+    current = incarnations.get(value.collection)
+    if current is None:
+        return (
+            f"collection {value.collection!r} holds no current incarnation;"
+            " the service has not created it"
+        )
+    if value.incarnation != current:
+        return (
+            f"reference carries incarnation {value.incarnation!r} but"
+            f" collection {value.collection!r} currently holds"
+            f" {current!r}"
+        )
+    return None
+
+
+def reference_state_value_error(
+    definition: SemanticState,
+    value: "SemanticReference | None",
+    incarnations: "Mapping[str, str]",
+) -> "str | None":
+    """Return a message when a stored selection violates its definition.
+
+    Null always satisfies a nullable reference state entry; the schema
+    layer enforces that every reference state entry is nullable in this
+    extension.
+    """
+
+    if value is None:
+        return None
+    message = reference_collection_error(definition, value)
+    if message is not None:
+        return message
+    return reference_incarnation_error(value, incarnations)
+
+
 def stage_state(
     document: Document,
     parameter_states: Mapping[str, ParameterStateInput],
     limits: ServiceLimits,
+    reference_states: "Mapping[str, ReferenceStateInput] | None" = None,
+    collection_incarnations: "Mapping[str, str] | None" = None,
 ) -> list[Diagnostic]:
     """Validate state continuity and native policy constraints."""
 
+    incarnations = collection_incarnations or {}
     diagnostics: list[Diagnostic] = []
     for parameter_id in sorted(parameter_states):
         state = parameter_states[parameter_id]
@@ -635,6 +878,37 @@ def stage_state(
                     " the expected state revision in the same transaction.",
                 )
             )
+    if isinstance(document, SemanticDocument):
+        for state_id in sorted(reference_states or {}):
+            stored = reference_states[state_id]
+            definition = document.state.get(state_id)
+            if definition is None:
+                diagnostics.append(
+                    _diagnostic(
+                        DiagnosticCode.STATE_MIGRATION,
+                        f"/state/{state_id}",
+                        "reference state exists for an entry the document"
+                        " does not define",
+                        hint="Remove the state with its entry, or recreate"
+                        " the state definition.",
+                    )
+                )
+                continue
+            message = reference_state_value_error(
+                definition, stored.value, incarnations
+            )
+            if message is not None:
+                diagnostics.append(
+                    _diagnostic(
+                        DiagnosticCode.STATE_MIGRATION,
+                        f"/state/{state_id}",
+                        f"current selection violates the definition:"
+                        f" {message}",
+                        hint="Supply state.set with a valid reference or"
+                        " null and the expected state revision in the"
+                        " same transaction.",
+                    )
+                )
     for projection_id, projection in sorted(document.projections.items()):
         if isinstance(projection, TableProjection) and (
             projection.config.columns is not None
@@ -663,19 +937,42 @@ def _renderer_ref(spec: RendererSpec) -> RendererRef:
 
 def _build_render_plan(document: Document) -> RenderPlan:
     entries: dict[str, RenderPlanEntry] = {}
+    registry = renderer_registry(document)
     for projection_id, projection in sorted(document.projections.items()):
-        spec = RENDERER_REGISTRY[projection.kind]
+        spec = registry[projection.kind]
+        collection: "str | None" = None
+        observers: dict[str, RenderObserver] = {}
+        if isinstance(projection, GraphProjection):
+            collection = projection.collection
+            observers["highlight"] = RenderObserver(
+                state=projection.observe.highlight.state,
+                collection=projection.collection,
+            )
+        elif isinstance(projection, RecordProjection):
+            collection = projection.collection
+            observers["record"] = RenderObserver(
+                state=projection.observe.record.state,
+                collection=projection.collection,
+            )
         entries[projection_id] = RenderPlanEntry(
             projection=projection_id,
             renderer=_renderer_ref(spec),
-            source=projection.source,
+            # A record projection reads through its collection's pinned
+            # version, so it carries no source of its own (RFC 001 6).
+            source=None
+            if isinstance(projection, RecordProjection)
+            else projection.source,
             config=projection.config,
             controls=projection.controls,
+            collection=collection,
+            observers=observers,
         )
     return RenderPlan(projections=entries)
 
 
-def _build_state_plan(document: Document) -> StatePlan:
+def _build_state_plan(
+    document: Document, collection_incarnations: "Mapping[str, str]"
+) -> StatePlan:
     entries: dict[str, StateParameterPlan] = {}
     for parameter_id, parameter in sorted(document.parameters.items()):
         entries[parameter_id] = StateParameterPlan(
@@ -686,7 +983,20 @@ def _build_state_plan(document: Document) -> StatePlan:
             constraints=parameter.constraints,
             scope="workspace",
         )
-    return StatePlan(parameters=entries)
+    references: dict[str, StateReferencePlan] = {}
+    if isinstance(document, SemanticDocument):
+        for state_id, entry in sorted(document.state.items()):
+            collection = document.collections[entry.type.collection]
+            references[state_id] = StateReferencePlan(
+                state=state_id,
+                collection=entry.type.collection,
+                key=collection.key,
+                source=collection.source,
+                incarnation=collection_incarnations.get(entry.type.collection),
+                nullable=entry.nullable,
+                scope="workspace",
+            )
+    return StatePlan(parameters=entries, references=references)
 
 
 def _event_address(binding: Binding) -> str:
@@ -694,6 +1004,8 @@ def _event_address(binding: Binding) -> str:
     kind = event.kind
     if kind == "parameter.changed":
         return f"parameter.changed/{event.parameter}"
+    if kind in (OBJECT_SELECT_EVENT, SELECTION_CLEAR_EVENT):
+        return f"{kind}/{event.projection}"
     return f"control.activate/{event.projection}/{event.control}"
 
 
@@ -718,12 +1030,17 @@ def _build_interaction_plan(document: Document) -> InteractionPlan:
 
 
 def _build_action_plan(
-    document: Document, registry: ActionRegistry
+    document: Document,
+    registry: ActionRegistry,
+    output_incarnations: "Mapping[str, str] | None" = None,
 ) -> ActionPlan:
     entries: dict[str, ActionPlanEntry] = {}
     groups: dict[str, OutputGroupPlan] = {}
+    semantic = isinstance(document, SemanticDocument)
+    incarnations = output_incarnations or {}
     for action_id, action in sorted(document.actions.items()):
         entry: RegistrationEntry = registry.entry(action.implementation.registrationId)
+        targets = dict(sorted(getattr(action, "targets", {}).items()))
         entries[action_id] = ActionPlanEntry(
             action=action_id,
             registration=RegistrationRef(
@@ -739,28 +1056,49 @@ def _build_action_plan(
             inputs=dict(sorted(action.inputs.items())),
             outputs=dict(sorted(action.outputs.items())),
             outputGroup=action.outputGroup,
-            targets=dict(sorted(action.targets.items())),
+            targets=targets,
+            # The stable output identity of the extension action: the
+            # incarnation its subscribers follow. A `melt/v0.1` action
+            # owns targets instead (RFC 001 sections 8.1 and 9).
+            incarnation=incarnations.get(action_id) if semantic else None,
         )
         groups[action.outputGroup] = OutputGroupPlan(
             action=action_id,
-            targets=dict(sorted(action.targets.items())),
+            targets=targets,
         )
     return ActionPlan(actions=entries, outputGroups=groups)
 
 
-def _build_dependency_plan(document: Document) -> DependencyPlan:
+def _build_dependency_plan(
+    document: Document,
+    output_incarnations: "Mapping[str, str] | None" = None,
+) -> DependencyPlan:
     sources: dict[str, dict[str, list[str]]] = {}
     parameters: dict[str, list[str]] = {}
+    incarnations = output_incarnations or {}
 
     def _read(source_id: str, version: int, reader: str) -> None:
         versions = sources.setdefault(source_id, {})
         versions.setdefault(str(version), []).append(reader)
 
+    # The output-to-subscriber index of RFC 001 section 9: one entry per
+    # stable output identity, naming every projection subscribed to it.
+    subscribers: dict[str, list[OutputSubscriber]] = {}
     for projection_id, projection in sorted(document.projections.items()):
-        if projection.source is not None:
+        source = getattr(projection, "source", None)
+        if isinstance(source, OutputSubscription):
+            identity = source.actionOutput
+            subscribers.setdefault(f"{identity.action}/{identity.output}", []).append(
+                OutputSubscriber(
+                    projection=projection_id,
+                    follow=source.follow,
+                    version=source.version,
+                )
+            )
+        elif source is not None:
             _read(
-                projection.source.sourceId,
-                projection.source.version,
+                source.sourceId,
+                source.version,
                 f"projections/{projection_id}",
             )
         for control in projection.controls:
@@ -768,6 +1106,13 @@ def _build_dependency_plan(document: Document) -> DependencyPlan:
                 parameters.setdefault(control.parameter, []).append(
                     f"projections/{projection_id}"
                 )
+    if isinstance(document, SemanticDocument):
+        for collection_id, collection in sorted(document.collections.items()):
+            _read(
+                collection.source.sourceId,
+                collection.source.version,
+                f"collections/{collection_id}",
+            )
     actions: dict[str, ActionDependency] = {}
     for action_id, action in sorted(document.actions.items()):
         for reference in action.inputs.values():
@@ -786,7 +1131,7 @@ def _build_dependency_plan(document: Document) -> DependencyPlan:
                 sorted(mapping.parameter for mapping in action.parameters.values())
             ),
             inputs=tuple(sorted(action.inputs.values(), key=_source_sort_key)),
-            targets=tuple(sorted(action.targets.values())),
+            targets=tuple(sorted(getattr(action, "targets", {}).values())),
         )
     for binding_id, binding in sorted(document.bindings.items()):
         event = binding.event
@@ -794,6 +1139,45 @@ def _build_dependency_plan(document: Document) -> DependencyPlan:
             parameters.setdefault(event.parameter, []).append(
                 f"bindings/{binding_id}"
             )
+    # The state-to-observer index of RFC 001 section 9: one entry per
+    # observed state, naming every projection whose selector reads it.
+    observed: dict[str, list[StateObserver]] = {}
+    if isinstance(document, SemanticDocument):
+        for projection_id, projection in sorted(document.projections.items()):
+            if isinstance(projection, GraphProjection):
+                slot, observer = "highlight", projection.observe.highlight
+            elif isinstance(projection, RecordProjection):
+                slot, observer = "record", projection.observe.record
+            else:
+                continue
+            observed.setdefault(observer.state, []).append(
+                StateObserver(
+                    projection=projection_id,
+                    slot=slot,
+                    state=observer.state,
+                    collection=projection.collection,
+                )
+            )
+    output_dependencies: dict[str, OutputDependency] = {}
+    if isinstance(document, SemanticDocument):
+        # The output-to-subscriber index belongs to the extension
+        # language alone; a `melt/v0.1` plan keeps exactly its v0.1
+        # indexes (RFC 001 section 9).
+        for action_id, action in sorted(document.actions.items()):
+            for output_name, kind in sorted(action.outputs.items()):
+                key = f"{action_id}/{output_name}"
+                output_dependencies[key] = OutputDependency(
+                    action=action_id,
+                    output=output_name,
+                    kind=kind,
+                    incarnation=incarnations.get(action_id),
+                    subscribers=tuple(
+                        sorted(
+                            subscribers.get(key, ()),
+                            key=lambda item: item.projection,
+                        )
+                    ),
+                )
     return DependencyPlan(
         sources={
             source_id: {
@@ -807,6 +1191,15 @@ def _build_dependency_plan(document: Document) -> DependencyPlan:
             for parameter_id, readers in sorted(parameters.items())
         },
         actions=actions,
+        referenceStates={
+            state_id: ReferenceStateDependency(
+                observers=tuple(
+                    sorted(observers_, key=lambda item: (item.projection, item.slot))
+                )
+            )
+            for state_id, observers_ in sorted(observed.items())
+        },
+        outputs=output_dependencies,
     )
 
 
@@ -817,12 +1210,22 @@ def _source_sort_key(reference) -> tuple:
 def _build_identity_plan(document: Document) -> IdentityPlan:
     panes: dict[str, PaneIdentity] = {}
     controls: dict[str, ControlIdentity] = {}
+    nodes: dict[str, GraphNodeIdentity] = {}
     for projection_id, projection in sorted(document.projections.items()):
         owner: "str | None" = None
         for action in document.actions.values():
-            if projection_id in action.targets.values():
+            if projection_id in getattr(action, "targets", {}).values():
                 owner = action.outputGroup
                 break
+        if owner is None and isinstance(
+            getattr(projection, "source", None), OutputSubscription
+        ):
+            # A subscriber sits in the output group of the action it
+            # follows (RFC 001 section 8.2).
+            identity = projection.source.actionOutput
+            action = document.actions.get(identity.action)
+            if action is not None:
+                owner = action.outputGroup
         panes[projection_id] = PaneIdentity(
             projection=projection_id,
             pane=projection_id,
@@ -837,7 +1240,22 @@ def _build_identity_plan(document: Document) -> IdentityPlan:
                 control=control.id,
                 parameter=control.parameter,
             )
-    return IdentityPlan(panes=panes, controls=controls)
+        if isinstance(projection, GraphProjection):
+            # The graph's identity map, keyed by graph and node ID, so
+            # hit testing and highlighting resolve through the compiled
+            # plan instead of visible labels or element order (RFC 001
+            # sections 7.1 and 7.3).
+            source = document.sources[projection.source.sourceId]
+            version = source.versions[str(projection.source.version)]
+            if isinstance(version.schema, GraphSchema):
+                for node in version.schema.nodes:
+                    nodes[f"{projection_id}/{node.nodeId}"] = GraphNodeIdentity(
+                        graph=projection_id,
+                        node=node.nodeId,
+                        collection=node.collection,
+                        key=node.key,
+                    )
+    return IdentityPlan(panes=panes, controls=controls, nodes=nodes)
 
 
 def _walk_placements(node, path: str, placements: dict) -> None:
@@ -867,7 +1285,7 @@ def _document_hash(document: Document) -> str:
     return document_hash(document)
 
 
-def _plan_key(document: Document, registry: ActionRegistry) -> str:
+def _plan_key(document: Document, registry: ActionRegistry, digest: str) -> str:
     registrations = {
         action.implementation.registrationId: registry.entry(
             action.implementation.registrationId
@@ -879,29 +1297,35 @@ def _plan_key(document: Document, registry: ActionRegistry) -> str:
     }
     material = {
         "compilerVersion": COMPILER_IDENTIFIER,
-        "documentHash": _document_hash(document),
+        "documentHash": digest,
         "renderers": {
             kind: {"id": spec.id, "contractVersion": spec.contract_version}
-            for kind, spec in sorted(RENDERER_REGISTRY.items())
+            for kind, spec in sorted(renderer_registry(document).items())
         },
         "registrations": registrations,
     }
     return canonical_hash(material)
 
 
-def build_plan(document: Document, registry: ActionRegistry) -> CompiledPlan:
+def build_plan(
+    document: Document,
+    registry: ActionRegistry,
+    collection_incarnations: "Mapping[str, str] | None" = None,
+    output_incarnations: "Mapping[str, str] | None" = None,
+) -> CompiledPlan:
     """Build every plan from a fully validated document (stage 6)."""
 
+    digest = _document_hash(document)
     return CompiledPlan(
         planVersion=PLAN_VERSION,
         language=document.language,
         compilerVersion=COMPILER_IDENTIFIER,
         workspaceId=document.workspaceId,
-        documentHash=_document_hash(document),
-        planKey=_plan_key(document, registry),
+        documentHash=digest,
+        planKey=_plan_key(document, registry, digest),
         renderers={
             kind: _renderer_ref(spec)
-            for kind, spec in sorted(RENDERER_REGISTRY.items())
+            for kind, spec in sorted(renderer_registry(document).items())
         },
         registrations={
             action.implementation.registrationId: registry.entry(
@@ -913,10 +1337,10 @@ def build_plan(document: Document, registry: ActionRegistry) -> CompiledPlan:
             )
         },
         render=_build_render_plan(document),
-        state=_build_state_plan(document),
+        state=_build_state_plan(document, collection_incarnations or {}),
         interaction=_build_interaction_plan(document),
-        action=_build_action_plan(document, registry),
-        dependency=_build_dependency_plan(document),
+        action=_build_action_plan(document, registry, output_incarnations),
+        dependency=_build_dependency_plan(document, output_incarnations),
         identity=_build_identity_plan(document),
         layout=_build_layout_plan(document),
     )
@@ -952,10 +1376,39 @@ def _normalize_states(
     return states
 
 
+def _normalize_reference_states(
+    reference_states: Mapping[str, Any]
+) -> dict[str, ReferenceStateInput]:
+    states: dict[str, ReferenceStateInput] = {}
+    for state_id, state in reference_states.items():
+        if isinstance(state, ReferenceStateInput):
+            states[state_id] = state
+            continue
+        if isinstance(state, Mapping) and "value" in state and "revision" in state:
+            value = state["value"]
+            if value is not None and not isinstance(value, SemanticReference):
+                value = SemanticReference.model_validate(value)
+            states[state_id] = ReferenceStateInput(
+                value=value, revision=state["revision"]
+            )
+            continue
+        raise MeltCompileError(
+            (
+                _diagnostic(
+                    DiagnosticCode.SCHEMA,
+                    f"/refstate/{state_id}",
+                    "reference state input needs a value and a revision",
+                ),
+            )
+        )
+    return states
+
+
 def compile_document(request: CompileRequest) -> CompileResult:
     """Run the seven stages and return diagnostics or a plan."""
 
     states = _normalize_states(request.parameter_states)
+    reference_states = _normalize_reference_states(request.reference_states)
     diagnostics: list[Diagnostic] = []
 
     value, stage_diagnostics = stage_decode(request.document, request.max_input_bytes)
@@ -966,13 +1419,34 @@ def compile_document(request: CompileRequest) -> CompileResult:
         diagnostics.extend(stage_diagnostics)
     if document is not None:
         diagnostics.extend(
-            stage_references(document, request.source_catalog, request.action_registry)
+            stage_references(
+                document,
+                request.source_catalog,
+                request.action_registry,
+                request.output_incarnations,
+            )
         )
         diagnostics.extend(stage_types(document, request.action_registry))
-        diagnostics.extend(stage_state(document, states, request.limits))
+        diagnostics.extend(
+            stage_state(
+                document,
+                states,
+                request.limits,
+                reference_states=reference_states,
+                collection_incarnations=request.collection_incarnations,
+            )
+        )
     if diagnostics or document is None:
         return CompileResult(None, tuple(sorted_diagnostics(diagnostics)))
-    return CompileResult(build_plan(document, request.action_registry), ())
+    return CompileResult(
+        build_plan(
+            document,
+            request.action_registry,
+            request.collection_incarnations,
+            request.output_incarnations,
+        ),
+        (),
+    )
 
 
 def compile_json(
@@ -1000,11 +1474,19 @@ __all__ = [
     "MeltCompileError",
     "ParameterStateInput",
     "RENDERER_REGISTRY",
+    "ReferenceStateInput",
     "RendererSpec",
+    "SEMANTIC_RENDERER_SPECS",
     "build_plan",
+    "check_output_incarnations",
     "compile_document",
     "compile_json",
     "parameter_value_error",
+    "reference_collection_error",
+    "reference_incarnation_error",
+    "reference_state_value_error",
+    "renderer_events",
+    "renderer_registry",
     "stage_decode",
     "stage_references",
     "stage_state",

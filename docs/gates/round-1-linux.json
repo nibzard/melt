@@ -1,0 +1,170 @@
+{
+  "schemaVersion": 1,
+  "gate": "round-1-linux",
+  "requirement": "SPEC.md section 20 step 5",
+  "language": "melt/v0.1",
+  "closedAt": "2026-10-18T12:57:20Z",
+  "verifiedTree": "5ea5f01e9bbc198b5dab3dcf9c5d4f5758682ee2",
+  "command": "./scripts/check.sh",
+  "outcome": {
+    "result": "789 passed, 1 skipped in 128.85 s",
+    "confirmationRunWithRecord": "798 passed, 1 skipped in 126.04 s",
+    "canonicalHashes": "6 RFC 8785 reference vectors and 7 valid-document hashes agree between the JavaScript and Python implementations",
+    "skipped": [
+      "tests/native/test_native_round2.py: native integration belongs to round 2, backlog task T030 (SPEC.md sections 2.2 and 18.5)"
+    ]
+  },
+  "suites": [
+    {
+      "name": "hero-workflow",
+      "requirement": "SPEC.md section 18.2",
+      "backlogTask": "T019",
+      "command": "uv run --locked python3 -m pytest tests/integration/test_hero_workflow.py",
+      "modules": ["tests/integration/test_hero_workflow.py"],
+      "collectedTests": 1,
+      "result": "1 passed in 16.26 s",
+      "coverage": [
+        "imports the input and creates the document without executing it; the output group stays empty with no run",
+        "approves and runs the action; publishes both outputs together with run provenance and both targets on one publication",
+        "sets minimum to 200 with zero model calls: fake credentials stay out of every persisted byte",
+        "moves a pane in the staged window of an execution; the moved layout survives publication and the compiled plan",
+        "restarts offline: values, bindings, sources, and layout restore without execution; the pending debounce is interrupted",
+        "invokes again explicitly; the admitted run captures sales-input version 1 and the committed minimum, and stays unexecuted"
+      ]
+    },
+    {
+      "name": "contract-suite",
+      "requirement": "SPEC.md section 18.1",
+      "backlogTask": "T020",
+      "command": "node scripts/verify_canonical_hashes.mjs && uv run --locked python3 -m pytest tests/contract",
+      "modules": [
+        "tests/contract/test_artifact_measurement.py",
+        "tests/contract/test_canonical.py",
+        "tests/contract/test_cli.py",
+        "tests/contract/test_commands.py",
+        "tests/contract/test_compiler.py",
+        "tests/contract/test_document.py",
+        "tests/contract/test_fixtures.py",
+        "tests/contract/test_limits.py",
+        "tests/contract/test_model_credentials.py",
+        "tests/contract/test_performance_record.py",
+        "tests/contract/test_permission_records.py",
+        "tests/contract/test_records.py",
+        "tests/contract/test_run_manifest.py",
+        "tests/contract/test_scaffold.py",
+        "tests/contract/test_sdk.py",
+        "tests/contract/test_toolchain.py"
+      ],
+      "collectedTests": 525,
+      "result": "525 passed in 3.54 s",
+      "coverage": [
+        "every fixture in fixtures/invalid/manifest.json fails with its recorded code and JSON Pointer at its recorded layer",
+        "every document in fixtures/valid/ compiles through the full stages against fixtures/catalog.json",
+        "melt validate and melt compile answer 0, 1, and 2 per SPEC.md section 11.3 over the same fixtures",
+        "canonical RFC 8785 hashes agree between the Python and JavaScript implementations over the reference vectors and every valid document",
+        "round-1 sources import no Apple or Ghostty framework"
+      ]
+    },
+    {
+      "name": "race-suite",
+      "requirement": "SPEC.md section 18.3",
+      "backlogTask": "T021",
+      "command": "uv run --locked python3 -m pytest tests/integration/test_race_suite.py",
+      "modules": ["tests/integration/test_race_suite.py"],
+      "collectedTests": 11,
+      "result": "11 passed in 13.35 s",
+      "scenarios": {
+        "run-finishes-before-debounce-fires": "test_a_run_finishing_before_debounce_fires_cannot_become_current",
+        "three-changes-during-a-run": "test_three_changes_during_a_run_leave_one_newest_pending_request",
+        "newer-run-fails": "test_a_newer_failed_run_keeps_the_last_good_result",
+        "action-changes-during-execution": "test_an_action_change_during_execution_archives_the_old_output",
+        "hidden-target-pane": "test_a_hidden_target_pane_still_receives_its_publication",
+        "deleted-target-pane": "test_a_deleted_target_pane_rejects_the_entire_publication",
+        "layout-or-title-changes": "test_layout_and_title_changes_keep_the_publication_valid",
+        "parameter-round-trip": "test_a_parameter_round_trip_still_prevents_old_publication",
+        "programmatic-update": "test_a_programmatic_update_saves_and_marks_the_result_stale",
+        "duplicate-activation": "test_a_duplicate_activation_request_admits_at_most_one_run",
+        "revoked-permission-during-execution": "test_revoked_permission_during_execution_blocks_publication"
+      }
+    },
+    {
+      "name": "publication-fault-suite",
+      "requirement": "SPEC.md sections 13.4, 14, and 18.4",
+      "backlogTask": "T022",
+      "command": "uv run --locked python3 -m pytest tests/recovery tests/integration/test_publication.py",
+      "modules": [
+        "tests/recovery/test_restart_recovery.py",
+        "tests/integration/test_publication.py"
+      ],
+      "collectedTests": 31,
+      "result": "31 passed in 51.73 s",
+      "faults": {
+        "kill-before-artifact-finalization": "test_kill_before_artifact_finalization_recovers_on_retry",
+        "kill-between-artifact-writes": "test_kill_between_artifact_writes_leaves_one_unreferenced_file",
+        "kill-after-finalization-before-commit": "test_kill_after_artifact_finalization_before_commit_recovers_on_retry",
+        "kill-after-commit-before-acknowledgement": "test_kill_after_publication_commit_before_acknowledgement_replays",
+        "kill-before-mutation-commit": "test_kill_before_mutation_commit_leaves_the_change_unapplied",
+        "kill-after-mutation-commit-before-acknowledgement": "test_kill_after_mutation_commit_before_acknowledgement_replays",
+        "kill-during-execution": "test_kill_during_execution_never_reruns_uncertain_effects",
+        "disk-full": "test_disk_full_during_finalization_preserves_the_previous_pair",
+        "missing-artifacts": "test_missing_artifacts_are_reported_individually",
+        "missing-environments": "test_missing_environment_disables_new_work_not_saved_views",
+        "lost-notifications": "test_lost_notifications_require_a_snapshot",
+        "changed-epochs": "test_changed_service_epoch_requires_a_snapshot",
+        "reused-request-ids": "test_kill_after_publication_commit_before_acknowledgement_replays",
+        "corrupt-descriptors": "test_corrupt_descriptors_skip_and_keep_the_previous_readable_interface",
+        "cancelled-runs": "test_cancelled_runs_stay_cancelled_across_a_restart",
+        "incompatible-saved-versions": "test_incompatible_saved_versions_refuse_to_open_and_preserve_files",
+        "seven-startup-steps": "test_startup_follows_the_seven_recovery_steps"
+      },
+      "atomicity": [
+        "both outputs of a group become current together with one commit and all records",
+        "a missing, invalid, or non-finite output rejects the entire publication, so the previous table and plot remain together",
+        "an obsolete or ineligible run archives as superseded and never overwrites current sources",
+        "revoked permission blocks publication and requests cancellation",
+        "publication receipts rebuild after a restart"
+      ]
+    }
+  ],
+  "measurements": {
+    "requirement": "SPEC.md section 19",
+    "backlogTask": "T023",
+    "report": "docs/performance/round-1-linux.md",
+    "data": "docs/performance/round-1-linux.json",
+    "compiler": {
+      "result": "compile-32-projection",
+      "p95Ms": 10.546,
+      "target": "p95 below 50 ms",
+      "met": true
+    },
+    "reader": {
+      "result": "table-page-first-warm",
+      "p95Ms": 79.699,
+      "target": "p95 below 300 ms",
+      "met": true
+    }
+  },
+  "linuxOnly": {
+    "platform": "Ubuntu 24.04.5 LTS, Linux 6.8.0-147-generic, x86_64",
+    "cores": 8,
+    "memTotalKiB": 12246824,
+    "toolsRequired": ["python3", "uv", "node", "npm"],
+    "appleToolsRequired": [],
+    "evidence": [
+      "the recorded gate run completed on the platform above; xcodebuild, swiftc, osascript, plutil, and clang are not installed on it",
+      "tests/contract/test_toolchain.py::test_round1_sources_import_no_apple_frameworks passes inside the recorded contract suite",
+      "no native/ directory exists in round 1; the only skipped test is the round-2 placeholder that claims no behavior",
+      "scripts/check.sh names every tool it needs: a Python 3.12 interpreter through uv sync, uv, and Node with npm for the pinned adapter"
+    ]
+  },
+  "roundBoundary": {
+    "notPartOfThisGate": [
+      "native macOS integration and its acceptance suite (backlog tasks T030 and T032; SPEC.md sections 18.5 and 20 steps 6 and 7)",
+      "the application release gate (backlog task T031)",
+      "the RFC 001 semantic-interaction extension (backlog tasks T025 through T029) under its own language version"
+    ],
+    "reason": "SPEC.md sections 2.2 and 20 assign native validation to round 2 and keep the Linux gate free of native builds; the extension is a separate language version that must leave v0.1 behavior unchanged",
+    "openTrackedWork": [],
+    "openWorkRefresh": "backlog task T039 moved the completed T035 (non-blocking execution slot, process-group cancellation signal) and T036 (README hero step 3 --debounce-wait) out of openTrackedWork when they integrated; the closing run this record describes still saw both open"
+  }
+}

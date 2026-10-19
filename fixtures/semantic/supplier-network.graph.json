@@ -1,0 +1,23 @@
+{
+  "edges": [
+    {
+      "edgeId": "e-s42-s73",
+      "from": "s-42",
+      "to": "s-73"
+    }
+  ],
+  "nodes": [
+    {
+      "collection": "suppliers",
+      "key": "S-42",
+      "label": "Alpha Components",
+      "nodeId": "s-42"
+    },
+    {
+      "collection": "suppliers",
+      "key": "S-73",
+      "label": "Beta Systems",
+      "nodeId": "s-73"
+    }
+  ]
+}

@@ -3,6 +3,8 @@
 Modules:
 
 - `document`: canonical document models, SPEC.md sections 4 through 10.
+- `semantic`: the `melt/semantic-draft-1` extension of RFC 001 —
+  semantic collections and nullable reference state.
 - `commands`: command envelope, operations, payloads, and framing, section 12.
 - `records`: versioned persisted record schemas, section 17.
 - `canonical`: RFC 8785 canonicalization and document hashing, section 4.2.
@@ -10,8 +12,10 @@ Modules:
 - `diagnostics`: shared diagnostic codes and shape, section 11.3.
 
 Backlog task T003 implements these models. Parsing entry points are
-`parse_document`, `parse_command`, and `parse_record`. Each raises its
-error type with sorted diagnostics and precise JSON Pointer paths.
+`parse_document`, `parse_command`, and `parse_record`; a document of
+either language parses through `melt.schema.semantic
+.parse_document_for_language`. Each raises its error type with sorted
+diagnostics and precise JSON Pointer paths.
 """
 
 from __future__ import annotations

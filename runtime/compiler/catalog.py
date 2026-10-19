@@ -25,7 +25,7 @@ from melt.schema.diagnostics import (
     Diagnostic,
     DiagnosticCode,
     MeltSchemaError,
-    diagnostic_from_pydantic_error,
+    diagnostics_from_pydantic_errors,
 )
 from melt.schema.document import (
     ArtifactHash,
@@ -33,24 +33,29 @@ from melt.schema.document import (
     NonEmptyStr,
     NonNegativeSafeInt,
     PositiveSafeInt,
-    SourceSchema,
 )
+from melt.schema.semantic import AnyMeasuredSchema
 
 DEFAULT_REQUIRED_PERMISSION = "execute_project_code"
 """The permission every fixture registration requires (note.md section 4)."""
 
 
 class CatalogArtifact(MeltModel):
-    """One artifact as the service measured it (SPEC.md section 5.1)."""
+    """One artifact as the service measured it (SPEC.md section 5.1).
+
+    The measured schema is any supported language's: a v0.1 table,
+    image, or text schema, or the graph identity map of
+    `melt/semantic-draft-1` (RFC 001 section 7.1).
+    """
 
     path: NonEmptyStr
     kind: StrictStr
     mediaType: StrictStr
     byteLength: NonNegativeSafeInt
-    schema_: SourceSchema = Field(alias="schema")
+    schema_: AnyMeasuredSchema = Field(alias="schema")
 
     @property
-    def schema(self) -> SourceSchema:
+    def schema(self) -> AnyMeasuredSchema:
         """The measured schema, under its wire name."""
 
         return self.schema_
@@ -146,10 +151,7 @@ def parse_catalog(data: "str | bytes | bytearray | dict") -> Catalog:
         return _catalog_adapter().validate_python(value)
     except ValidationError as error:
         raise MeltCatalogError(
-            [
-                diagnostic_from_pydantic_error(item, DiagnosticCode.SCHEMA)
-                for item in error.errors()
-            ]
+            diagnostics_from_pydantic_errors(error.errors(), DiagnosticCode.SCHEMA)
         ) from error
 
 

@@ -225,24 +225,29 @@ def seed_workspace(
     clock: "FakeClock | None" = None,
     debounce_ms: int = 250,
     script: str = LIGHT_SALES_SCRIPT,
-    contract: dict | None = None,
+    contract: "dict | None" = None,
     parameters: "dict | None" = None,
     action_overrides: "dict | None" = None,
     extra_bindings: "dict[str, dict] | None" = None,
     extra_projections: "dict[str, dict] | None" = None,
     grant: bool = True,
+    open_kwargs: "dict | None" = None,
 ) -> SeededWorkspace:
     """Build the sales workspace through the real service operations.
 
     Creation, import, registration, and the definitions apply all ride
     the same command envelope a host would send, so the scheduling
     tests exercise the exact service handlers of SPEC.md section 12.6.
+    ``open_kwargs`` reach the ``WorkspaceService.open`` call, so a test
+    can open the service with a shorter cancellation grace.
     """
 
     clock = clock or FakeClock()
     contract = contract or LIGHT_CONTRACT
     parameter_definitions = parameters or {"minimum": MINIMUM_PARAMETER}
-    service = WorkspaceService.open(adapter, WORKSPACE, clock=clock)
+    service = WorkspaceService.open(
+        adapter, WORKSPACE, clock=clock, **(open_kwargs or {})
+    )
     created = service.create_workspace(
         {
             "language": "melt/v0.1",
