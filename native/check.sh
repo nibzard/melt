@@ -5,6 +5,8 @@ cd "$(dirname "$0")/.."
 xcrun swiftc -parse-as-library -swift-version 5 -D MELT_NATIVE_TESTS \
     -target "$(uname -m)-apple-macosx13.0" -framework AppKit \
     native/Sources/*.swift native/Tests/HostChecks.swift -o build/native/HostChecks
+xcrun swiftc -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macosx13.0" \
+    -framework AppKit native/Sources/Bridge.swift native/Tests/LaunchChecks.swift -o build/native/LaunchChecks
 check_root="$(mktemp -d "${TMPDIR:-/tmp}/melt-native-check.XXXXXX")"
 trap 'rm -rf "$check_root"' EXIT
 uv run --locked python3 examples/04-cafe/run.py --output "$check_root/cafe"
@@ -19,6 +21,7 @@ root = Path(sys.argv[1])
 PY
 build/native/HostChecks "$check_root/cafe/Little Hours.meltapp" \
     build/native/Melt.app/Contents/Resources/Runtime.json build/native/artifacts "$check_root/linked/Linked.meltapp"
+build/native/LaunchChecks "$PWD/build/native/Melt.app" "$check_root/cafe/Desktop/Little Hours.meltapp"
 uv run --locked python3 -m runtime.harness --root "$check_root/cafe/data" \
     --workspace little-hours runs > "$check_root/runs.json"
 uv run --locked python3 - "$check_root/runs.json" <<'PY'

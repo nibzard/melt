@@ -48,6 +48,8 @@ final class Workspace: NSWindowController, NSWindowDelegate {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1160, height: 760),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         super.init(window: window)
+        window.contentView?.wantsLayer = true
+        window.contentView?.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         window.delegate = self; window.title = app.workspace; window.minSize = NSSize(width: 760, height: 520)
         window.center(); window.isReleasedWhenClosed = false
         let root = NSStackView(); root.orientation = .vertical; root.spacing = 8

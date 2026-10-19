@@ -90,6 +90,7 @@ final class Pane: NSViewController, NSTextFieldDelegate {
         self.definition = definition; self.state = state; self.data = data
         heading.stringValue = string(definition["title"])
         let definitions = array(plan["controls"]).map(object)
+        controls.isHidden = definitions.isEmpty
         let newSignature = jsonSignature(definitions)
         if newSignature != signature {
             for view in controls.arrangedSubviews { controls.removeArrangedSubview(view); view.removeFromSuperview() }
