@@ -1,0 +1,1 @@
+Native CI at aba1a15 compiled the AppKit host and passed the café save/close/reopen workflow. Strengthen the check with actual controls, both linked inspectors, enum restoration, and window captures. Fix select handling that treated NSPopUpButton as a toggle and displayed values instead of labels. Native rerun pending for these changes.
