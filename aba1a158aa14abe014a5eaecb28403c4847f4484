@@ -1,0 +1,1 @@
+The first macOS CI run exposed invalid leading-dot numeric literals and a property collision with NSWindowController.document. Use valid Swift literals and name the workspace definition separately. Validation: compiler diagnostics from native CI; rerun pending.
