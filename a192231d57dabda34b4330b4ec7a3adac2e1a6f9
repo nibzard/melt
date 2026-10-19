@@ -1,0 +1,1 @@
+Fresh-clone CI could not resolve the historical verifiedTree even with a full fetch because that development commit had no remote ref. Preserve the exact original commit on audit/round-1-linux, record the archive ref, and provide fetch guidance without changing historical measurements. Validation: nine gate-record tests pass locally; fresh-clone CI rerun pending.
