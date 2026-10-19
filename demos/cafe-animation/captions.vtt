@@ -1,0 +1,25 @@
+WEBVTT
+
+00:00.000 --> 00:05.000
+A café workspace shows sales, costs, and monthly profit.
+
+00:05.000 --> 00:12.000
+Coffee bean costs rise 30%. Monthly profit falls from €3,280 to €2,416.
+
+00:12.000 --> 00:20.000
+Ask Melt: Add a break-even view and let me adjust opening hours.
+
+00:20.000 --> 00:25.000
+A new view and a Monday control appear. Existing assumptions stay in place.
+
+00:25.000 --> 00:35.000
+Close on Mondays. In this scenario, monthly profit rises to €2,836.
+
+00:35.000 --> 00:40.000
+Disconnect the model. The saved Python action still runs locally.
+
+00:40.000 --> 00:42.000
+Restart Melt and restore the saved workspace.
+
+00:42.000 --> 00:48.000
+The same controls, assumptions, and results return.
