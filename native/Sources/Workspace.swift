@@ -225,7 +225,7 @@ final class Pane: NSViewController, NSTextFieldDelegate {
     func controlTextDidEndEditing(_ notification: Notification) {
         guard let field = notification.object as? NSTextField else { return }
         let key = field.identifier?.rawValue ?? ""
-        let type = string(object(object(host?.document["parameters"])[key])["type"])
+        let type = string(object(object(host?.workspaceDocument["parameters"])[key])["type"])
         if type == "number" || type == "integer" {
             guard let number = Double(field.stringValue), number.isFinite else { host?.showError("Enter a finite number."); return }
             if type == "integer" {

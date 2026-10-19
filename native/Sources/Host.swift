@@ -37,7 +37,7 @@ final class Workspace: NSWindowController, NSWindowDelegate {
     var afterClose: (() -> Void)?
     private var snapshot: Object = [:], planned: Object = [:]
     private(set) var currentView: Object = [:]
-    var document: Object { object(snapshot["document"]) }
+    var workspaceDocument: Object { object(snapshot["document"]) }
     private var panes: [String: Pane] = [:]
     private var layoutSignature = ""
     private var rootController: NSViewController?
@@ -68,7 +68,7 @@ final class Workspace: NSWindowController, NSWindowDelegate {
             container.heightAnchor.constraint(greaterThanOrEqualToConstant: 300)
         ])
         send(["operation": "snapshot"])
-        timer = Timer.scheduledTimer(withTimeInterval: .7, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 0.7, repeats: true) { [weak self] _ in
             guard let self = self, !self.busy, !self.closing else { return }
             self.send(["operation": "poll"], quiet: true)
         }
@@ -103,12 +103,12 @@ final class Workspace: NSWindowController, NSWindowDelegate {
     private func update(_ view: Object) {
         currentView = view
         snapshot = object(view["snapshot"]); planned = object(view["plan"])
-        window?.title = string(document["title"])
+        window?.title = string(workspaceDocument["title"])
         guard !planned.isEmpty else {
             showError("The saved workspace needs recovery: \(String(describing: view["planErrors"] ?? []))")
             return
         }
-        let definitions = object(document["projections"]), entries = object(object(planned["render"])["projections"])
+        let definitions = object(workspaceDocument["projections"]), entries = object(object(planned["render"])["projections"])
         let data = object(view["panes"]), states = object(snapshot["parameterStates"])
         for (id, raw) in entries {
             if panes[id] == nil { panes[id] = Pane(identity: id, host: self) }
@@ -143,7 +143,7 @@ final class Workspace: NSWindowController, NSWindowDelegate {
     private func makeLayout(_ node: Object) -> NSViewController? {
         if string(node["kind"]) == "pane" { return panes[string(node["projection"])] }
         guard string(node["kind"]) == "split", let first = makeLayout(object(node["first"])), let second = makeLayout(object(node["second"])) else { return nil }
-        let split = LayoutSplit(axis: string(node["axis"]), ratio: CGFloat(node["ratio"] as? Double ?? .5))
+        let split = LayoutSplit(axis: string(node["axis"]), ratio: CGFloat(node["ratio"] as? Double ?? 0.5))
         split.addSplitViewItem(NSSplitViewItem(viewController: first)); split.addSplitViewItem(NSSplitViewItem(viewController: second))
         return split
     }
@@ -155,7 +155,7 @@ final class Workspace: NSWindowController, NSWindowDelegate {
     func activate(projection: String, control: String) {
         let revisions = object(snapshot["entityRevisions"])
         var expected = ["projections/\(projection)": revisions["projections/\(projection)"] as? Int ?? 0]
-        for (id, raw) in object(document["bindings"]) {
+        for (id, raw) in object(workspaceDocument["bindings"]) {
             let event = object(object(raw)["event"])
             if string(event["kind"]) == "control.activate", string(event["projection"]) == projection, string(event["control"]) == control {
                 expected["bindings/\(id)"] = revisions["bindings/\(id)"] as? Int ?? 0
@@ -164,7 +164,7 @@ final class Workspace: NSWindowController, NSWindowDelegate {
         sendCommand(["method": "control.activate", "payload": ["projectionId": projection, "controlId": control], "expected": expected])
     }
     private func approve() {
-        let actions = object(document["actions"])
+        let actions = object(workspaceDocument["actions"])
         let alert = NSAlert(); alert.messageText = "Allow this calculation?"
         alert.informativeText = "Registered Python runs with your account's file and network access. Choose the calculation you trust. This permission covers its current registration."
         let choices = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 320, height: 28))
