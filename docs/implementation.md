@@ -19,8 +19,10 @@ tests/          contract, recovery, native, integration
 scripts/        developer commands
 ```
 
-Round 1 omits `native/`. That code arrives with the macOS round
-(SPEC.md sections 2.2 and 20).
+The Linux runtime stays independent of `native/`.
+The [native prototype](../native/README.md) now lives there, with compilation and workflow checks on macOS 15 ARM.
+Full native release acceptance remains open.
+The Linux gate does not require Apple tools (SPEC.md sections 2.2 and 20).
 
 ## Toolchain
 

@@ -10,6 +10,7 @@
  * Modes:
  *   commit-loop   --db <path> --count <n> [--synchronous full|normal]
  *   artifact-loop --db <path> --artifacts <dir> --count <n>
+ *   Both modes accept --wait-for-kill to keep the connection open.
  */
 
 import { mkdir } from "node:fs/promises";
@@ -41,6 +42,16 @@ function ack(line) {
 	process.stdout.write(`${line}\n`);
 }
 
+async function finish(storage) {
+	ack("DONE");
+	if (args.includes("--wait-for-kill")) {
+		// The parent can observe acks after the loop finishes on a fast
+		// filesystem. Keep the connection open until its SIGKILL arrives.
+		await new Promise(() => setInterval(() => {}, 60_000));
+	}
+	await storage.close(CONTEXT);
+}
+
 async function commitLoop() {
 	const dbPath = arg("db");
 	const count = Number(arg("count") ?? 50);
@@ -66,8 +77,7 @@ async function commitLoop() {
 		);
 		ack(`ACK ${seq} ${id} entry`);
 	}
-	ack("DONE");
-	await storage.close(CONTEXT);
+	await finish(storage);
 }
 
 async function artifactLoop() {
@@ -102,8 +112,7 @@ async function artifactLoop() {
 		);
 		ack(`ACK ${seq} ${id} artifact ${hash}`);
 	}
-	ack("DONE");
-	await storage.close(CONTEXT);
+	await finish(storage);
 }
 
 try {

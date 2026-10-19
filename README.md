@@ -19,7 +19,8 @@ Melt keeps the inputs, parameters, views, and published results together in a sa
 
 Melt is for developers building data tools and agent interfaces with durable state.
 The repository implements the language, compiler, workspace service, and Python execution loop on Linux.
-**The desktop application is still planned.** Today, you use a command-line harness and exported images.
+**The native host is an early development prototype.** Build it on macOS to operate saved workspaces.
+The command-line harness and exported images work on Linux.
 
 ## One possible interface
 
@@ -31,6 +32,12 @@ An agent could add the risk inspector without resetting the selected supplier.
 *Interface concept, not a screenshot of a shipped application.*
 [Example 3](examples/03-linked-views/README.md) demonstrates the state changes through terminal commands and a static graph export.
 The window, clickable panes, and agent panel illustrate a future host.
+
+The [native prototype](native/README.md) already operates the café workspace through real AppKit controls:
+
+![Native café prototype after reopening: saved controls, profit plot, daily table, and break-even view.](docs/assets/native-cafe.png)
+
+*Actual window content captured in macOS CI with synthetic data. The development host has no live agent prompt yet.*
 
 ## Try it
 
@@ -69,6 +76,7 @@ It prints the saved directory and an `inspect` command you can copy.
 | [1. Saved views](examples/01-saved-views/README.md) | `uv run --locked python3 examples/01-saved-views/run.py` | A table and note survive reopening without running an action. |
 | [2. Sales analysis](examples/02-sales-analysis/README.md) | `uv run --locked python3 examples/02-sales-analysis/run.py` | Change the minimum revenue from 0 to 200. Three rows become two; a matching table and plot publish together. |
 | [3. Linked views](examples/03-linked-views/README.md) | `uv run --locked python3 examples/03-linked-views/run.py` | Select a supplier, add another inspector, and keep the selection. Both inspectors follow the next selection. |
+| [4. Little Hours café](examples/04-cafe/README.md) | `uv run --locked python3 examples/04-cafe/run.py` | Run a saved scenario, add break-even without execution, and create a local app launcher. |
 
 Example 2 grants execution permission to its included [analysis script](examples/02-sales-analysis/analyze.py) in a fresh workspace.
 Open `before.png` and `after.png` in the printed directory to compare the plots.
@@ -152,7 +160,7 @@ Its [view definitions](examples/02-sales-analysis/views.json) connect the action
 | Persistence | Saved artifacts, revision checks, retry receipts, and restart recovery. |
 | Shared selection and output subscriptions | Implemented under experimental `melt/semantic-draft-1`, with explicit migration from v0.1. |
 | Rendering | Terminal inspection, PNG plots, and static SVG graph exports through the Pele adapter. |
-| Native desktop host | Planned macOS integration. No clickable workspace application ships here yet. |
+| Native desktop host | Prototype verified in macOS CI for controls, linked views, saving, closing, and reopening. Full native release acceptance remains open. |
 
 The semantic draft adds shared object references and views that follow an action's saved output.
 It is an experimental language version. Existing v0.1 workspaces keep their behavior until you explicitly migrate them.
@@ -199,11 +207,12 @@ Its manual sales workflow uses `--debounce-wait 400` to dispatch a bound action 
 
 | Path | Contents |
 |---|---|
-| [`examples/`](examples/README.md) | Three complete workflows and editable inputs |
+| [`examples/`](examples/README.md) | Four complete workflows and editable inputs |
 | [`python/melt/`](python/melt/) | Schema, Python interface, runner, and compiler command line |
 | [`runtime/`](runtime/) | Compiler, workspace service, execution, storage, rendering, and harness |
 | [`protocol/`](protocol/) | JSON Schema and generated TypeScript and Swift models |
 | [`tests/`](tests/) | Contract, integration, recovery, and native test coverage |
+| [`native/`](native/README.md) | First macOS host source, local launcher, and native check commands |
 
 Change the schema vocabulary before running `make protocol`; do not edit generated models by hand.
 Use `make benchmark-round1` for the baseline workload or `uv run --locked python3 scripts/benchmark_scale.py` for scale measurements.
@@ -213,5 +222,7 @@ Use `make benchmark-round1` for the baseline workload or `uv run --locked python
 - [Language specification](SPEC.md): the authoritative `melt/v0.1` contract.
 - [Implementation reference](docs/implementation.md): component behavior, entry points, harness commands, and recovery guarantees.
 - [Semantic extension](docs/rfcs/001-semantic-interactions.md): shared selection, observers, and independent outputs.
+- [RFC 001 audit](docs/gates/rfc-001-audit.md): Linux acceptance evidence and remaining native work.
+- [Apps you can keep](docs/rfcs/002-apps-you-can-keep.md): proposed product direction and evidence for reusable, composable apps.
 - [Performance reports](docs/performance/scale-fixes-2026-10-19.md): measurements and remaining costs.
 - [Design context](note.md): the broader product direction; the specification takes precedence.
