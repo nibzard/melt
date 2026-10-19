@@ -1,0 +1,10 @@
+Merged PR 1 after fixing all three review findings and the storage crash
+probe race found by CI. The final source commit is e5611f3.
+
+Linux and macOS CI pass:
+https://github.com/nibzard/melt/actions/runs/39254417298
+
+The fixes queue desktop commands through acknowledgement and close,
+track controls by ID, and bound pane previews by encoded size. Saved
+artifacts remain complete. Native checks exercise queued edits, shared
+controls, close and reopen, and default file handling.
