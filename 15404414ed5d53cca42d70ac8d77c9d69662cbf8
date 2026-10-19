@@ -1,0 +1,1 @@
+The README now introduces Melt progressively. The illustration is a future host concept; the linked selection behavior is implemented and demonstrated by example 3. Existing implementation detail is preserved in docs/implementation.md. Validation from the documentation work: 20 tests passed, 36 local links checked, compiler commands passed, and the SVG preview was inspected.
