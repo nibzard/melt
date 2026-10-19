@@ -90,7 +90,10 @@ def test_the_record_describes_the_closing_run():
         check=False,
         capture_output=True,
     )
-    assert exists.returncode == 0, f"verifiedTree {verified} is not a commit"
+    assert exists.returncode == 0, (
+        f"verifiedTree {verified} is missing; fetch its archive with "
+        "`git fetch origin audit/round-1-linux`"
+    )
 
 
 def test_every_named_module_exists_and_counts_match():

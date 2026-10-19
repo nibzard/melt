@@ -12,6 +12,15 @@ that tree and adds only the record, its test, and the README note. A
 confirmation run with the record in place collected the nine
 record-honesty tests as well: 798 passed, 1 skipped in 126.04 s.
 
+The exact verified commit is retained on the `audit/round-1-linux` branch.
+Fetch that branch when using a shallow or single-branch clone:
+
+```bash
+git fetch origin audit/round-1-linux
+```
+
+This archive preserves the recorded source revision; it does not change the results below.
+
 ## What the gate requires
 
 Section 20 step 5 passes the hero workflow, the contract suite, the
