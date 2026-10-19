@@ -14,10 +14,13 @@ from __future__ import annotations
 
 import json
 import os
+import select
 import shlex
 import shutil
+import signal
 import subprocess
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -119,7 +122,7 @@ def verdict(probe_root: Path) -> dict:
 
 
 def test_probe_passes(verdict: dict) -> None:
-    assert verdict["exitCode"] == 0
+    assert verdict["exitCode"] == 0, _failures(verdict)
     assert verdict["verdict"] == "pass", _failures(verdict)
     assert verdict["summary"]["failed"] == 0
     assert verdict["summary"]["passed"] >= 20
@@ -250,3 +253,34 @@ def _detail(verdict: dict, suite: str, name: str) -> dict | None:
                 return result["detail"]
             return None
     return None
+
+
+@pytest.mark.parametrize("mode", ["commit-loop", "artifact-loop"])
+def test_completed_crash_worker_waits_for_sigkill(tmp_path, mode):
+    node = _node()
+    if node is None or not _adapter_installed():
+        pytest.skip("The crash worker requires Node and the pinned storage adapter")
+    child = subprocess.Popen([node, str(PROBE_DIR / "probe_worker.mjs"), mode,
+        "--db", str(tmp_path / "state.sqlite"), "--artifacts", str(tmp_path / "artifacts"),
+        "--count", "1", "--wait-for-kill"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        output = b""
+        deadline = time.monotonic() + 10
+        while b"DONE\n" not in output:
+            remaining = deadline - time.monotonic()
+            assert remaining > 0, "The crash worker did not finish its writes"
+            ready, _, _ = select.select([child.stdout], [], [], remaining)
+            assert ready, "The crash worker did not acknowledge its writes"
+            chunk = os.read(child.stdout.fileno(), 4096)
+            assert chunk, child.stderr.read().decode()
+            output += chunk
+        with pytest.raises(subprocess.TimeoutExpired):
+            child.wait(timeout=0.05)
+        child.kill()
+        assert child.wait(timeout=10) == -signal.SIGKILL
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=10)
+        child.stdout.close()
+        child.stderr.close()

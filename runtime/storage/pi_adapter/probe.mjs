@@ -132,7 +132,7 @@ async function commitSeqs(storage) {
 /** Run the worker until the stop point, then SIGKILL it. */
 async function crashRound(dir, workerArgs, stop) {
 	const { spawn } = await import("node:child_process");
-	const child = spawn(process.execPath, [WORKER, ...workerArgs], {
+	const child = spawn(process.execPath, [WORKER, ...workerArgs, "--wait-for-kill"], {
 		stdio: ["ignore", "pipe", "pipe"],
 	});
 	// Attach before any await: the worker can exit before the stop point.
