@@ -1,0 +1,1 @@
+Created at user request as a product concept animation with realistic mock app screens. Uses synthetic data and does not record a running Melt application. Validation: rendered all 48 seconds, inspected sample screens, verified H.264 video at 1440 by 900 and 24 frames per second with ffprobe, and passed git diff --cached --check.
