@@ -1,0 +1,10 @@
+# Follow-up work
+
+- The stdio serve loop remains serial. Concurrent benchmark callers invoke
+  process_frame directly on one service.
+- Filtered and sorted queries still scan the complete table. The cache
+  budget bounds retained buffers, not temporary query memory.
+- Consider checkpoints for long workspace histories and a parameter-only
+  update path after measuring their remaining costs.
+- Native macOS integration and Swift validation remain outside the Linux
+  checks performed for this commit.
