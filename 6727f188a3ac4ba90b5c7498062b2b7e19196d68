@@ -1,0 +1,25 @@
+# ADR: Extend Melt explicitly and bound shared runtime work
+
+Status: Accepted
+
+The semantic extension uses an explicit language version and migration.
+This keeps the v0.1 contract intact while adding linked views, collections,
+reference state, and independent output subscriptions.
+
+Scale measurements exposed oversized history responses and edits waiting
+behind table reads. Keep the existing frame and durability limits. Reduce
+scan pages by encoded size, reuse the startup scan, and cache bounded
+Parquet batches. Capture immutable read inputs and the observed commit
+sequence under the workspace lock; process the table after releasing it.
+
+A separate query lock bounds concurrent decoding and sorting. Cached reads
+and edits do not acquire that lock. A full Rust rewrite was deferred because
+these measurements identified avoidable work and lock contention first.
+
+Validation: the full repository check passed with 1,114 tests and two
+platform skips. The final targeted run passed 22 tests. Repeated scale
+benchmarks and reopening the previously failing workspaces verified saved
+values, revisions, projection counts, and command receipts.
+
+References: docs/rfcs/001-semantic-interactions.md and
+ docs/performance/scale-fixes-2026-10-19.md.
