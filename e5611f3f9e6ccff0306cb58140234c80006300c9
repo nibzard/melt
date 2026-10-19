@@ -1,0 +1,4 @@
+PR 1 failed Linux CI because the crash worker could exit between its
+last acknowledgement and the parent polling that acknowledgement.
+Keep only crash workers alive until SIGKILL; fsync workers still exit.
+All 11 storage probe tests and all 9 gate record tests pass locally.
