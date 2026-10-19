@@ -1,13 +1,15 @@
 # Café product animation
 
-A 48-second silent concept film with realistic mock app screens. The film uses synthetic data. It does not record a running Melt application.
+A 24-second silent concept film with realistic mock app screens and synthetic data. It does not record a running Melt application.
 
-Open `index.html` to play the film with controls and optional English captions. The MP4 also plays independently.
+The film starts with an empty workspace on a classic Aqua-style desktop. Three short agent prompts build the interface. The cursor adjusts costs, closes Mondays, and runs the tool with the agent disconnected.
 
-The sequence shows a cost change, an agent request, a new break-even view, a Monday closure scenario, a local run with the model disconnected, and workspace restoration.
+Open `index.html` to play the film. English captions are available when served over HTTP. The MP4 also plays independently.
 
 ## Render the film
 
-Run `python3 demos/cafe-animation/render.py` from the repository root. The renderer requires Pillow, DejaVu fonts, and `ffmpeg` on Linux. It exports a 1440 × 900 MP4 at 24 frames per second and three PNG stills.
+Run `python3 demos/cafe-animation/render.py` from the repository root. The renderer requires Pillow, NumPy, DejaVu fonts, and `ffmpeg` on Linux.
 
-Edit `render.py` to change the screens, timing, text, or colors. Edit `captions.vtt` when the sequence changes.
+It exports a 1440 × 900 MP4 at 30 frames per second, four screen stills, and a desktop image. The Aqua-inspired wallpaper is original procedural artwork.
+
+Edit `render.py` to change the screens, timing, text, or colors. Update `captions.vtt` when the sequence changes.

@@ -1,26 +1,21 @@
-"""Render the Melt café concept film. Requires Pillow and ffmpeg."""
+"""Render the Melt café concept film with Pillow, NumPy, and ffmpeg."""
 from pathlib import Path
-import math
 import subprocess
-from PIL import Image, ImageDraw, ImageFont
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 ROOT = Path(__file__).parent
-W, H, FPS, DURATION = 1440, 900, 24, 48
-BG = '#e9e7e1'
-INK = '#252b28'
-MUTED = '#7a817b'
-GREEN = '#25775b'
-LINE = '#e7e9e3'
+W, H, FPS, DURATION = 1440, 900, 30, 24
+INK, MUTED, GREEN, LINE = '#262b30', '#81858b', '#247460', '#e5e7e9'
 FONT = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
 BOLD = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
-SERIF = '/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf'
 fonts = {}
 
 
-def font(size, weight='normal'):
-    key = size, weight
+def font(size, bold=False):
+    key = size, bold
     if key not in fonts:
-        fonts[key] = ImageFont.truetype({'normal': FONT, 'bold': BOLD, 'serif': SERIF}[weight], size)
+        fonts[key] = ImageFont.truetype(BOLD if bold else FONT, size)
     return fonts[key]
 
 
@@ -29,233 +24,284 @@ def ease(t):
     return t*t*(3-2*t)
 
 
+class Canvas:
+    def __init__(self, image):
+        self.image = image
+        self.d = ImageDraw.Draw(image)
+
+    def box(self, x, y, w, h, fill='white', radius=9, outline=None):
+        self.d.rounded_rectangle((x, y, x+w, y+h), radius, fill, outline)
+
+    def text(self, x, y, s, size=13, color=INK, bold=False):
+        self.d.text((x, y), s, fill=color, font=font(size, bold))
+
+    def line(self, points, color=LINE, width=1):
+        self.d.line(points, fill=color, width=width)
+
+    def dot(self, x, y, r, color):
+        self.d.ellipse((x-r, y-r, x+r, y+r), fill=color)
+
+
+def desktop():
+    # Original Aqua-inspired wallpaper: soft blue ribbons and luminous folds.
+    y, x = np.mgrid[0:H, 0:W]
+    x, y = x/W, y/H
+    fold = y - (.65 - .3*np.sin(x*3.8-1))
+    ribbon = np.exp(-(fold/.14)**2)
+    edge = np.exp(-((fold+.12)/.025)**2)
+    upper = np.exp(-((y-.18-.14*np.sin(x*5))/.19)**2)
+    field = np.stack([
+        12 + 24*y + 35*ribbon + 22*edge + 18*upper,
+        55 + 35*y + 88*ribbon + 45*edge + 25*upper,
+        111 + 39*y + 68*ribbon + 24*edge + 34*upper,
+    ], axis=-1)
+    image = Image.fromarray(np.uint8(np.clip(field, 0, 255))).convert('RGBA')
+    c = Canvas(image)
+    # Menu bar.
+    c.box(0, 0, W, 27, '#cee0ef', 0)
+    c.dot(23, 13, 6, '#182c3d')
+    c.d.ellipse((24, 3, 28, 8), fill='#182c3d')
+    c.dot(29, 10, 3, '#cee0ef')
+    for xx, label, bold in [(43, 'Melt', True), (95, 'File', False), (139, 'Edit', False), (185, 'View', False), (241, 'Workspace', False), (337, 'Window', False), (414, 'Help', False)]:
+        c.text(xx, 5, label, 12, '#1b3042', bold)
+    c.text(1230, 5, 'Mon 19 Oct   10:42', 12, '#1b3042')
+    c.box(1188, 8, 20, 10, None, 2, '#1b3042')
+    c.box(1190, 10, 14, 6, '#1b3042', 1)
+    c.line((1210, 11, 1210, 15), '#1b3042', 2)
+    for r in [5, 9, 13]:
+        c.d.arc((1157-r, 21-r, 1157+r, 21+r), 225, 315, fill='#1b3042', width=2)
+    # Dock with restrained app icons.
+    dock = Image.new('RGBA', (W, H))
+    dc = Canvas(dock)
+    dc.box(498, 828, 444, 65, (221, 235, 247, 150), 17, (255, 255, 255, 110))
+    for xx, color, label in [(512, '#58adf1', ''), (573, '#f5f6f8', ''), (634, '#eee9e3', '19'), (695, '#f9c54c', '≡'), (756, '#237a65', 'm'), (817, '#29313a', '>_'), (878, '#d8e0e8', '▥')]:
+        dc.box(xx, 837, 48, 47, color, 10)
+        dc.text(xx+11, 843, label, 25, 'white' if xx in [512, 756, 817] else '#46545d', True)
+    dc.box(536, 839, 22, 43, '#c1e7ff', 6)
+    dc.line((526, 848, 526, 855), '#234d6c', 2)
+    dc.line((547, 848, 547, 855), '#234d6c', 2)
+    dc.d.arc((521, 850, 550, 874), 15, 165, fill='#234d6c', width=2)
+    dc.dot(597, 861, 19, '#37a7e5')
+    dc.d.polygon([(605, 847), (600, 864), (589, 875), (594, 858)], fill='white')
+    dc.d.polygon([(605, 847), (600, 864), (594, 858)], fill='#e46d6d')
+    dc.dot(780, 889, 2, '#24374a')
+    image = Image.alpha_composite(image, dock)
+    shadow = Image.new('RGBA', (W, H))
+    ImageDraw.Draw(shadow).rounded_rectangle((61, 82, 1379, 803), 14, fill=(0, 13, 35, 130))
+    image = Image.alpha_composite(image, shadow.filter(ImageFilter.GaussianBlur(20)))
+    return image
+
+
+DESKTOP = desktop()
+
+
 def frame(t):
-    im = Image.new('RGB', (W, H), BG)
-    d = ImageDraw.Draw(im)
-
-    def box(x, y, w, h, fill='white', radius=12, outline=None):
-        d.rounded_rectangle((x, y, x+w, y+h), radius, fill, outline, width=1)
-
-    def txt(x, y, s, size=14, color=INK, weight='normal'):
-        d.text((x, y), s, fill=color, font=font(size, weight))
-
-    def line(points, color=LINE, width=1):
-        d.line(points, fill=color, width=width)
-
-    def pill(x, y, s, fill='#edf3ed', color=GREEN):
-        width = d.textlength(s, font=font(11)) + 22
-        box(x, y, width, 25, fill, 12)
-        txt(x+11, y+5, s, 11, color)
-
-    evolved = t >= 20
-    closed = t >= 29
-    offline = t >= 35
-    cost = 30 * ease((t-6)/1.2)
-    profit = round(3280 - 864 * cost/30 + (420 if closed else 0))
-    title, subtitle = ('A question becomes a workspace.', 'MELT  /  THE CAFÉ DEMO')
-    if t >= 5:
-        title, subtitle = 'Change an assumption. See the impact.', '01  /  EXPLORE'
-    if t >= 12:
-        title, subtitle = 'Ask for the tool you need next.', '02  /  EVOLVE'
-    if t >= 25:
-        title, subtitle = 'Keep the tool. Explore the decision.', '03  /  OPERATE'
-    if t >= 35:
-        title, subtitle = 'The model can leave. Your tools stay.', '04  /  OWN'
-    if t >= 40:
-        title, subtitle = 'Pick up exactly where you left off.', '05  /  RETURN'
-    txt(60, 25, subtitle, 12, GREEN, 'bold')
-    txt(60, 49, title, 31, INK, 'serif')
-    txt(1195, 53, 'melt', 31, INK, 'bold')
-    for i in range(4):
-        box(1290+i*12, 59+i*3, 7, 25-i*3, GREEN, 3)
-
-    # Desktop window and title bar.
-    box(44, 111, 1352, 718, '#d9d8d1', 18)
-    box(40, 105, 1360, 716, '#fafbf8', 16, '#d1d6cc')
-    box(41, 106, 1358, 43, '#f1f2ed', 15)
-    d.rectangle((41, 133, 1399, 149), fill='#f1f2ed')
-    for x, c in [(62, '#e68f82'), (82, '#e4c16e'), (102, '#87b68b')]:
-        d.ellipse((x, 122, x+10, 132), fill=c)
-    txt(153, 118, 'Melt', 14, INK, 'bold')
-    txt(204, 119, '/   Little Hours Café', 13, MUTED)
-    txt(1080, 120, 'Saved locally  ·  ' + ('10:43' if closed else '10:42'), 11, MUTED)
-    pill(1260, 114, 'Workspace', '#e4e9df', '#54644d')
-    line((40, 149, 1400, 149), '#dce0d6')
-
-    # Navigation.
-    d.rectangle((41, 150, 219, 793), fill='#f1f3ed')
-    txt(59, 173, 'LITTLE HOURS', 11, MUTED, 'bold')
-    txt(59, 194, 'Café workspace', 16, INK, 'bold')
-    box(51, 235, 157, 36, '#e0e8da', 7)
-    txt(65, 244, '▦  Overview', 13, GREEN, 'bold')
-    txt(65, 287, '◷  Run history', 13, MUTED)
-    txt(65, 327, '▤  Sources', 13, MUTED)
-    txt(59, 393, 'DATA SOURCES', 10, MUTED, 'bold')
-    for y, a, b in [(423, 'sales.csv', '842 rows'), (476, 'costs.csv', '18 ingredients'), (529, 'staffing.csv', '7 days')]:
-        txt(61, y, a, 12)
-        txt(61, y+19, b, 10, MUTED)
-    box(54, 684, 151, 87, '#e8ece2', 8)
-    txt(66, 697, 'Your workspace', 11, GREEN, 'bold')
-    txt(66, 718, 'Stored on this device', 10, MUTED)
-    txt(66, 739, 'All changes saved', 10, GREEN)
-
-    # Workspace header.
-    txt(243, 170, 'Can this café survive?', 25, INK, 'bold')
-    txt(244, 207, 'A small café. A few assumptions. A clearer decision.', 12, MUTED)
-    pill(909, 174, 'Scenario model')
-    for x, label, value, detail in [
-        (243, 'MONTHLY REVENUE', '€18,600' if not closed else '€17,400', 'Typical month · 30 days'),
-        (507, 'MONTHLY PROFIT', f'€{profit:,}', 'After operating costs'),
-        (771, 'PROFIT MARGIN', f'{profit/(17400 if closed else 18600)*100:.1f}%', 'Based on current assumptions')]:
-        box(x, 243, 250, 108, 'white', 10, LINE)
-        txt(x+16, 257, label, 10, MUTED, 'bold')
-        txt(x+16, 279, value, 29, GREEN if label == 'MONTHLY PROFIT' else INK, 'bold')
-        txt(x+16, 325, detail, 10, MUTED)
-
-    # Main chart.
-    chartw = 493 if evolved else 778
-    box(243, 365, chartw, 233, 'white', 10, LINE)
-    txt(260, 381, 'Profit by day', 15, INK, 'bold')
-    txt(260, 406, 'Weekly pattern · current scenario', 10, MUTED)
-    plotx, ploty, plotw = 288, 445, chartw-76
-    for k, label in enumerate(['€200', '€100', '€0']):
-        yy = ploty + k*54
-        txt(255, yy-6, label, 9, MUTED)
-        line((plotx, yy, plotx+plotw, yy))
-    values = [28, 61, 77, 89, 142, 180, 119]
-    gap = plotw/7
-    for i, v in enumerate(values):
-        reduced = v - cost*.65
-        if i == 0 and closed:
-            reduced = 0
-        bh = max(2, reduced*.54)
-        xx = plotx + i*gap+gap*.18
-        box(xx, 553-bh, gap*.48, bh, '#abc6a9' if i < 4 else GREEN, 4)
-        txt(xx-1, 564, ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][i], 10, MUTED)
-
-    if evolved:
-        box(750, 365, 271, 233, '#edf3e8', 10, '#d0dfc6')
-        txt(769, 381, 'Break-even', 15, INK, 'bold')
-        pill(931, 378, 'New', '#dae9cf')
-        txt(770, 425, '€539' if not closed else '€560', 34, GREEN, 'bold')
-        txt(770, 470, 'daily revenue needed', 12, MUTED)
-        box(770, 503, 230, 8, '#d4e0ca', 4)
-        box(770, 503, 183 if not closed else 192, 8, GREEN, 4)
-        txt(770, 529, 'Current: €620 / day' if not closed else 'Current: €669 / open day', 11)
-        txt(770, 565, 'Calculated with your cost assumptions', 9, MUTED)
-        glow = 1-ease((t-20)/2)
-        if glow:
-            d.rounded_rectangle((748, 363, 1023, 600), 12, outline=GREEN, width=2)
-
-    # Bottom assumptions and table.
-    box(243, 612, 370, 163, 'white', 10, LINE)
-    txt(260, 626, 'Assumptions', 14, INK, 'bold')
-    txt(260, 661, 'Coffee bean costs', 12)
-    box(482, 650, 113, 33, '#f5f6f2', 6, LINE)
-    txt(496, 658, f'+{round(cost)}%', 14, GREEN, 'bold')
-    if evolved:
-        txt(260, 702, 'Open on Mondays', 12)
-        box(554, 697, 40, 22, '#d7dcd4' if closed else GREEN, 11)
-        d.ellipse((557 if closed else 575, 700, 573 if closed else 591, 716), fill='white')
+    im = DESKTOP.copy()
+    c = Canvas(im)
+    box, txt, line = c.box, c.text, c.line
+    built = t >= 3.1
+    cost_ready = t >= 8.7
+    evolved = t >= 14.8
+    offline = t >= 20.3
+    cost = 30*ease((t-10)/.65)
+    closure = ease((t-17.6)/.45)
+    closed = t >= 17.6
+    profit = round(3280-864*cost/30+420*closure)
+    revenue = round(18600-1200*closure)
+    box(62, 70, 1316, 731, '#fafafa', 12, '#c9d0d8')
+    box(63, 71, 1314, 48, '#f0f0f2', 11)
+    c.d.rectangle((63, 100, 1377, 119), fill='#f0f0f2')
+    for x, color in [(84, '#ff6058'), (104, '#ffbd2e'), (124, '#28c840')]:
+        c.dot(x, 95, 6, color)
+    txt(165, 84, '▥', 20, MUTED)
+    txt(222, 87, 'Little Hours Café' if built else 'Untitled workspace', 13, INK, True)
+    txt(1085, 88, '✓ Saved' if built else 'Local workspace', 11, MUTED)
+    txt(1253, 86, '⊞    ···', 18, MUTED)
+    line((63, 119, 1377, 119), '#d8dade')
+    # Slim native sidebar.
+    c.d.rectangle((63, 120, 223, 777), fill='#eff0f3')
+    line((223, 120, 223, 777), '#dfe1e6')
+    txt(80, 143, 'WORKSPACE', 9, MUTED, True)
+    box(72, 166, 141, 32, '#dee2e9', 5)
+    txt(84, 175, '▦  Overview', 12, INK, True)
+    txt(84, 213, '◷  History', 12, '#5d6570')
+    txt(80, 272, 'SOURCES', 9, MUTED, True)
+    if t >= 2.8:
+        for yy, name in [(302, 'sales.csv'), (333, 'costs.csv'), (364, 'staffing.csv')]:
+            txt(84, yy, '▤  '+name, 11, '#5d6570')
     else:
-        txt(260, 704, 'Changes apply to this scenario only.', 10, MUTED)
-    box(260, 738, 335, 25, GREEN, 6)
-    txt(379, 743, 'Run scenario', 11, 'white', 'bold')
-    box(627, 612, 394, 163, 'white', 10, LINE)
-    txt(643, 626, 'Scenario results', 14, INK, 'bold')
-    txt(643, 660, 'SCENARIO', 9, MUTED, 'bold')
-    txt(853, 660, 'PROFIT / MO.', 9, MUTED, 'bold')
-    for y, label, val, active in [(686, 'Original costs', '€3,280', False), (714, 'Beans +30%', '€2,416', not closed), (742, 'Closed Mondays', '€2,836', closed)]:
-        if y == 714 and t < 7.2:
-            continue
-        if y == 742 and not closed:
-            continue
-        if active:
-            box(637, y-2, 374, 25, '#edf3e8', 4)
-        txt(645, y+2, label, 11)
-        txt(868, y+2, val, 11, GREEN if active else MUTED, 'bold' if active else 'normal')
-
-    # Agent panel, with a believable conversation and live patch receipt.
-    d.rectangle((1040, 150, 1399, 793), fill='#f6f7f3')
-    line((1040, 150, 1040, 793), '#dce0d6')
-    txt(1062, 171, '✦  Workspace agent', 15, INK, 'bold')
-    pill(1062, 203, 'Model disconnected' if offline else 'Connected', '#eee8dd' if offline else '#e7eedf', '#8b7450' if offline else GREEN)
-    txt(1062, 253, 'YOU', 10, MUTED, 'bold')
-    txt(1062, 276, 'Can this café survive?', 15)
-    txt(1062, 319, 'MELT', 10, GREEN, 'bold')
-    for i, s in enumerate(['I built a workspace from your', 'sales, costs, and staffing data.', '', 'Change an assumption to explore', 'what keeps the café profitable.']):
-        txt(1062, 342+i*22, s, 12, '#555e55')
-    if t >= 13:
-        box(1056, 466, 326, 84, '#e6ecdf', 9)
-        prompt = 'Add a break-even view and let me adjust opening hours.'
-        shown = prompt[:int(max(0, t-13)*24)]
-        parts = [shown[:30], shown[30:]]
-        txt(1070, 478, 'YOU', 9, MUTED, 'bold')
-        for i, s in enumerate(parts):
-            txt(1070, 500+i*21, s, 12)
-    if 16 <= t < 20:
-        txt(1065, 571, '✦  Updating your workspace' + '.'*(int(t*2)%4), 12, GREEN)
-        txt(1065, 597, 'Adding a calculation and a new view', 10, MUTED)
-    if t >= 20:
-        txt(1062, 570, '✓  Workspace updated', 13, GREEN, 'bold')
-        for i, s in enumerate(['Added a break-even calculation.', 'Your assumptions and views are kept.', '', 'Try closing on Mondays to compare', 'the monthly profit.']):
-            txt(1062, 599+i*21, s, 11, '#555e55')
-    box(1056, 727, 326, 48, '#ffffff', 9, LINE)
-    txt(1070, 743, 'Reconnect to ask for changes' if offline else 'Ask to change this workspace…', 11, MUTED)
-    line((40, 793, 1400, 793), '#dce0d6')
-    txt(58, 801, '●  Local workspace', 10, GREEN)
-    txt(246, 801, 'Local run complete · results saved' if t >= 37 else ('Scenario saved' if closed else 'All results saved'), 10, MUTED)
-    txt(1059, 801, 'Python actions available locally', 10, MUTED)
-
-    # Cursor choreography.
-    if 5 <= t < 11:
-        cx, cy = 545, 669
-    elif 26 <= t < 29:
-        cx, cy = 576, 709
-    elif 29 <= t < 32 or 35.5 <= t < 37:
-        cx, cy = 446, 750
+        txt(84, 303, 'No sources yet', 11, '#a0a5ad')
+    txt(82, 742, '●  On this Mac', 10, '#718172')
+    # Agent panel.
+    c.d.rectangle((1003, 120, 1377, 777), fill='#f7f7f9')
+    line((1003, 120, 1003, 777), '#dfe1e6')
+    txt(1025, 140, '✦  Agent', 14, INK, True)
+    txt(1308, 143, '···', 16, MUTED)
+    line((1003, 176, 1377, 176))
+    # Initial empty canvas: no pre-built app.
+    if not built:
+        txt(551, 372, '✦', 35, '#c2c8cd')
+        txt(470, 430, 'What are we building?', 20, '#656d76')
+        txt(451, 464, 'Start with a question and your data.', 12, '#9298a0')
     else:
-        cx, cy = -50, -50
-    if cx > 0:
-        if int(t*2)%2 == 0:
-            d.ellipse((cx-15, cy-15, cx+15, cy+15), outline='#85aa79', width=2)
-        d.polygon([(cx, cy), (cx+3, cy+22), (cx+9, cy+15), (cx+17, cy+16)], fill=INK)
+        txt(246, 144, 'Little Hours Café', 22, INK, True)
+        txt(246, 179, 'Overview', 11, MUTED)
+        txt(850, 151, 'This month  ⌄', 11, MUTED)
 
-    # Restore interlude, followed by the identical saved state.
-    if 40 <= t < 42:
-        overlay = Image.new('RGB', (W, H), BG)
-        od = ImageDraw.Draw(overlay)
-        od.text((625, 330), 'melt', font=font(58, 'bold'), fill=INK)
-        od.text((533, 430), 'Opening Little Hours Café', font=font(23), fill=INK)
-        od.text((551, 478), 'Restoring your saved workspace', font=font(16), fill=MUTED)
-        od.rounded_rectangle((560, 526, 880, 531), 2, fill='#d7dcd2')
-        od.rounded_rectangle((560, 526, 560+320*ease((t-40)/1.8), 531), 2, fill=GREEN)
-        im = overlay
-        d = ImageDraw.Draw(im)
-    if 42 <= t < 45:
-        box(555, 154, 340, 38, '#e1ecda', 9, '#bbd0ae')
-        txt(574, 165, '✓  Workspace restored. Ready to use.', 13, GREEN)
+    def reveal(start, draw):
+        if t < start:
+            return
+        layer = Image.new('RGBA', (W, H))
+        draw(Canvas(layer))
+        p = ease((t-start)/.45)
+        layer.putalpha(layer.getchannel('A').point(lambda a: round(a*p)))
+        im.alpha_composite(layer, (0, round(12*(1-p))))
 
-    # Footer and progress serve as the film's quiet captions.
-    foot = 'Synthetic café data  ·  Product concept animation'
-    txt(60, 851, foot, 11, MUTED)
-    txt(1003, 849, 'Ask. Adjust. Make it yours.', 16, GREEN, 'serif')
-    d.rectangle((0, 895, W*t/DURATION, 899), fill=GREEN)
-    return im
+    def metrics(g):
+        for xx, label, value, color in [(246, 'Revenue', f'€{revenue:,}', INK), (493, 'Net profit', f'€{profit:,}', GREEN if cost < 1 or closed else '#b37c2c'), (740, 'Margin', f'{profit/revenue*100:.1f}%', INK)]:
+            g.box(xx, 212, 232, 102, 'white', 8, LINE)
+            g.text(xx+15, 226, label, 11, MUTED)
+            g.text(xx+15, 250, value, 29, color, True)
+            g.text(xx+15, 290, 'Monthly estimate', 9, MUTED)
+    reveal(3.1, metrics)
+
+    def chart(g):
+        squeeze = ease((t-14.8)/.45)
+        cw = 726-256*squeeze
+        g.box(246, 329, cw, 242, 'white', 8, LINE)
+        g.text(262, 345, 'Daily profit', 13, INK, True)
+        g.text(262, 369, 'A typical week', 10, MUTED)
+        px, pw = 291, cw-72
+        for yy, label in [(410, '€200'), (463, '€100'), (516, '€0')]:
+            g.text(257, yy-5, label, 9, MUTED)
+            g.line((px, yy, px+pw, yy))
+        # A 30-day month has four Mondays and 26 other days.
+        # Closing Mondays removes their €105 loss in the high-cost case.
+        values = [-76.2-cost*.96, 82-cost*.96, 105-cost*.96, 128-cost*.96, 170-cost*.96, 197-cost*.96, 141.076923-cost*.96]
+        values[0] *= 1-closure
+        for i, val in enumerate(values):
+            x = px+i*pw/7+9
+            val *= ease((t-3.55-i*.055)/.55)
+            top = 516-max(0, val)*.49
+            bottom = 516-min(0, val)*.22
+            g.box(x, top, pw/7-18, max(2, bottom-top), '#bf9384' if val < 0 else '#6da490', 3)
+            g.text(x, 549, ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][i], 9, MUTED)
+    reveal(3.45, chart)
+
+    def break_even(g):
+        g.box(730, 329, 242, 242, '#edf4ef', 8, '#dce7dd')
+        g.text(746, 345, 'Break-even', 13, INK, True)
+        g.text(746, 390, '€560' if closed else '€539', 35, GREEN, True)
+        g.text(746, 438, 'per open day', 12, MUTED)
+        g.box(746, 477, 208, 6, '#d4e2d7', 3)
+        g.box(746, 477, 174, 6, GREEN, 3)
+        g.text(746, 500, '€669 daily revenue' if closed else '€620 daily revenue', 11, GREEN)
+        g.text(746, 544, 'Based on your current costs', 9, MUTED)
+    reveal(15, break_even)
+
+    def lower(g):
+        g.box(246, 586, 350, 171, 'white', 8, LINE)
+        g.text(262, 601, 'Scenario', 13, INK, True)
+        if cost_ready:
+            g.text(262, 636, 'Bean costs', 11)
+            g.text(521, 633, f'+{round(cost)}%', 15, GREEN, True)
+            g.line((263, 671, 564, 671), '#e0e5e3', 4)
+            g.line((263, 671, 263+cost/50*301, 671), GREEN, 4)
+            g.dot(263+cost/50*301, 671, 7, GREEN)
+        else:
+            g.text(262, 638, 'Original costs', 12, '#5e6771')
+            g.text(262, 664, 'Ask the agent to add a scenario.', 11, MUTED)
+        if evolved:
+            g.text(262, 704, 'Open Mondays', 11)
+            g.box(395, 701, 34, 19, '#cbd1d5' if closed else GREEN, 10)
+            g.dot(420-16*closure, 710, 7, 'white')
+        g.box(473, 698, 106, 30, GREEN, 6)
+        g.text(490, 706, 'Run  ↵', 12, 'white', True)
+        g.box(611, 586, 361, 171, 'white', 8, LINE)
+        g.text(627, 601, 'Saved scenarios', 13, INK, True)
+        for yy, label, value, show in [(637, 'Original', '€3,280', True), (674, 'Beans +30%', '€2,416', cost >= 29.9), (711, 'Mondays off', '€2,836', closed)]:
+            if show:
+                if (closed and yy == 711) or (not closed and cost >= 29.9 and yy == 674):
+                    g.box(621, yy-3, 340, 29, '#eaf2ed', 4)
+                g.text(630, yy+3, label, 11)
+                g.text(885, yy+3, value, 11, GREEN, True)
+    reveal(3.85, lower)
+
+    # Conversation drives every new part of the interface.
+    def message(y, role, lines, user=False):
+        if user:
+            box(1020, y, 339, len(lines)*21+34, '#e7eaf0', 9)
+        txt(1033, y+10, role, 9, '#747d88' if user else GREEN, True)
+        for i, s in enumerate(lines):
+            txt(1033, y+30+i*21, s, 12, INK)
+
+    if t >= 2.3:
+        message(192, 'YOU', ['Can this café survive?', 'Build me a tool from these files.'], True)
+        for xx, label in [(1033, 'sales.csv'), (1143, 'costs.csv'), (1245, 'staffing.csv')]:
+            box(xx, 280, 99, 24, '#f0f1f4', 5, '#dfe2e7')
+            txt(xx+8, 286, label, 10, '#68727c')
+    if 2.6 <= t < 4.5:
+        txt(1033, 326, '✦  Building your workspace' + '.'*(int(t*3)%4), 12, GREEN)
+    elif t >= 4.5:
+        message(316, 'MELT', ['€3,280 profit per month.', 'Mondays are losing money.'])
+    if t >= 8.1:
+        message(410, 'YOU', ['What if beans cost 30% more?'], True)
+    if t >= 9:
+        message(482, 'MELT', ['Added a cost control. Try it.'])
+    if t >= 14.2:
+        message(550, 'YOU', ['Add break-even. Let me close', 'on Mondays.'], True)
+    if t >= 15.6:
+        txt(1033, 644, '✓  Added both. Your values are kept.', 11, GREEN)
+
+    # Live typing happens in the input, then becomes a sent message.
+    box(1019, 690, 341, 69, 'white', 9, '#d9dde3')
+    prompt, begin, finish = '', 0, 0
+    for a, b, text in [(.25, 2.3, 'Can this café survive?\nBuild me a tool from these files.'), (6.35, 8.1, 'What if beans cost 30% more?'), (12.2, 14.2, 'Add break-even. Let me close\non Mondays.')]:
+        if a <= t < b:
+            prompt, begin, finish = text, a, b
+    if prompt:
+        shown = prompt[:int(len(prompt)*min(1, (t-begin)/(finish-begin-.22)))]
+        for i, row in enumerate(shown.split('\n')):
+            txt(1032, 703+i*19, row + ('│' if i == len(shown.split('\n'))-1 else ''), 12)
+    else:
+        txt(1032, 705, 'Ask for a change…' if not offline else 'Agent offline · tools still available', 11, MUTED)
+    box(1320, 724, 25, 25, '#2b7661' if prompt else '#e4e7eb', 6)
+    txt(1327, 726, '↑', 16, 'white' if prompt else MUTED)
+    # Status stays inside the app.
+    line((63, 777, 1377, 777), '#e0e2e6')
+    txt(80, 784, 'Local workspace', 9, MUTED)
+    txt(247, 784, '✓ Local run complete' if t >= 21.6 else ('✓ All changes saved' if built else ''), 9, GREEN)
+    txt(1194, 784, '● Agent offline' if offline else '● Agent connected', 9, '#9a855d' if offline else GREEN)
+    # Cursor moves between the conversation and the actual tools.
+    points = [(0, 1155, 724), (2, 1331, 736), (2.5, 1331, 736), (5, 1144, 716), (7.8, 1331, 736), (8.3, 1331, 736), (9.6, 263, 671), (10, 263, 671), (10.65, 444, 671), (11.1, 521, 712), (11.6, 521, 712), (12, 1166, 720), (14, 1331, 736), (14.4, 1331, 736), (16.6, 414, 712), (17.6, 414, 712), (18.1, 521, 712), (18.7, 521, 712), (19.5, 1270, 787), (20.4, 1270, 787), (21.1, 521, 712), (21.7, 521, 712), (22.3, 986, 750), (24, 986, 750)]
+    for a, b in zip(points, points[1:]):
+        if a[0] <= t <= b[0]:
+            p = ease((t-a[0])/(b[0]-a[0]))
+            mx, my = a[1]+(b[1]-a[1])*p, a[2]+(b[2]-a[2])*p
+            break
+    else:
+        mx, my = 986, 750
+    for click in [2.23, 8.03, 11.25, 14.13, 17.6, 18.3, 20.25, 21.4]:
+        if 0 <= t-click < .28:
+            r = 5+17*(t-click)/.28
+            c.d.ellipse((mx-r, my-r, mx+r, my+r), outline='#7aa8c7', width=2)
+    c.d.polygon([(mx, my), (mx+1, my+22), (mx+6, my+17), (mx+11, my+26), (mx+15, my+24), (mx+10, my+15), (mx+18, my+14)], fill='#24282d', outline='white', width=1)
+    return im.convert('RGB')
 
 
 def render():
-    for sec, name in [(3, '01-workspace'), (22, '02-evolved'), (36, '03-offline')]:
-        frame(sec).save(ROOT / f'{name}.png')
+    DESKTOP.convert('RGB').save(ROOT/'desktop-wallpaper.png')
+    for sec, name in [(.1, '00-empty'), (5, '01-workspace'), (18.9, '02-evolved'), (22.8, '03-offline')]:
+        frame(sec).save(ROOT/f'{name}.png')
     process = subprocess.Popen([
         'ffmpeg', '-y', '-loglevel', 'error', '-f', 'rawvideo', '-vcodec', 'rawvideo',
         '-pix_fmt', 'rgb24', '-s', f'{W}x{H}', '-r', str(FPS), '-i', '-',
-        '-an', '-c:v', 'libx264', '-preset', 'fast', '-crf', '19',
-        '-pix_fmt', 'yuv420p', '-movflags', '+faststart', str(ROOT / 'melt-cafe-demo.mp4'),
+        '-an', '-c:v', 'libx264', '-preset', 'fast', '-crf', '18',
+        '-pix_fmt', 'yuv420p', '-movflags', '+faststart', str(ROOT/'melt-cafe-demo.mp4'),
     ], stdin=subprocess.PIPE)
     for i in range(FPS*DURATION):
         process.stdin.write(frame(i/FPS).tobytes())
-        if i % (FPS*8) == 0:
+        if i % (FPS*6) == 0:
             print(f'Rendered {i//FPS}s / {DURATION}s', flush=True)
     process.stdin.close()
     if process.wait():

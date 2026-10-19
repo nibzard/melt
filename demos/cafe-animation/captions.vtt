@@ -1,25 +1,22 @@
 WEBVTT
 
-00:00.000 --> 00:05.000
-A café workspace shows sales, costs, and monthly profit.
+00:00.000 --> 00:03.100
+An empty Melt workspace. Ask: Can this café survive?
 
-00:05.000 --> 00:12.000
-Coffee bean costs rise 30%. Monthly profit falls from €3,280 to €2,416.
+00:03.100 --> 00:06.350
+Melt builds charts and scenario tools from three files.
 
-00:12.000 --> 00:20.000
-Ask Melt: Add a break-even view and let me adjust opening hours.
+00:06.350 --> 00:09.000
+Ask: What if beans cost 30% more? A cost control appears.
 
-00:20.000 --> 00:25.000
-A new view and a Monday control appear. Existing assumptions stay in place.
+00:09.000 --> 00:12.200
+Drag the control. Monthly profit drops to €2,416.
 
-00:25.000 --> 00:35.000
-Close on Mondays. In this scenario, monthly profit rises to €2,836.
+00:12.200 --> 00:16.000
+Ask for break-even and a Monday control. Both appear in the workspace.
 
-00:35.000 --> 00:40.000
-Disconnect the model. The saved Python action still runs locally.
+00:16.000 --> 00:20.300
+Close on Mondays. Monthly profit rises to €2,836.
 
-00:40.000 --> 00:42.000
-Restart Melt and restore the saved workspace.
-
-00:42.000 --> 00:48.000
-The same controls, assumptions, and results return.
+00:20.300 --> 00:24.000
+Disconnect the agent. Run the saved tool locally.
