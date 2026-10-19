@@ -1,0 +1,1 @@
+Linux and native jobs both passed for a192231. Add the remaining operating-system route check: launch the built app with a saved descriptor, verify its live workspace owner, quit cleanly, and reopen through the default file handler. Native rerun pending for LaunchServices coverage and background drawing.
