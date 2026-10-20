@@ -246,8 +246,9 @@ def test_the_no_macos_claim_matches_the_tree():
         cwd=REPO, capture_output=True, text=True, check=True,
     )
     assert native_at_gate.stdout == ""
-    placeholder = (REPO / "tests" / "native" / "test_native_round2.py").read_text(
-        encoding="utf-8"
+    placeholder = subprocess.check_output(
+        ["git", "show", f"{record['verifiedTree']}:tests/native/test_native_round2.py"],
+        cwd=REPO, text=True,
     )
     assert "pytest.mark.skip" in placeholder
 

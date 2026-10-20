@@ -55,6 +55,7 @@ def run_record(**overrides) -> dict:
 def test_record_types_are_versioned():
     assert RECORD_SCHEMA_VERSION == 1
     assert set(RECORD_TYPES) == {
+        "hostView",
         "run",
         "registration",
         "permissionGrant",

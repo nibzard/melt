@@ -598,7 +598,30 @@ class PageResponse(RecordBase):
         return value
 
 
+class HostViewRecord(RecordBase):
+    """Service-owned native view settings, outside exported documents (section 10)."""
+
+    recordType: Literal["hostView"]
+    projectionId: EntityId
+    revision: PositiveSafeInt
+    kind: Literal["table", "plot", "document", "graph", "record"]
+    sort: tuple[SortKey, ...] = ()
+    filters: tuple[Filter, ...] = ()
+    pinned: StrictBool = False
+    deleted: StrictBool = False
+    selectionSource: SourceReference | None = None
+    rowKey: EntityId | None = None
+    selectedKey: StrictStr | None = None
+
+    @model_validator(mode="after")
+    def _complete_selection(self):
+        if self.selectedKey is not None and (self.selectionSource is None or self.rowKey is None):
+            raise ValueError("a selected key requires its source reference and row-key column")
+        return self
+
+
 MeltRecord = Union[
+    HostViewRecord,
     RunRecord,
     RegistrationRecord,
     PermissionGrantRecord,
@@ -616,6 +639,7 @@ MeltRecord = Union[
 ]
 
 RECORD_TYPES: dict[str, int] = {
+    "hostView": RECORD_SCHEMA_VERSION,
     "run": RECORD_SCHEMA_VERSION,
     "registration": RECORD_SCHEMA_VERSION,
     "permissionGrant": RECORD_SCHEMA_VERSION,
@@ -702,6 +726,7 @@ def record_to_wire(record: MeltRecord) -> dict:
 
 
 __all__ = [
+    "HostViewRecord",
     "ArtifactRecord",
     "CapturedParameter",
     "ChangeNotification",

@@ -49,6 +49,10 @@ asserts the verdict, so `make check` gates on it.
   adapter's migrations, commits, and WAL checkpoints.
 - A fresh connection starts at `NORMAL` again: `synchronous` is per
   connection, so every open must apply and verify it.
+- On macOS the wrapper also enables and verifies `fullfsync=ON` and
+  `checkpoint_fullfsync=ON` on every owning connection. The probe verifies
+  both after commits and a WAL checkpoint. See the [macOS verification
+  record](../../../docs/gates/macos-storage.md) for APFS results and limits.
 - fsync evidence: a 21-commit run (root conversation plus 20 entries)
   produced 30 `fsync`/`fdatasync` calls under FULL and 8 under the shipped
   default, measured under `strace`. FULL adds at least one fsync per commit;

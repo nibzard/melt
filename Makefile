@@ -1,4 +1,13 @@
-.PHONY: check lock protocol probe-setup probe pele-setup probe-pele fixtures benchmark-round1
+.PHONY: check lock protocol probe-setup probe pele-setup probe-pele fixtures benchmark-round1 native-check native-package native-package-check
+
+native-check:
+	./native/check.sh
+
+native-package:
+	uv run --locked python3 native/package.py
+
+native-package-check:
+	./native/package-check.sh
 
 # One command that runs the full Melt test suite (backlog task T001).
 check:

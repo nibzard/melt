@@ -632,11 +632,55 @@ def test_sorting_does_not_collide_with_imported_field_names():
 
 @pytest.mark.parametrize(
     "column,value",
-    [("day", "2026-02-30"), ("moment", "2026-13-01T00:00:00Z"), ("quantity", 1e30)],
+    [
+        ("day", "2026-02-30"),
+        ("day", "0000-01-01"),
+        ("moment", "2026-13-01T00:00:00Z"),
+        ("moment", "2026-01-01T25:00:00Z"),
+        ("moment", "2026-01-01T00:00:00+01:99"),
+        ("moment", "0001-01-01T00:00:00+01:00"),
+        ("quantity", 1e30),
+        ("quantity", -1e30),
+        ("price", 1e30),
+        ("price", 0.001),
+    ],
 )
-def test_invalid_filter_values_return_diagnostics(column, value):
+def test_invalid_filter_values_return_diagnostics(service_adapter, column, value):
+    from melt.schema.canonical import model_to_wire
+    from melt.schema.commands import decode_frame, encode_frame
+
     result, errors = read(
         page(filters=[{"column": column, "operator": "eq", "value": value}])
     )
     assert result is None
-    assert ("E_TYPE", "/payload/filters/0/value") in codes_of(errors)
+    assert codes_of(errors) == [("E_TYPE", "/payload/filters/0/value")]
+
+    service = seed_workspace(service_adapter, grant=False).service
+    _import_rich_source(service)
+    request = _envelope(
+        "invalid-filter", method="table.page",
+        payload={"source": {"sourceId": "rich", "version": 1},
+                 "offset": 0, "limit": 3,
+                 "filters": [{"column": column, "operator": "eq", "value": value}]},
+    )
+    answer = service.dispatch(request)
+    assert not answer.ok
+    assert codes_of(answer.errors) == codes_of(errors)
+
+    frame = encode_frame(json.dumps(model_to_wire(request)).encode())
+    response_frame = service.process_frame(frame)
+    body, consumed = decode_frame(response_frame)
+    assert consumed == len(response_frame)
+    response = json.loads(body)
+    assert response["ok"] is False
+    assert [(e["code"], e["path"]) for e in response["errors"]] == codes_of(errors)
+
+    # A bad filter must leave the channel usable for the next request.
+    request = _envelope(
+        "valid-page", method="table.page",
+        payload={"source": {"sourceId": "rich", "version": 1}, "offset": 0, "limit": 3},
+    )
+    body, _ = decode_frame(service.process_frame(
+        encode_frame(json.dumps(model_to_wire(request)).encode())
+    ))
+    assert json.loads(body)["ok"] is True

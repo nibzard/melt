@@ -259,6 +259,10 @@ async function opFacts() {
 			adapterVersion: assertPinnedAdapter(),
 			journalMode: await readPragma(db, "journal_mode"),
 			synchronous: await readPragma(db, "synchronous"),
+			...(process.platform === "darwin" ? {
+				fullfsync: await readPragma(db, "fullfsync"),
+				checkpointFullfsync: await readPragma(db, "checkpoint_fullfsync"),
+			} : {}),
 			integrityCheck: await readPragma(db, "integrity_check"),
 		},
 	};

@@ -1,87 +1,114 @@
-# Native host: first integration
+# Native macOS host
 
-This directory contains the first AppKit host source for macOS 13 or later.
-It uses the existing Python compiler, workspace service, runner, and artifact store.
-It does not create a second source of workspace state.
+The AppKit host renders compiled plans through the existing Python workspace
+service. It keeps table, plot, document, control, and Ghostty controllers alive
+across source and layout updates. The service owns revisions, execution,
+permissions, publication, and durable state.
 
-**Status:** The prototype compiles and passes native workflow checks on macOS 15 ARM in [CI](https://github.com/nibzard/melt/actions/runs/39244987090/job/118034632407).
-The build targets macOS 13 or later; macOS 13 itself has not been tested. The full native release gate remains open.
+## Development build
 
-## Build on macOS
+Install the [repository toolchain](../README.md#try-it), full Xcode, and its Metal
+compiler. If `xcrun -sdk macosx metal -v` reports that the compiler is missing, run
+`xcodebuild -downloadComponent MetalToolchain`.
 
-Install the Xcode command line tools and the [repository toolchain](../README.md#try-it).
-Run these commands from the repository root:
+From the repository root:
 
 ```bash
-make probe-setup
-make pele-setup
-./native/check.sh
+make probe-setup pele-setup
+make native-check
 uv run --locked python3 examples/04-cafe/run.py --output /tmp/little-hours
 open -a "$PWD/build/native/Melt.app" "/tmp/little-hours/Little Hours.meltapp"
 ```
 
-`native/check.sh` builds and signs `build/native/Melt.app` locally.
-It also compiles checks for launcher validation, controller continuity during table updates, and recovery after a missing result.
-The checks then create a café workspace, change its controls through the native host, run the calculation,
-save a launcher, close the window, and reopen it with matching state, plans, and displayed results.
-The checks also select a supplier through the native control and verify both inspectors.
-A LaunchServices check opens the built application, quits it, and opens the saved file through its default handler.
-Run-history checks verify that reopening and selection do not execute project code.
-Window captures are written to `build/native/artifacts/`.
-The resulting bundle references this checkout and its Python environment. Keep both in place.
-This is a development bundle, not a standalone distribution.
+The first build fetches Ghostty commit
+`c7cbc9bfd44cb11a9c7eae00f1166624671e363b`, then builds its internal embedding
+library with Zig 0.16.0 and ReleaseFast optimization. The setup script downloads
+and verifies Zig if that version is unavailable. This C embedding interface is
+pinned with its matching header; upgrading Ghostty requires adapter validation.
+Swift builds use `-O`. The deployment target is macOS 13; current local checks
+run on Apple Silicon macOS 26.6.2. macOS 13 has not been validated.
 
-## Current host scope
+`build/native/Melt.app` is an ad-hoc-signed development bundle that references
+this checkout and its Python environment. Keep both in place.
 
-- Load the compiled layout and keep pane controllers by projection identity.
-- Display bounded table pages, PNG plots, text documents, and record observers.
-- Use a native node selector for graph events and linked inspectors.
-- Edit typed parameter controls, activate actions, and cancel a run.
-- Grant execution permission through a host-generated dialog.
-- Preview and apply a saved operation array through **Apply change**.
-- Save a local workspace reference with **Save to Desktop**.
-- Reopen that reference without running project code.
+## Host behavior
 
-**Apply change** accepts structured operations from a file. It is not a live model integration.
-Programmatic proposals use the same service validation as user commands and cannot grant execution permission.
+- Tables offer bounded paging, sorting, typed filters, and text copying. Sort,
+  filter, keyed selection, and pin settings persist in separate host records.
+  Restoration validates the selected key against the approved source bytes.
+- PNG plots decode away from the main thread, verify their saved content hash,
+  support zoom/fit and exact-byte export, and identify the generating run.
+- Documents support plain text and Markdown. Markdown does not load remote
+  images, embed attachments, or enable executable URI schemes.
+- Typed parameter controls and action buttons use the same revision checks as
+  the command-line harness. Local controls and saved results need no model.
+- Pane headers offer move-first, pin, and hide controls. The toolbar restores
+  hidden panes. Divider changes persist through revision-checked commands.
+  Small windows use a selector without rewriting the saved layout.
+- **Terminal** explicitly creates a Ghostty surface beside the authored layout.
+  Hiding or moving Melt panes preserves the terminal surface. Opening a saved
+  workspace does not start a shell. The shell uses `/bin/zsh -f`, starts in the
+  workspace data directory, and excludes model credentials using the execution
+  environment policy. Clipboard paste is a user action; terminal clipboard-read
+  requests are denied.
+- **Apply change** previews structured operations from a file. Programmatic
+  proposals cannot grant execution permission and protect pinned panes and
+  active edits. A live model prompt/provider adapter is not implemented.
+- **Save to Desktop** saves a `melt-launcher/v1` reference to existing local data,
+  not a portable copy of the workspace or a permission grant.
+
+## Checks and evidence
+
+`make check` includes the native suite on macOS and skips AppKit on Linux.
+`make native-check` runs just the native harness. It checks controller identity,
+focus, input/preedit, accessibility adapters, table controls, clipboard text,
+Markdown policy, plot zoom/export, split persistence, hiding, overflow, and
+Ghostty input. It drives the café and sales calculations, moves a sales pane
+while Python runs, restores five saved panes, and verifies linked selection and
+LaunchServices behavior. Saved history verifies restoration never reruns code.
+
+Artifacts are written to `build/native/artifacts/`, including timing samples in
+`native-acceptance.json`. AppKit bitmap captures can omit Metal terminal layers;
+they are not evidence of Ghostty's on-screen rendering. Automated preedit and
+accessibility assertions do not replace manual input-method and screen-reader
+validation. See [the native gate record](../docs/gates/native-application.md).
+
+## Standalone local package
+
+Use uv's managed relocatable Python 3.12.3 environment:
+
+```bash
+make native-package
+./native/package-check.sh --skip-build
+# Or rebuild and check together:
+make native-package-check
+```
+
+`build/package/Melt.app` embeds Python, locked runtime distributions, both pinned
+Node adapters, Node 22.19.0, and Ghostty resources. Packaging verifies copied
+installed files against their wheel RECORD hashes and records locked wheel
+hashes and copied-tree hashes in `Contents/Resources/Package.json`. Python's
+standalone build and Node archive hash are recorded too. Runtime imports use
+isolated mode without bytecode writes, so calculations do not alter the signed
+bundle.
+
+The package check relocates a copy into a path with spaces, checks isolated
+imports with a deliberately invalid `PYTHONPATH`, audits native-library paths
+and signatures, runs native workflows and LaunchServices against that copy,
+and verifies signatures again. Fixture preparation and the test harness still
+use development tools on this Mac. This does not establish clean-machine or
+minimum-OS compatibility. Bundles use ad-hoc signing; Developer ID signing,
+notarization, and distribution remain outstanding.
 
 ## Service boundary
 
-The host starts one owned `python3 -m runtime.desktop` process per workspace.
-Requests and responses use private pipes with four-byte length prefixes and a 1 MiB frame limit.
-Pane previews share the remaining response space after the snapshot and plan.
-Large text and table previews show a partial result; saved artifacts remain complete.
-User commands wait for earlier requests. Parameter edits use the acknowledged revision when sent.
-Closing a window drains queued commands before stopping its service.
-The service remains the sole writer and owns revisions, scheduling, permissions, and publication.
-No network listener is created.
+Each workspace has one owned `python3 -m runtime.desktop` process with private
+pipes, four-byte length prefixes, and a 1 MiB frame limit. Project stdout never
+shares the control pipe. Preview truncation preserves page continuation offsets;
+saved artifacts remain complete. Transport, table reads, image decoding, and
+Markdown parsing run away from the native main thread.
 
-Calculations run in the service's non-blocking execution slot.
-The host polls completed runs and publishes only runs launched by its current session.
-Restoration does not publish or replay old uncertain work.
-Closing the host pipe asks the service to flush state and stop owned workers.
-Quitting the application waits for its workspace services to stop before completing termination.
-
-`melt-launcher/v1` is a host-local descriptor with `root` and `workspaceId` fields.
-It contains an absolute reference to existing local data.
-It does not contain a copy, grant new authority, install code, or implement portable sharing.
-
-## Checks still required
-
-The automated checks cover the café workflow and default file handler.
-Complete the remaining native acceptance work before claiming a release:
-
-1. Verify keyboard input, input methods, clipboard, and accessibility with the native controls.
-2. Add, move, and hide panes; verify focus, controller continuity, and small-window behavior.
-3. Exercise missing environments, unavailable artifacts, and conflicts through the native interface.
-4. Add paging, sorting, filtering, plot navigation, Markdown rendering, and split-position persistence.
-5. Integrate Ghostty and the live agent prompt through tested host adapters.
-6. Record native performance measurements and test packaging on a clean Mac.
-
-The host currently displays Markdown as source text and only the first 64 rows of each table.
-Table paging controls, sorting, filtering, plot zoom/export, graph edges and Pele hit regions, split-position persistence,
-Ghostty integration, a live agent prompt, host performance measurements, and distribution packaging remain open.
-These limits prevent this host from satisfying the full native application gate in `SPEC.md`.
-
-The repository's `Melt checks` workflow runs the native checks on a macOS 15 ARM runner.
-Its current result, rather than the presence of the workflow file, determines whether native validation passes.
+The service uses its nonblocking execution slot. The host publishes completed
+runs launched by its session; restoration does not replay uncertain work.
+Closing a window drains queued commands and stops owned workers. Quitting waits
+for workspace services. No network listener is created.

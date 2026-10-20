@@ -1081,6 +1081,114 @@
       "title": "HighlightObserve",
       "type": "object"
     },
+    "HostViewRecord": {
+      "additionalProperties": false,
+      "description": "Service-owned native view settings, outside exported documents (section 10).",
+      "properties": {
+        "deleted": {
+          "default": false,
+          "title": "Deleted",
+          "type": "boolean"
+        },
+        "filters": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Filter"
+          },
+          "title": "Filters",
+          "type": "array"
+        },
+        "kind": {
+          "enum": [
+            "table",
+            "plot",
+            "document",
+            "graph",
+            "record"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "pinned": {
+          "default": false,
+          "title": "Pinned",
+          "type": "boolean"
+        },
+        "projectionId": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+          "title": "Projectionid",
+          "type": "string"
+        },
+        "recordType": {
+          "const": "hostView",
+          "title": "Recordtype",
+          "type": "string"
+        },
+        "revision": {
+          "gt": 0,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "rowKey": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9_-]{0,63}\\z",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rowkey"
+        },
+        "schemaVersion": {
+          "gt": 0,
+          "title": "Schemaversion",
+          "type": "integer"
+        },
+        "selectedKey": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Selectedkey"
+        },
+        "selectionSource": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceReference"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "sort": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SortKey"
+          },
+          "title": "Sort",
+          "type": "array"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "recordType",
+        "projectionId",
+        "revision",
+        "kind"
+      ],
+      "title": "HostViewRecord",
+      "type": "object"
+    },
     "ImageSchema": {
       "additionalProperties": false,
       "properties": {
@@ -1170,6 +1278,9 @@
     },
     "MeltRecord": {
       "oneOf": [
+        {
+          "$ref": "#/$defs/HostViewRecord"
+        },
         {
           "$ref": "#/$defs/RunRecord"
         },

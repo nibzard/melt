@@ -347,7 +347,7 @@ def test_large_document_previews_share_the_response_budget(tmp_path):
 
 def test_large_table_previews_preserve_complete_rows():
     rows = [[str(index), "😀" * 5000] for index in range(64)]
-    table = {"columns": ["id", "text"], "rows": rows, "hasMore": False, "totalRows": 64}
+    table = {"columns": ["id", "text"], "rows": rows, "offset": 100, "hasMore": False, "totalRows": 164}
     answer = {"ok": True, "view": {"snapshot": {}, "plan": {},
         "panes": {"table": {"status": "ready", "table": table},
                   "summary": {"status": "ready", "text": "Small summary", "truncated": False}}}}
@@ -359,7 +359,166 @@ def test_large_table_previews_preserve_complete_rows():
     preview = panes["table"]["table"]
     assert 0 < len(preview["rows"]) < 64
     assert preview["rows"] == rows[:len(preview["rows"])]
-    assert preview["totalRows"] == 64
+    assert preview["totalRows"] == 164
+    assert preview["nextOffset"] == 100 + len(preview["rows"])
     assert preview["hasMore"]
     assert panes["summary"] == answer["view"]["panes"]["summary"]
     assert table["rows"] == rows and not table["hasMore"]
+
+
+def install_paged_table(bridge):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    sink = pa.BufferOutputStream()
+    pq.write_table(pa.table({"index": list(range(130)), "label": [f"Row {i}" for i in range(130)]}), sink)
+    service = bridge.session.service
+    token = service.capture_artifact_token(sink.getvalue().to_pybytes(), "application/vnd.apache.parquet")
+    imported = bridge.session.request("source.import", expected={"sources/paged": 0},
+        payload={"sourceId": "paged", "artifactToken": token.token, "originLabel": "paged.parquet"})
+    assert imported["ok"], imported
+    view = bridge.view()
+    definition = {**view["snapshot"]["document"]["projections"]["daily"],
+        "source": {"sourceId": "paged", "version": 1}, "config": {"columns": None, "selection": "none"}}
+    applied = bridge.session.request("workspace.apply",
+        expected={"projections/daily": view["snapshot"]["entityRevisions"]["projections/daily"]},
+        operations=[{"op": "entity.replace", "collection": "projections", "id": "daily", "value": definition}])
+    assert applied["ok"], applied
+
+
+def table_query(bridge, **changes):
+    view = bridge.view()
+    pane = view["panes"]["daily"]
+    return {"operation": "table.query", "projectionId": "daily", "source": pane["source"],
+        "expectedRevision": pane["viewSettings"]["revision"],
+        "expectedProjectionRevision": view["snapshot"]["entityRevisions"]["projections/daily"], **changes}
+
+
+def test_table_paging_sort_filter_and_restart_are_host_state(cafe_root):
+    bridge = open_bridge(cafe_root)
+    try:
+        install_paged_table(bridge)
+        before = bridge.view()
+        definitions = before["snapshot"]["document"]
+        run_count = len(bridge.session.service.runs)
+        assert len(before["panes"]["daily"]["table"]["rows"]) == 64
+        stale = table_query(bridge, sort=[])
+        response = bridge.handle(table_query(bridge,
+            sort=[{"column": "index", "direction": "desc"}],
+            filters=[{"column": "index", "operator": "gte", "value": 65}]))
+        assert response["ok"], response
+        pane = response["view"]["panes"]["daily"]
+        assert pane["table"]["rows"][0] == ["129", "Row 129"]
+        response = bridge.handle(table_query(bridge, offset=pane["table"]["nextOffset"]))
+        assert response["ok"]
+        assert response["view"]["panes"]["daily"]["table"]["rows"] == [["65", "Row 65"]]
+        assert bridge.handle(stale)["ok"] is False
+        assert bridge.view()["snapshot"]["document"] == definitions
+        assert len(bridge.session.service.runs) == run_count
+    finally:
+        bridge.close()
+    bridge = open_bridge(cafe_root)
+    try:
+        pane = bridge.view()["panes"]["daily"]
+        assert pane["viewSettings"]["revision"] == 1
+        assert pane["table"]["offset"] == 0
+        assert pane["table"]["rows"][0][0] == "129"
+        assert pane["viewSettings"]["filters"][0]["value"] == 65
+    finally:
+        bridge.close()
+
+
+def test_bad_table_filter_does_not_commit_or_lose_the_previous_page(cafe_root):
+    bridge = open_bridge(cafe_root)
+    try:
+        install_paged_table(bridge)
+        before = bridge.view()
+        sequence = bridge.session.service.commit_sequence
+        answer = bridge.handle(table_query(bridge,
+            filters=[{"column": "index", "operator": "eq", "value": 1e30}]))
+        assert not answer["ok"]
+        assert answer["errors"][0]["code"] == "E_TYPE"
+        assert bridge.session.service.commit_sequence == sequence
+        assert answer["view"]["panes"]["daily"] == before["panes"]["daily"]
+    finally:
+        bridge.close()
+
+
+def test_recreating_a_projection_resets_host_settings_atomically(cafe_root):
+    bridge = open_bridge(cafe_root)
+    try:
+        install_paged_table(bridge)
+        assert bridge.handle(table_query(bridge, sort=[{"column": "index", "direction": "desc"}]))["ok"]
+        view = bridge.view()
+        stale = table_query(bridge)
+        definition = view["snapshot"]["document"]["projections"]["daily"]
+        response = bridge.session.request("workspace.apply",
+            expected={"projections/daily": view["snapshot"]["entityRevisions"]["projections/daily"]},
+            operations=[{"op": "entity.delete", "collection": "projections", "id": "daily"},
+                {"op": "entity.create", "collection": "projections", "id": "daily", "value": definition}])
+        assert response["ok"], response
+        assert bridge.view()["panes"]["daily"]["viewSettings"]["sort"] == []
+        assert bridge.handle(stale)["ok"] is False
+    finally:
+        bridge.close()
+    bridge = open_bridge(cafe_root)
+    try:
+        assert bridge.view()["panes"]["daily"]["viewSettings"]["sort"] == []
+    finally:
+        bridge.close()
+
+
+def test_pinned_panes_and_active_edits_reject_destructive_proposals(cafe_root):
+    bridge = open_bridge(cafe_root)
+    try:
+        view = bridge.view()
+        revision = view["snapshot"]["entityRevisions"]["projections/daily"]
+        pinned = bridge.handle({"operation": "view.pin", "projectionId": "daily", "pinned": True,
+            "expectedRevision": 0, "expectedProjectionRevision": revision})
+        assert pinned["ok"]
+        sequence = bridge.session.service.commit_sequence
+        original = view["snapshot"]["document"]["layout"]
+        # Hide a pane in a structurally valid layout, keeping every other pane.
+        def remove(node):
+            if node["kind"] == "pane":
+                return None if node["projection"] == "daily" else node
+            first, second = remove(node["first"]), remove(node["second"])
+            if first is None:
+                return second
+            if second is None:
+                return first
+            return {**node, "first": first, "second": second}
+        replacement = {"root": remove(original["root"]), "hidden": ["daily"]}
+        rejected = bridge.handle({"operation": "propose", "method": "workspace.preview",
+            "expected": {"layout": view["snapshot"]["entityRevisions"]["layout"]},
+            "operations": [{"op": "layout.replace", "value": replacement}]})
+        assert not rejected["ok"] and rejected["errors"][0]["code"] == "E_CONFLICT"
+        assert bridge.handle({"operation": "view.pin", "projectionId": "daily", "pinned": False,
+            "expectedRevision": 1, "expectedProjectionRevision": revision})["ok"]
+        sequence = bridge.session.service.commit_sequence
+        rejected = bridge.handle({"operation": "propose", "method": "workspace.apply",
+            "expected": {"projections/daily": revision}, "activeEdits": ["daily"],
+            "operations": [{"op": "entity.delete", "collection": "projections", "id": "daily"}]})
+        assert not rejected["ok"]
+        assert bridge.session.service.commit_sequence == sequence
+        assert bridge.handle({"operation": "view.pin", "projectionId": "daily", "pinned": True,
+            "expectedRevision": 2, "expectedProjectionRevision": revision})["ok"]
+    finally:
+        bridge.close()
+    bridge = open_bridge(cafe_root)
+    try:
+        assert bridge.view()["panes"]["daily"]["viewSettings"]["pinned"]
+    finally:
+        bridge.close()
+
+
+@pytest.mark.parametrize("key,expected", [("0", True), ("129", True), ("130", False),
+    ("01", False), ("1.0", False), ("9223372036854775808", False)])
+def test_keyed_selection_uses_approved_artifact_bytes(cafe_root, key, expected):
+    bridge = open_bridge(cafe_root)
+    try:
+        install_paged_table(bridge)
+        version = bridge.view()["snapshot"]["document"]["sources"]["paged"]["versions"]["1"]
+        assert bridge._has_row_key(version, "index", key) is expected
+        assert bridge._has_row_key(version, "index", key) is expected  # Cached immutable result.
+    finally:
+        bridge.close()

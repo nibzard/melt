@@ -243,7 +243,7 @@ def test_each_run_uses_one_fresh_credential_free_process(run_case: RunCase):
     # The resolved environment: the same interpreter the service runs.
     assert facts["executable"] == sys.executable
     # The working-directory policy: the private staging directory.
-    assert facts["cwd"] == str(run_case.staging)
+    assert Path(facts["cwd"]).samefile(run_case.staging)
     # The script runs as the main module with its own path as argv.
     assert facts["argv"] == [str(run_case.staging / "script.py")]
     # Model credentials never reach project code (SPEC.md section 15.1).

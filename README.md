@@ -19,7 +19,7 @@ Melt keeps the inputs, parameters, views, and published results together in a sa
 
 Melt is for developers building data tools and agent interfaces with durable state.
 The repository implements the language, compiler, workspace service, and Python execution loop on Linux.
-**The native host is an early development prototype.** Build it on macOS to operate saved workspaces.
+**The native host is available for local macOS development.** It includes Ghostty, table navigation, Markdown, and plot zoom/export; the distribution release gate remains open.
 The command-line harness and exported images work on Linux.
 
 ## One possible interface
@@ -160,7 +160,7 @@ Its [view definitions](examples/02-sales-analysis/views.json) connect the action
 | Persistence | Saved artifacts, revision checks, retry receipts, and restart recovery. |
 | Shared selection and output subscriptions | Implemented under experimental `melt/semantic-draft-1`, with explicit migration from v0.1. |
 | Rendering | Terminal inspection, PNG plots, and static SVG graph exports through the Pele adapter. |
-| Native desktop host | Prototype verified in macOS CI for controls, linked views, saving, closing, and reopening. Full native release acceptance remains open. |
+| Native desktop host | AppKit/Ghostty integration with persisted view settings and native workflow checks. A relocatable local package is available; signing, clean-machine validation, and release performance gates remain open. |
 
 The semantic draft adds shared object references and views that follow an action's saved output.
 It is an experimental language version. Existing v0.1 workspaces keep their behavior until you explicitly migrate them.

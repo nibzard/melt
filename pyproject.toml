@@ -51,3 +51,7 @@ packages = [
 testpaths = ["tests"]
 pythonpath = ["python", "."]
 addopts = "-ra --strict-markers"
+
+[tool.setuptools.package-data]
+"runtime.storage" = ["pi_adapter/*.mjs", "pi_adapter/package.json", "pi_adapter/package-lock.json"]
+"runtime" = ["rendering/pele_adapter/*.mjs", "rendering/pele_adapter/package.json", "rendering/pele_adapter/package-lock.json"]

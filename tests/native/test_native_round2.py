@@ -1,24 +1,20 @@
-"""Native suite placeholder for round 2.
+"""Functional acceptance backed by the real host, not a deferred placeholder.
 
-SPEC.md section 18.5 defers native checks to the macOS round: terminal
-controller identity, focus, keyboard navigation, clipboard, input
-methods, accessibility labels, pane hiding, and small-window overflow.
-Backlog task T030 owns that work.
-
-The Linux gate must not require a macOS machine or Apple tools, so this
-module only keeps `tests/native` in the collected suite and marks the
-deferred coverage explicitly. It claims no behavior.
+Timing samples are retained as evidence; hardware-specific release targets
+are assessed in docs/gates/native-application.md rather than timing CI.
 """
 
-from __future__ import annotations
 
-import pytest
-
-pytestmark = pytest.mark.skip(
-    reason="native integration belongs to round 2, backlog task T030 "
-    "(SPEC.md sections 2.2 and 18.5)"
-)
-
-
-def test_native_controller_identity_survives_updates():
-    """Verify controller identity while moving and updating Melt panes."""
+def test_native_input_layout_renderers_and_restoration(native_acceptance):
+    assert set(native_acceptance["checks"]) >= {
+        "pane-continuity", "move-hide-show", "focus", "overflow",
+        "table-query-controls", "clipboard-text", "marked-text-input",
+        "split-persistence", "plot-export-zoom",
+        "accessibility", "markdown-policy", "ghostty-surface",
+        "native-calculation", "five-pane-restoration", "linked-selection", "sales-hero",
+    }
+    assert len(native_acceptance["heartbeatSamplesMs"]) >= 10
+    assert len(native_acceptance["patchSamplesMs"]) == 25
+    assert native_acceptance["restoredPanes"] == 5
+    for key in ("heartbeatP95Ms", "patchP95Ms", "restoreMs"):
+        assert native_acceptance[key] > 0

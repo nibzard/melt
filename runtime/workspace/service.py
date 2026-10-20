@@ -213,6 +213,7 @@ from melt.schema.semantic import (
 from melt.schema.records import (
     RECORD_SCHEMA_VERSION,
     CapturedParameter,
+    HostViewRecord,
     OutputGroupRecord,
     PendingIntentRecord,
     PermissionGrantRecord,
@@ -536,6 +537,7 @@ class WorkspaceService:
         output_groups: "Mapping[str, OutputGroupRecord] | None" = None,
         pending_intents: "Mapping[str, PendingIntentRecord] | None" = None,
         publications: "Mapping[str, PublicationRecord] | None" = None,
+        host_views: "Mapping[str, HostViewRecord] | None" = None,
         frame_limit: int | None = None,
         limits: ServiceLimits = DEFAULT_LIMITS,
         clock: "Callable[[], float] | None" = None,
@@ -568,6 +570,7 @@ class WorkspaceService:
         self._publications: dict[str, PublicationRecord] = dict(
             publications or {}
         )
+        self._host_views = dict(host_views or {})
         self._limits = limits
         self._table_cache = TablePageCache()
         self._frame_limit = (
@@ -637,6 +640,7 @@ class WorkspaceService:
             output_groups=restored.output_groups,
             pending_intents=restored.pending_intents,
             publications=restored.publications,
+            host_views=restored.host_views,
             frame_limit=frame_limit,
             limits=limits,
             clock=clock,
@@ -1587,6 +1591,8 @@ class WorkspaceService:
                 )
             ],
             trailing_records=self._scheduling_records(scheduling),
+            reset_host_views=[path.split("/", 1)[1] for path, touch in plan.entity_touches.items()
+                              if path.startswith("projections/") and (touch.created or touch.deleted)],
         )
         self._adopt_scheduling(scheduling)
         return response
@@ -1698,6 +1704,7 @@ class WorkspaceService:
         result: dict,
         leading_records: "Sequence[tuple[str, dict]]" = (),
         trailing_records: "Sequence[tuple[str, dict]]" = (),
+        reset_host_views: "Sequence[str]" = (),
     ) -> OkResponse:
         """Append one transaction's records atomically and adopt its state.
 
@@ -1729,6 +1736,15 @@ class WorkspaceService:
         )
         records: list[tuple[str, dict]] = [*leading_records, receipt]
         records.extend(trailing_records)
+        reset_views = {}
+        for identity in reset_host_views:
+            previous = self._host_views.get(identity)
+            if previous is not None:
+                reset = previous.model_copy(update={"revision": previous.revision + 1,
+                    "deleted": True, "sort": (), "filters": (), "pinned": False,
+                    "selectionSource": None, "rowKey": None, "selectedKey": None})
+                reset_views[identity] = reset
+                records.append(("melt.hostView", record_to_wire(reset)))
         if changed:
             records.append(
                 (
@@ -1754,6 +1770,7 @@ class WorkspaceService:
                 " prediction is broken"
             )
         self._state = new_state
+        self._host_views.update(reset_views)
         self._receipts[request_id] = dict(receipt[1])
         if changed:
             self._notifications.append(dict(records[-1][1]))
@@ -4828,6 +4845,46 @@ class WorkspaceService:
     # Trusted table paging (SPEC.md sections 8.2 and 12.7)
     # ------------------------------------------------------------------
 
+    @_serialized
+    def host_view(self, projection_id: str) -> dict:
+        """Read persisted presentation settings; no document or execution authority."""
+        projection = (self.document or {}).get("projections", {}).get(projection_id)
+        stored = self._host_views.get(projection_id)
+        if projection is None:
+            raise ValueError("The projection no longer exists")
+        if stored is not None and not stored.deleted and stored.kind == projection["kind"]:
+            return record_to_wire(stored)
+        return {"revision": stored.revision if stored else 0, "sort": [], "filters": [], "pinned": False,
+                "selectionSource": None, "rowKey": None, "selectedKey": None}
+
+    @_serialized
+    def save_host_view(self, projection_id: str, settings: dict, *,
+                       expected_revision: int, expected_projection_revision: int) -> dict:
+        """Commit acknowledged host settings separately from authored definitions."""
+        projection = (self.document or {}).get("projections", {}).get(projection_id)
+        current = self.host_view(projection_id)
+        if (projection is None or expected_revision != current["revision"]
+            or expected_projection_revision != self.entity_revisions.get(f"projections/{projection_id}")):
+            raise ValueError("The view changed; refresh before saving its settings")
+        stored = HostViewRecord.model_validate({
+            **settings, "recordType": "hostView", "schemaVersion": RECORD_SCHEMA_VERSION,
+            "projectionId": projection_id, "kind": projection["kind"],
+            "revision": current["revision"] + 1,
+            "deleted": False,
+        })
+        wire = record_to_wire(stored)
+        notification = {"recordType": "changeNotification", "schemaVersion": RECORD_SCHEMA_VERSION,
+            "workspaceId": self.workspace_id, "epoch": self.epoch,
+            "commitSequence": self.commit_sequence + 1,
+            "changedRecords": [f"host/{projection_id}"]}
+        parse_record(notification)
+        sequence, _ = self._store.append_records([
+            ("melt.hostView", wire), (NOTIFICATION_KIND, notification)])
+        self._state = self._state.with_commit(sequence)
+        self._notifications.append(notification)
+        self._host_views[projection_id] = stored
+        return wire
+
     def _table_page(self, envelope: CommandEnvelope) -> "CommandResponse | _PreparedTablePage":
         """Answer one bounded table page (SPEC.md section 12.7).
 
@@ -5302,6 +5359,7 @@ LOADED_RECORD_KINDS = frozenset(
         OUTPUT_GROUP_KIND,
         PENDING_INTENT_KIND,
         PUBLICATION_KIND,
+        "melt.hostView",
     }
 )
 """The record kinds the loader reads; anything else refuses the open."""
@@ -5328,6 +5386,7 @@ class RestoredState:
     output_groups: dict[str, OutputGroupRecord]
     pending_intents: dict[str, PendingIntentRecord]
     publications: dict[str, PublicationRecord]
+    host_views: dict[str, HostViewRecord]
     corrupt_records: tuple[CorruptRecordNote, ...] = ()
 
 
@@ -5370,6 +5429,7 @@ def _load_state(store: WorkspaceStore) -> RestoredState:
     output_groups: dict[str, OutputGroupRecord] = {}
     pending_intents: dict[str, PendingIntentRecord] = {}
     publications: dict[str, PublicationRecord] = {}
+    host_views: dict[str, HostViewRecord] = {}
     corrupt: list[CorruptRecordNote] = []
     for record in store.take_opening_records():
         if record.kind == HEADER_KIND:
@@ -5428,6 +5488,9 @@ def _load_state(store: WorkspaceStore) -> RestoredState:
             elif record.kind == PUBLICATION_KIND:
                 publication = parse_record(record.data)
                 publications[publication.publicationId] = publication
+            elif record.kind == "melt.hostView":
+                view = parse_record(record.data)
+                host_views[view.projectionId] = view
         except MeltSchemaError as error:
             _refuse_or_note_version_error(store.workspace_id, record, error)
             first = error.diagnostics[0]
@@ -5481,6 +5544,7 @@ def _load_state(store: WorkspaceStore) -> RestoredState:
         output_groups=output_groups,
         pending_intents=pending_intents,
         publications=publications,
+        host_views=host_views,
         corrupt_records=tuple(corrupt),
     )
 

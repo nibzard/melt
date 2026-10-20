@@ -51,20 +51,31 @@ import AppKit
         try wait("application launch callback") { application != nil || launchError != nil }
         if let error = launchError { throw error }
         guard let first = application else { throw HostError.message("LaunchServices returned no application.") }
+        precondition(first.bundleURL?.standardizedFileURL == bundle)
         try wait("saved workspace opened through LaunchServices") { ownsWorkspace(first.processIdentifier) }
         guard first.terminate() else { throw HostError.message("The native application refused its quit request.") }
         try wait("native quit and service shutdown") { first.isTerminated && services().isEmpty }
 
         application = nil
-        guard NSWorkspace.shared.open(file) else { throw HostError.message("The saved file has no default application.") }
+        if ProcessInfo.processInfo.environment["MELT_EXPLICIT_REOPEN"] == "1" {
+            NSWorkspace.shared.open([file], withApplicationAt: bundle, configuration: configuration) { app, error in
+                application = app; launchError = error
+            }
+        } else {
+            guard NSWorkspace.shared.open(file) else { throw HostError.message("The saved file has no default application.") }
+        }
         try wait("default file handler launch") {
             application = NSRunningApplication.runningApplications(withBundleIdentifier: "org.melt.localhost").first(where: { !$0.isTerminated })
             return application != nil
         }
         guard let second = application else { throw HostError.message("The default file handler did not launch Melt.") }
+        if ProcessInfo.processInfo.environment["MELT_EXPLICIT_REOPEN"] == "1" {
+            precondition(second.bundleURL?.standardizedFileURL == bundle)
+        }
         try wait("desktop launcher reopened its workspace") { ownsWorkspace(second.processIdentifier) }
         guard second.terminate() else { throw HostError.message("The reopened application refused its quit request.") }
         try wait("reopened application shutdown") { second.isTerminated && services().isEmpty }
-        print("LaunchServices opens the saved app, quits cleanly, and reopens it through the default file handler.")
+        let handler = ProcessInfo.processInfo.environment["MELT_EXPLICIT_REOPEN"] == "1" ? "the relocated application" : "the default file handler"
+        print("LaunchServices opens the saved app, quits cleanly, and reopens it through \(handler).")
     }
 }

@@ -50,7 +50,8 @@ ORDER_OPERATORS = ("lt", "lte", "gt", "gte")
 
 _DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}\Z")
 _TIMESTAMP_PATTERN = re.compile(
-    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})\Z"
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?"
+    r"(Z|[+-](?P<offset_hour>\d{2}):(?P<offset_minute>\d{2}))\Z"
 )
 
 _STRING_TYPES = frozenset({"string", "date", "timestamp"})
@@ -202,12 +203,12 @@ def _filter_type_error(
                 f" numbers, but the filter carries a {kind} value",
             )
     if type_name == "int64" and kind == "number":
-        if float(value) != int(value):
+        if not -(2**63) <= value < 2**63 or value != int(value):
             return _diagnostic(
                 DiagnosticCode.TYPE,
                 f"{path}/value",
                 f"column {item['column']!r} has type int64, whose values"
-                f" are whole numbers, but the filter carries {value!r}",
+                f" are signed 64-bit whole numbers, but the filter carries {value!r}",
             )
     if type_name == "date" and kind == "string" and not _DATE_PATTERN.match(value):
         return _diagnostic(
@@ -227,6 +228,20 @@ def _filter_type_error(
             f"column {item['column']!r} has type timestamp, whose values"
             " use UTC RFC 3339 strings with a Z suffix, but the filter"
             f" carries {value!r}",
+        )
+    # Lexically valid dates can still name impossible calendar values.
+    # Reject those before opening an artifact, on both reader paths.
+    try:
+        if type_name == "date" and kind == "string":
+            date.fromisoformat(value)
+        elif type_name == "timestamp" and kind == "string":
+            _parse_timestamp(value)
+    except (ValueError, OverflowError):
+        return _diagnostic(
+            DiagnosticCode.TYPE,
+            f"{path}/value",
+            f"the filter value is not a valid {type_name} for"
+            f" column {item['column']!r}",
         )
     return None
 
@@ -305,6 +320,14 @@ def _filter_scalar(column: Mapping[str, Any], item: Mapping[str, Any], field_typ
 def _parse_timestamp(value: str) -> datetime:
     """Parse one UTC RFC 3339 string into an aware datetime."""
 
+    match = _TIMESTAMP_PATTERN.fullmatch(value)
+    if match is None or (
+        match["offset_hour"] is not None
+        and (int(match["offset_hour"]) > 23 or int(match["offset_minute"]) > 59)
+    ):
+        # fromisoformat normalizes offsets such as +01:99 instead of
+        # rejecting them, but RFC 3339 does not permit those offsets.
+        raise ValueError("invalid RFC 3339 timestamp or UTC offset")
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None:  # pragma: no cover - the pattern demands a zone
         parsed = parsed.replace(tzinfo=timezone.utc)

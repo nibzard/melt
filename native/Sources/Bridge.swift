@@ -38,10 +38,14 @@ final class Bridge {
     init(app: LocalApp, configuration: Object) throws {
         let repository = string(configuration["repository"])
         process.executableURL = URL(fileURLWithPath: string(configuration["python"]))
-        process.arguments = ["-m", "runtime.desktop", "--root", app.root, "--workspace", app.workspace]
+        process.arguments = (configuration["format"] as? String == "melt-runtime/v1" ? ["-I", "-B"] : []) + ["-m", "runtime.desktop", "--root", app.root, "--workspace", app.workspace]
         process.currentDirectoryURL = URL(fileURLWithPath: repository)
         var environment = ProcessInfo.processInfo.environment
         environment["PATH"] = string(configuration["nodeDirectory"]) + ":" + (environment["PATH"] ?? "/usr/bin:/bin")
+        if configuration["format"] as? String == "melt-runtime/v1" {
+            for key in ["PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"] { environment.removeValue(forKey: key) }
+            environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        }
         process.environment = environment
         process.standardInput = input; process.standardOutput = output
         // The child keeps project logs in the workspace. Stderr never shares the control pipe.
@@ -85,4 +89,20 @@ final class Bridge {
             DispatchQueue.main.async { completion() }
         }
     }
+}
+
+func resolvedRuntime(_ configuration: Object) throws -> Object {
+    guard let format = configuration["format"] as? String else { return configuration }
+    guard format == "melt-runtime/v1" else { throw HostError.message("Unsupported bundled runtime version.") }
+    let root = (configuration["resourceRoot"] as? String).map { URL(fileURLWithPath: $0) } ?? Bundle.main.resourceURL
+    guard let root = root?.standardizedFileURL else { throw HostError.message("Missing bundled runtime resources.") }
+    var result = configuration
+    for key in ["repository", "python", "nodeDirectory", "ghosttyResources"] {
+        let path = string(configuration[key])
+        let url = root.appendingPathComponent(path).standardizedFileURL
+        guard !path.isEmpty, !path.hasPrefix("/"), url.path.hasPrefix(root.path + "/"),
+              FileManager.default.fileExists(atPath: url.path) else { throw HostError.message("Invalid bundled runtime path: \(key)") }
+        result[key] = url.path
+    }
+    return result
 }

@@ -20,6 +20,7 @@ import os
 import select
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -155,6 +156,10 @@ class StorageWorker:
                 )
             if facts.get("journalMode") != "wal":
                 problems.append(f"journal_mode={facts.get('journalMode')!r}")
+            if sys.platform == "darwin":
+                for setting in ("fullfsync", "checkpointFullfsync"):
+                    if facts.get(setting) != 1:
+                        problems.append(f"{setting}={facts.get(setting)!r}, requires ON (1)")
             if problems:
                 raise StorageWorkerError(
                     "owning connection rejected: " + "; ".join(problems)

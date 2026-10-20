@@ -74,6 +74,13 @@ export async function openDurableStorage(path, options = {}) {
 	if (synchronousDefault !== SYNCHRONOUS_FULL) {
 		await db.exec("PRAGMA synchronous = FULL");
 	}
+	// SQLite uses F_FULLFSYNC on macOS when these connection settings
+	// are enabled. Apply them on every owning connection, including WAL
+	// checkpoints, without imposing macOS behavior on Linux.
+	if (process.platform === "darwin") {
+		await db.exec("PRAGMA fullfsync = ON");
+		await db.exec("PRAGMA checkpoint_fullfsync = ON");
+	}
 	const storage = await SqliteStorage.open(db);
 	// Verify after migrations and every other statement the adapter ran.
 	const facts = {
@@ -81,7 +88,16 @@ export async function openDurableStorage(path, options = {}) {
 		journalMode: await readPragma(db, "journal_mode"),
 		synchronousDefault,
 		synchronous: await readPragma(db, "synchronous"),
+		...(process.platform === "darwin" ? {
+			fullfsync: await readPragma(db, "fullfsync"),
+			checkpointFullfsync: await readPragma(db, "checkpoint_fullfsync"),
+		} : {}),
 	};
+	if (process.platform === "darwin" &&
+		(facts.fullfsync !== 1 || facts.checkpointFullfsync !== 1)) {
+		await storage.close(CONTEXT).catch(() => {});
+		throw new StorageDurabilityError("macOS full-sync settings were not enabled", facts);
+	}
 	if (facts.synchronous !== SYNCHRONOUS_FULL) {
 		await storage.close(CONTEXT).catch(() => {});
 		throw new StorageDurabilityError(

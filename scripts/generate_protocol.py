@@ -2883,6 +2883,7 @@ def command_schema_group() -> dict:
 
 def record_schema_group() -> dict:
     record_models = [
+        records_module.HostViewRecord,
         records_module.RunRecord,
         records_module.RegistrationRecord,
         records_module.PermissionGrantRecord,

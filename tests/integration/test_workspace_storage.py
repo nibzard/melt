@@ -124,17 +124,17 @@ def store(adapter: PlatformAdapter) -> WorkspaceStore:
 
 
 def test_data_root_uses_xdg_data_home(tmp_path: Path) -> None:
-    adapter = PlatformAdapter(env={"XDG_DATA_HOME": str(tmp_path / "xdg")})
+    adapter = PlatformAdapter(system="linux", env={"XDG_DATA_HOME": str(tmp_path / "xdg")})
     assert adapter.application_data_root == tmp_path / "xdg"
 
 
 def test_data_root_falls_back_to_home_local_share(tmp_path: Path) -> None:
-    adapter = PlatformAdapter(env={"HOME": str(tmp_path / "home")})
+    adapter = PlatformAdapter(system="linux", env={"HOME": str(tmp_path / "home")})
     assert adapter.application_data_root == tmp_path / "home" / ".local" / "share"
 
 
 def test_a_relative_xdg_data_home_is_ignored(tmp_path: Path) -> None:
-    adapter = PlatformAdapter(env={"XDG_DATA_HOME": "relative/path", "HOME": str(tmp_path)})
+    adapter = PlatformAdapter(system="linux", env={"XDG_DATA_HOME": "relative/path", "HOME": str(tmp_path)})
     assert adapter.application_data_root == tmp_path / ".local" / "share"
 
 
@@ -325,6 +325,9 @@ def test_owning_connection_reports_verified_durability(store: WorkspaceStore) ->
     assert facts["synchronous"] == 2, "owning connection is not synchronous=FULL"
     assert facts["journalMode"] == "wal"
     assert facts["adapterVersion"] == "1.3.0"
+    if sys.platform == "darwin":
+        assert facts["fullfsync"] == 1
+        assert facts["checkpointFullfsync"] == 1
 
 
 @requires_storage_worker
@@ -476,6 +479,9 @@ def test_a_killed_helper_leaves_committed_records_intact(
         facts = reopened.durability_facts()
         assert facts["integrityCheck"] == "ok"
         assert facts["journalMode"] == "wal"
+        if sys.platform == "darwin":
+            assert facts["fullfsync"] == 1
+            assert facts["checkpointFullfsync"] == 1
         # The store stays writable after recovery.
         reopened.append_records([("melt.commandReceipt", {"requestId": "02-after"})])
     finally:

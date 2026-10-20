@@ -17,37 +17,6 @@ func label(_ text: String, size: CGFloat = 13, bold: Bool = false) -> NSTextFiel
     return field
 }
 
-final class DataTable: NSObject, NSTableViewDataSource, NSTableViewDelegate {
-    let scroll = NSScrollView(), table = NSTableView()
-    private var rows: [[Any]] = []
-    override init() {
-        super.init()
-        table.dataSource = self; table.delegate = self
-        table.usesAlternatingRowBackgroundColors = true
-        table.rowHeight = 24
-        scroll.documentView = table; scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = true
-    }
-    func update(_ data: Object) {
-        let columns = array(data["columns"]).compactMap { $0 as? String }
-        if table.tableColumns.map({ $0.identifier.rawValue }) != columns {
-            for column in table.tableColumns { table.removeTableColumn(column) }
-            for key in columns {
-                let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(key))
-                column.title = key; column.width = 130; table.addTableColumn(column)
-            }
-        }
-        rows = array(data["rows"]).compactMap { $0 as? [Any] }
-        table.reloadData()
-    }
-    func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
-    func tableView(_ tableView: NSTableView, viewFor column: NSTableColumn?, row: Int) -> NSView? {
-        guard let column = column, let index = table.tableColumns.firstIndex(of: column), rows[row].indices.contains(index) else { return nil }
-        let value = rows[row][index]
-        let text = value is NSNull ? "—" : String(describing: value)
-        return label(text)
-    }
-}
-
 final class Pane: NSViewController, NSTextFieldDelegate {
     let identity: String
     weak var host: Workspace?
@@ -58,7 +27,17 @@ final class Pane: NSViewController, NSTextFieldDelegate {
     private var editors: [String: (parameter: String, control: NSControl)] = [:]
     private var table: DataTable?
     private let tableNotice = label("", size: 10)
-    private let textView = NSTextView(), imageView = NSImageView()
+    private let textView = NSTextView()
+    private let plot = PlotView()
+    private var renderingText = false
+    private var pinButton: ClickButton!, hideButton: ClickButton!
+    var hasActiveEdit: Bool {
+        editors.values.contains { ($0.control as? NSTextField)?.currentEditor() != nil } ||
+        table?.value.currentEditor() != nil
+    }
+    var isRendering: Bool { renderingText || plot.isRendering }
+    var projectionKind: String { string(definition["kind"]) }
+    var displayedTitle: String { heading.stringValue }
     private var bodyKind = ""
     private var lastText = "", lastImage = ""
     private var lastGraph = ""
@@ -74,7 +53,21 @@ final class Pane: NSViewController, NSTextFieldDelegate {
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 10
         controls.orientation = .vertical; controls.alignment = .leading; controls.spacing = 6
         body.orientation = .vertical; body.alignment = .leading
-        let sections: [NSView] = [heading, controls, body]
+        let move = ClickButton("←") { [weak self] in
+            guard let self = self else { return }; self.host?.movePaneFirst(self.identity)
+        }
+        move.setAccessibilityLabel("Move pane first")
+        hideButton = ClickButton("Hide") { [weak self] in
+            guard let self = self else { return }; self.host?.hidePane(self.identity)
+        }
+        pinButton = ClickButton("Pin") { [weak self] in
+            guard let self = self else { return }; self.host?.pinPane(self.identity, pinned: !(object(self.data["viewSettings"])["pinned"] as? Bool ?? false))
+        }
+        move.identifier = NSUserInterfaceItemIdentifier("\(identity)/move")
+        hideButton.identifier = NSUserInterfaceItemIdentifier("\(identity)/hide")
+        pinButton.identifier = NSUserInterfaceItemIdentifier("\(identity)/pin")
+        let header = NSStackView(views: [heading, move, pinButton, hideButton]); header.orientation = .horizontal
+        let sections: [NSView] = [header, controls, body]
         for item in sections { stack.addArrangedSubview(item) }
         view.addSubview(stack); stack.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -88,6 +81,8 @@ final class Pane: NSViewController, NSTextFieldDelegate {
     func update(definition: Object, plan: Object, state: Object, data: Object) {
         if !isViewLoaded { _ = view }
         self.definition = definition; self.state = state; self.data = data
+        let pinned = object(data["viewSettings"])["pinned"] as? Bool ?? false
+        pinButton.title = pinned ? "Unpin" : "Pin"; hideButton.isEnabled = !pinned
         heading.stringValue = string(definition["title"])
         let definitions = array(plan["controls"]).map(object)
         controls.isHidden = definitions.isEmpty
@@ -126,13 +121,20 @@ final class Pane: NSViewController, NSTextFieldDelegate {
         switch kind {
         case "table":
             if table == nil {
-                table = DataTable(); body.addArrangedSubview(table!.scroll)
-                table!.scroll.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
-                table!.scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 100).isActive = true
+                table = DataTable(identity: identity); body.addArrangedSubview(table!.view)
+                table!.view.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
+                table!.view.heightAnchor.constraint(greaterThanOrEqualToConstant: 100).isActive = true
                 body.addArrangedSubview(tableNotice)
             }
-            table?.update(object(data["table"]))
-            tableNotice.stringValue = object(data["table"])["hasMore"] as? Bool == true ? "Partial table: showing \(array(object(data["table"])["rows"]).count) rows. Use the harness to read later pages." : ""
+            table?.update(object(data["table"]), settings: object(data["viewSettings"]), types: object(data["columnTypes"]))
+            table?.query = { [weak self] sort, filters, offset in
+                guard let self = self else { return }
+                self.host?.queryTable(self.identity, sort: sort, filters: filters, offset: offset)
+            }
+            table?.select = { [weak self] key in
+                guard let self = self else { return }; self.host?.selectTableRow(self.identity, key: key)
+            }
+            tableNotice.stringValue = string(data["notice"])
         case "document":
             if textView.enclosingScrollView == nil {
                 let scroll = NSScrollView(); scroll.hasVerticalScroller = true
@@ -147,20 +149,25 @@ final class Pane: NSViewController, NSTextFieldDelegate {
                 scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 100).isActive = true
             }
             let text = string(data["text"]) + ((data["truncated"] as? Bool == true) ? "\n\n[Partial document: more text is available in the saved source.]" : "")
-            if lastText != text { textView.string = text; lastText = text }
+            if lastText != text {
+                lastText = text; renderingText = true
+                textView.string = "Loading saved document…"
+                let markdown = string(object(definition["config"])["format"]) == "markdown"
+                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                    let content = markdown ? MarkdownDocument.render(text) : NSAttributedString(string: text)
+                    DispatchQueue.main.async {
+                        guard let self = self, self.lastText == text else { return }
+                        self.textView.textStorage?.setAttributedString(content)
+                        self.renderingText = false
+                    }
+                }
+            }
         case "plot":
-            if imageView.superview == nil {
-                imageView.imageScaling = .scaleProportionallyUpOrDown
-                body.addArrangedSubview(imageView)
-                imageView.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
-                imageView.heightAnchor.constraint(greaterThanOrEqualToConstant: 100).isActive = true
-                imageView.setAccessibilityLabel(heading.stringValue)
+            if plot.view.superview == nil {
+                body.addArrangedSubview(plot.view)
+                plot.view.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
             }
-            let path = string(data["imagePath"]), schema = object(data["imageSchema"])
-            let width = schema["width"] as? Int ?? 0, height = schema["height"] as? Int ?? 0
-            if path != lastImage, width > 0, height > 0, width <= 16_384, height <= 16_384, width * height <= 64_000_000 {
-                imageView.image = NSImage(contentsOfFile: path); lastImage = path
-            }
+            plot.update(data, title: heading.stringValue)
         case "record":
             let observer = object(data["observer"])
             let cells = object(object(observer["record"])["cells"])

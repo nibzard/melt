@@ -256,6 +256,14 @@ async function verifyArtifacts(dbPath, artifactsDir) {
 
 async function filesystemFacts(path) {
 	try {
+		if (process.platform === "darwin") {
+			const mount = (await run("df", ["-P", path])).stdout.trim();
+			const device = mount.split("\n").at(-1).split(/\s+/)[0];
+			const mounts = (await run("mount", [])).stdout.split("\n");
+			const entry = mounts.find(line => line.startsWith(`${device} on `));
+			const type = entry?.match(/\(([^,)]+)/)?.[1] ?? "unknown";
+			return { path, type, mount };
+		}
 		const type = (await run("stat", ["-f", "-c", "%T", path])).stdout.trim();
 		const findmnt = (await run("findmnt", ["-no", "SOURCE,FSTYPE,OPTIONS", "-T", path])).stdout.trim();
 		return { path, type, mount: findmnt };
@@ -297,6 +305,10 @@ async function suiteConfig() {
 		try {
 			assert.equal(facts.synchronous, 2);
 			assert.equal(facts.synchronousDefault, 1);
+			if (process.platform === "darwin") {
+				assert.equal(facts.fullfsync, 1);
+				assert.equal(facts.checkpointFullfsync, 1);
+			}
 			return facts;
 		} finally {
 			await storage.close(CONTEXT);
@@ -327,6 +339,10 @@ async function suiteConfig() {
 			await db.exec("PRAGMA wal_checkpoint(PASSIVE)");
 			const after = await readPragma(db, "synchronous");
 			assert.equal(after, 2, "synchronous reverted during normal work");
+			if (process.platform === "darwin") {
+				assert.equal(await readPragma(db, "fullfsync"), 1);
+				assert.equal(await readPragma(db, "checkpoint_fullfsync"), 1);
+			}
 			return { after };
 		} finally {
 			await storage.close(CONTEXT);
@@ -971,7 +987,10 @@ async function main() {
 		crashModel:
 			"SIGKILL process death after an acknowledged commit. Power loss and operating-system crash are "
 			+ "not simulated in hardware; their protection is synchronous=FULL on the owning connection, "
-			+ "evidenced by the per-commit fsync counts from the fsync suite.",
+			+ (process.platform === "darwin"
+				? "with fullfsync=ON and checkpoint_fullfsync=ON verified by pragma read-back. "
+				  + "F_FULLFSYNC syscalls are not traced by this probe."
+				: "evidenced by the per-commit fsync counts when the fsync suite is available."),
 	};
 	finding(
 		"adapter-default-synchronous-normal",

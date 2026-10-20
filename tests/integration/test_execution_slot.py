@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import json
 import signal
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -86,9 +88,6 @@ def pid_gated_script(
         "from melt import ui",
         "",
         "control = Path.cwd()",
-        f"(control / {STARTED_NAME!r}).write_text('', encoding='utf-8')",
-        f"(control / {PID_NAME!r}).write_text(str(os.getpid()),"
-        " encoding='utf-8')",
     ]
     if spawn_child:
         # The helper spawns before any ignore disposition, so it keeps
@@ -107,6 +106,12 @@ def pid_gated_script(
         lines.append("signal.signal(signal.SIGTERM, signal.SIG_IGN)")
     lines.extend(
         [
+            # Publish readiness only once the signal policy is installed
+            # and both pid files are complete. File existence alone could
+            # expose an empty pid or let cancellation beat SIG_IGN.
+            f"(control / {PID_NAME!r}).write_text(str(os.getpid()),"
+            " encoding='utf-8')",
+            f"(control / {STARTED_NAME!r}).write_text('', encoding='utf-8')",
             f"deadline = time.monotonic() + {int(GATE_TIMEOUT_SECONDS)}",
             f"while not (control / {RELEASE_NAME!r}).exists():",
             "    if time.monotonic() > deadline:",
@@ -192,6 +197,15 @@ def read_pid(path: Path) -> int:
 def pid_state(pid: int) -> "str | None":
     """The scheduler state of one process id, or None when gone."""
 
+    if sys.platform == "darwin":
+        result = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(pid)],
+            capture_output=True, text=True, check=False,
+        )
+        state = result.stdout.strip()
+        if result.returncode not in (0, 1):
+            raise AssertionError(f"Cannot inspect process {pid}: {result.stderr}")
+        return state[0] if state else None
     try:
         with open(f"/proc/{pid}/stat", "rb") as handle:
             fields = handle.read().rsplit(b")", 1)[1].split()

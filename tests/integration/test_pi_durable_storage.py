@@ -19,6 +19,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -139,6 +140,9 @@ def test_owning_connection_runs_synchronous_full_in_wal(verdict: dict) -> None:
     assert wrapper["synchronous"] == 2, "owning connection is not synchronous=FULL"
     assert wrapper["synchronousDefault"] == 1, "adapter default changed; update the probe and README"
     assert wrapper["journalMode"] == "wal"
+    if sys.platform == "darwin":
+        assert wrapper["fullfsync"] == 1
+        assert wrapper["checkpointFullfsync"] == 1
     fresh = _detail(verdict, "config", "a fresh connection starts at the adapter default again")
     assert fresh == {"synchronous": 1}
 
@@ -228,7 +232,7 @@ def test_adapter_gaps_are_recorded(verdict: dict) -> None:
 
 def test_environment_and_crash_model_are_recorded(verdict: dict) -> None:
     environment = verdict["environment"]
-    assert environment["platform"] == "linux"
+    assert environment["platform"] == sys.platform
     assert environment["node"].startswith("v")
     mount = environment["filesystem"]["mount"]
     kind = environment["filesystem"]["type"]
